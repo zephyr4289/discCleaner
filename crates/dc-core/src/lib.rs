@@ -71,6 +71,9 @@ mod tests {
         let plan_hash = plan.compute_plan_hash().unwrap();
 
         let header = JournalRecord::Header {
+            uuid: "test-uuid-1234".to_string(),
+            sealed: false,
+            operator_pubkey: None,
             plan,
             plan_hash: plan_hash.clone(),
             identity,
@@ -87,7 +90,7 @@ mod tests {
             started_utc: "2026-08-28T20:00:00Z".to_string(),
         };
 
-        let mut writer = JournalWriter::create(journal_path, header).unwrap();
+        let mut writer = JournalWriter::create(journal_path, header, None).unwrap();
         writer
             .append(&JournalRecord::BeginPass {
                 pass: 0,

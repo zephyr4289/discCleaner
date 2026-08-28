@@ -1,3 +1,4 @@
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -17,10 +18,12 @@ pub struct JournalOracleReport {
     pub last_failed_record: Option<serde_json::Value>,
     pub frontier_before_last_resume: u64,
     pub discarded_tail_bytes: u64,
+    pub uuid: String,
+    pub sealed: bool,
 }
 
 impl JournalOracle {
-    /// Independent in-test validator for DCJ1 hash chain and FSM Grammar v3 transition-table.
+    /// Independent in-test validator for DCJ1 hash chain, Ed25519 sealed signatures, and FSM Grammar v3.
     pub fn parse_and_validate(path: &Path, expected_total_windows: u64) -> Result<JournalOracleReport, String> {
         let mut file = File::open(path).map_err(|e| format!("Failed to open journal {}: {}", path.display(), e))?;
         let file_len = file.metadata().map_err(|e| e.to_string())?.len();
@@ -44,6 +47,9 @@ impl JournalOracle {
         let mut last_failed = None;
         let mut frontier_before_resume = 0;
         let mut last_valid_offset = 4u64;
+        let mut is_sealed = false;
+        let mut verifier_key: Option<VerifyingKey> = None;
+        let mut journal_uuid = String::new();
 
         let mut record_idx = 0;
         loop {
@@ -55,38 +61,37 @@ impl JournalOracle {
             }
 
             let len = u32::from_le_bytes(len_buf) as usize;
-            if len > 64 * 1024 * 1024 {
-                // Potential torn tail at EOF
-                let curr = file.stream_position().unwrap_or(last_valid_offset);
-                if curr + len as u64 > file_len {
-                    break;
-                }
-                return Err(format!("Unreasonable record len: {}", len));
+            let curr = file.stream_position().unwrap_or(last_valid_offset);
+            let needed = len as u64 + 32 + if is_sealed { 64 } else { 0 };
+
+            if curr + needed > file_len {
+                break; // Torn tail at EOF
             }
 
             let mut record_bytes = vec![0u8; len];
             if file.read_exact(&mut record_bytes).is_err() {
-                // Torn tail at EOF
                 break;
             }
 
             let mut stored_hash = [0u8; 32];
             if file.read_exact(&mut stored_hash).is_err() {
-                // Torn tail at EOF
                 break;
             }
 
-            // Recompute BLAKE3(record_bytes || prev_hash)
+            let mut stored_sig = [0u8; 64];
+            if is_sealed {
+                if file.read_exact(&mut stored_sig).is_err() {
+                    break;
+                }
+            }
+
+            // Layer 1: Recompute BLAKE3(record_bytes || prev_hash)
             let mut hasher = blake3::Hasher::new();
             hasher.update(&record_bytes);
             hasher.update(&prev_hash);
             let calculated_hash = hasher.finalize();
 
             if calculated_hash.as_bytes() != &stored_hash {
-                let curr = file.stream_position().unwrap_or(last_valid_offset);
-                if curr >= file_len {
-                    break; // Discard torn tail at EOF
-                }
                 return Err(format!(
                     "Journal chain hash mismatch at record #{}: computed {}, stored {}",
                     record_idx,
@@ -95,16 +100,47 @@ impl JournalOracle {
                 ));
             }
 
+            // Layer 3: Sealed signature verification
+            if is_sealed {
+                if let Some(ref vk) = verifier_key {
+                    let mut msg = Vec::with_capacity(record_bytes.len() + 32);
+                    msg.extend_from_slice(&record_bytes);
+                    msg.extend_from_slice(&prev_hash);
+                    let sig = Signature::from_bytes(&stored_sig);
+                    if vk.verify(&msg, &sig).is_err() {
+                        return Err(format!(
+                            "Sealed signature check failed at record #{}: invalid signature",
+                            record_idx
+                        ));
+                    }
+                }
+            }
+
             let json: serde_json::Value = match serde_json::from_slice(&record_bytes) {
                 Ok(j) => j,
                 Err(e) => {
-                    let curr = file.stream_position().unwrap_or(last_valid_offset);
-                    if curr >= file_len {
-                        break;
-                    }
                     return Err(format!("Invalid JSON at record #{}: {}", record_idx, e));
                 }
             };
+
+            // Inspect Header on record 0
+            if record_idx == 0 {
+                if let Some(uuid_val) = json.get("uuid").and_then(|v| v.as_str()) {
+                    journal_uuid = uuid_val.to_string();
+                }
+                if let Some(sealed_val) = json.get("sealed").and_then(|v| v.as_bool()) {
+                    is_sealed = sealed_val;
+                    if is_sealed {
+                        if let Some(pk_str) = json.get("operator_pubkey").and_then(|v| v.as_str()) {
+                            if let Ok(pk_bytes) = hex::decode(pk_str) {
+                                if let Ok(arr) = pk_bytes.as_slice().try_into() {
+                                    verifier_key = VerifyingKey::from_bytes(arr).ok();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             let rec_type = json
                 .get("type")
@@ -138,7 +174,7 @@ impl JournalOracle {
             record_idx += 1;
         }
 
-        // Validate FSM Grammar v3 (§6)
+        // Validate FSM Grammar v3
         Self::validate_grammar_v3(&sequence)?;
 
         let discarded = file_len.saturating_sub(last_valid_offset);
@@ -155,6 +191,8 @@ impl JournalOracle {
             last_failed_record: last_failed,
             frontier_before_last_resume: frontier_before_resume,
             discarded_tail_bytes: discarded,
+            uuid: journal_uuid,
+            sealed: is_sealed,
         })
     }
 

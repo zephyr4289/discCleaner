@@ -3,9 +3,12 @@ use crate::identity::DeviceIdentity;
 use crate::pattern::PatternDescriptor;
 use crate::plan::SanitizationPlan;
 use crate::tool::ToolBuild;
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::FileTypeExt;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 pub const JOURNAL_MAGIC: &[u8; 4] = b"DCJ1";
@@ -23,6 +26,9 @@ pub struct EngineTuning {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JournalRecord {
     Header {
+        uuid: String,
+        sealed: bool,
+        operator_pubkey: Option<String>,
         plan: SanitizationPlan,
         plan_hash: String,
         identity: DeviceIdentity,
@@ -95,6 +101,8 @@ pub struct JournalChainSummary {
     pub chain_head: String,
     pub record_count: u64,
     pub discarded_tail_bytes: u64,
+    pub uuid: String,
+    pub sealed: bool,
 }
 
 pub struct JournalWriter {
@@ -102,10 +110,17 @@ pub struct JournalWriter {
     path: PathBuf,
     prev_hash: [u8; 32],
     record_count: u64,
+    signing_key: Option<SigningKey>,
+    uuid: String,
+    sealed: bool,
 }
 
 impl JournalWriter {
-    pub fn create(path: &Path, header: JournalRecord) -> Result<Self, DcError> {
+    pub fn create(
+        path: &Path,
+        header: JournalRecord,
+        signing_key: Option<SigningKey>,
+    ) -> Result<Self, DcError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -117,6 +132,21 @@ impl JournalWriter {
             .truncate(true)
             .open(path)?;
 
+        // Exclusive non-blocking flock on journal file (Δ43)
+        unsafe {
+            if libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 {
+                return Err(DcError::Usage(format!(
+                    "JOURNAL_BUSY: Journal file '{}' is locked by another process",
+                    path.display()
+                )));
+            }
+        }
+
+        let (uuid, sealed) = match &header {
+            JournalRecord::Header { uuid, sealed, .. } => (uuid.clone(), *sealed),
+            _ => ("".to_string(), false),
+        };
+
         // Write Magic DCJ1
         file.write_all(JOURNAL_MAGIC)?;
         file.flush()?;
@@ -126,6 +156,9 @@ impl JournalWriter {
             path: path.to_path_buf(),
             prev_hash: [0u8; 32],
             record_count: 0,
+            signing_key,
+            uuid,
+            sealed,
         };
 
         writer.append(&header)?;
@@ -137,21 +170,33 @@ impl JournalWriter {
         chain_head_hex: &str,
         record_count: u64,
         truncate_offset: Option<u64>,
+        signing_key: Option<SigningKey>,
+        uuid: String,
+        sealed: bool,
     ) -> Result<Self, DcError> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)?;
 
+        // Exclusive non-blocking flock on journal file (Δ43)
+        unsafe {
+            if libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 {
+                return Err(DcError::Usage(format!(
+                    "JOURNAL_BUSY: Journal file '{}' is locked by another process",
+                    path.display()
+                )));
+            }
+        }
+
         if let Some(trunc_len) = truncate_offset {
             file.set_len(trunc_len)?;
         }
 
-        let hash_bytes = hex::decode(chain_head_hex)
-            .map_err(|e| DcError::JournalCorrupt {
-                record_index: record_count,
-                reason: format!("Invalid chain head hex: {}", e),
-            })?;
+        let hash_bytes = hex::decode(chain_head_hex).map_err(|e| DcError::JournalCorrupt {
+            record_index: record_count,
+            reason: format!("Invalid chain head hex: {}", e),
+        })?;
 
         if hash_bytes.len() != 32 {
             return Err(DcError::JournalCorrupt {
@@ -173,6 +218,9 @@ impl JournalWriter {
             path: path.to_path_buf(),
             prev_hash,
             record_count,
+            signing_key,
+            uuid,
+            sealed,
         })
     }
 
@@ -190,6 +238,15 @@ impl JournalWriter {
         self.file.write_all(&len.to_le_bytes())?;
         self.file.write_all(&record_bytes)?;
         self.file.write_all(record_hash.as_bytes())?;
+
+        // Sealed journal: append 64-byte Ed25519 signature over (record_bytes || prev_hash) (Δ39)
+        if let Some(ref sk) = self.signing_key {
+            let mut msg = Vec::with_capacity(record_bytes.len() + 32);
+            msg.extend_from_slice(&record_bytes);
+            msg.extend_from_slice(&self.prev_hash);
+            let sig = sk.sign(&msg);
+            self.file.write_all(&sig.to_bytes())?;
+        }
 
         self.file.flush()?;
         self.file.sync_data()?;
@@ -221,6 +278,8 @@ impl JournalWriter {
             chain_head: self.current_chain_head(),
             record_count: self.record_count,
             discarded_tail_bytes: 0,
+            uuid: self.uuid.clone(),
+            sealed: self.sealed,
         }
     }
 }
@@ -231,8 +290,17 @@ impl JournalReader {
     pub fn read_and_verify_chain(
         path: &Path,
     ) -> Result<(Vec<JournalRecord>, JournalChainSummary), DcError> {
+        // Path safety check: S_ISREG (Δ44)
+        let meta = std::fs::symlink_metadata(path)?;
+        if !meta.file_type().is_file() {
+            return Err(DcError::Usage(format!(
+                "Invalid journal path: '{}' is not a regular file",
+                path.display()
+            )));
+        }
+
         let mut file = File::open(path)?;
-        let file_len = file.metadata()?.len();
+        let file_len = meta.len();
 
         let mut magic = [0u8; 4];
         if file.read_exact(&mut magic).is_err() || &magic != JOURNAL_MAGIC {
@@ -246,6 +314,9 @@ impl JournalReader {
         let mut records = Vec::new();
         let mut record_idx = 0;
         let mut last_valid_offset = 4u64;
+        let mut is_sealed = false;
+        let mut verifier_key: Option<VerifyingKey> = None;
+        let mut journal_uuid = String::new();
 
         loop {
             let mut len_buf = [0u8; 4];
@@ -258,43 +329,40 @@ impl JournalReader {
             }
 
             let len = u32::from_le_bytes(len_buf) as usize;
-            if len > 64 * 1024 * 1024 {
-                // Check if this is a torn final record at EOF
-                let curr_pos = file.stream_position().unwrap_or(last_valid_offset);
-                if curr_pos + len as u64 > file_len {
-                    // Torn final record: break and discard
-                    break;
-                }
-                return Err(DcError::JournalCorrupt {
-                    record_index: record_idx,
-                    reason: format!("Unreasonable record length: {} bytes", len),
-                });
+            let curr_pos = file.stream_position().unwrap_or(last_valid_offset);
+
+            // Bounded allocation check before reading body (Δ38, Δ79 DoS guard)
+            let needed = len as u64 + 32 + if is_sealed { 64 } else { 0 };
+            if curr_pos + needed > file_len {
+                // Potential torn tail at EOF
+                break;
             }
 
             let mut record_bytes = vec![0u8; len];
             if file.read_exact(&mut record_bytes).is_err() {
-                // Incomplete final record body -> torn tail at EOF
                 break;
             }
 
             let mut expected_hash = [0u8; 32];
             if file.read_exact(&mut expected_hash).is_err() {
-                // Incomplete final record hash -> torn tail at EOF
                 break;
             }
 
+            // If sealed, read 64-byte signature
+            let mut stored_sig = [0u8; 64];
+            if is_sealed {
+                if file.read_exact(&mut stored_sig).is_err() {
+                    break;
+                }
+            }
+
+            // Layer 1: BLAKE3 Self-Hash and Linkage
             let mut hasher = blake3::Hasher::new();
             hasher.update(&record_bytes);
             hasher.update(&prev_hash);
             let calculated_hash = hasher.finalize();
 
             if calculated_hash.as_bytes() != &expected_hash {
-                // If this is at the very end of the file, it could be a torn tail, but if not, corruption
-                let curr_pos = file.stream_position().unwrap_or(last_valid_offset);
-                if curr_pos >= file_len {
-                    // Torn tail hash
-                    break;
-                }
                 return Err(DcError::JournalCorrupt {
                     record_index: record_idx,
                     reason: format!(
@@ -305,20 +373,58 @@ impl JournalReader {
                 });
             }
 
+            // Layer 3: Sealed signature verification (Δ39)
+            if is_sealed {
+                if let Some(ref vk) = verifier_key {
+                    let mut msg = Vec::with_capacity(record_bytes.len() + 32);
+                    msg.extend_from_slice(&record_bytes);
+                    msg.extend_from_slice(&prev_hash);
+                    let sig = Signature::from_bytes(&stored_sig);
+                    if vk.verify(&msg, &sig).is_err() {
+                        return Err(DcError::JournalCorrupt {
+                            record_index: record_idx,
+                            reason: format!(
+                                "Sealed record #{} digital signature verification FAILED",
+                                record_idx
+                            ),
+                        });
+                    }
+                }
+            }
+
             let record: Result<JournalRecord, _> = serde_json::from_slice(&record_bytes);
             let valid_record = match record {
                 Ok(r) => r,
                 Err(e) => {
-                    let curr_pos = file.stream_position().unwrap_or(last_valid_offset);
-                    if curr_pos >= file_len {
-                        break;
-                    }
                     return Err(DcError::JournalCorrupt {
                         record_index: record_idx,
                         reason: format!("Failed to deserialize record JSON: {}", e),
                     });
                 }
             };
+
+            // Inspect Header on record 0 to determine sealed status and verifier key
+            if record_idx == 0 {
+                if let JournalRecord::Header {
+                    uuid,
+                    sealed,
+                    operator_pubkey,
+                    ..
+                } = &valid_record
+                {
+                    journal_uuid = uuid.clone();
+                    is_sealed = *sealed;
+                    if is_sealed {
+                        if let Some(pk_hex) = operator_pubkey {
+                            if let Ok(pk_bytes) = hex::decode(pk_hex) {
+                                if let Ok(arr) = pk_bytes.as_slice().try_into() {
+                                    verifier_key = VerifyingKey::from_bytes(arr).ok();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             records.push(valid_record);
             prev_hash = expected_hash;
@@ -333,6 +439,8 @@ impl JournalReader {
             chain_head: hex::encode(prev_hash),
             record_count: records.len() as u64,
             discarded_tail_bytes: discarded,
+            uuid: journal_uuid,
+            sealed: is_sealed,
         };
 
         Ok((records, summary))
@@ -349,6 +457,8 @@ pub fn check_crash_hook(record: &JournalRecord) {
         static COMMIT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
         let should_kill = match (event, record) {
+            ("header-write", JournalRecord::Header { .. }) => true,
+            ("armed-write", JournalRecord::Armed { .. }) => true,
             ("beginpass-write", JournalRecord::BeginPass { .. }) => true,
             ("endpass-write", JournalRecord::EndPass { .. }) => true,
             ("flushed-write", JournalRecord::Flushed { .. }) => true,

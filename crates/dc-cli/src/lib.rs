@@ -560,7 +560,19 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         EngineChoice::Sync => "sync",
     };
 
+    // 5. Setup Operator Key
+    let keypair = match &args.key {
+        Some(k) => OperatorKeyPair::load_from_file(k)?,
+        None => OperatorKeyPair::generate(),
+    };
+
+    let is_sealed = args.key.is_some();
+    let journal_uuid = format!("dcj-{}", timestamp_str.replace(':', "").replace('-', "").replace('T', "").replace('Z', ""));
+
     let header_record = JournalRecord::Header {
+        uuid: journal_uuid.clone(),
+        sealed: is_sealed,
+        operator_pubkey: if is_sealed { Some(keypair.public_key_hex()) } else { None },
         plan: plan.clone(),
         plan_hash: plan_hash.clone(),
         identity: identity.clone(),
@@ -591,18 +603,18 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         overrides.push("allow-inactive-signatures".to_string());
     }
 
-    let mut journal = JournalWriter::create(&journal_path, header_record)?;
+    let signing_key = if is_sealed {
+        Some(keypair.signing_key.clone())
+    } else {
+        None
+    };
+
+    let mut journal = JournalWriter::create(&journal_path, header_record, signing_key)?;
     journal.append(&JournalRecord::Armed {
         overrides,
         locks_held: vec![format!("{}:{}", identity.kernel.major, identity.kernel.minor)],
         at: chrono_now_iso(),
     })?;
-
-    // 6. Setup Operator Key
-    let keypair = match &args.key {
-        Some(k) => OperatorKeyPair::load_from_file(k)?,
-        None => OperatorKeyPair::generate(),
-    };
 
     // 7. Engine Execution Loop
     let span = LbaSpan::new(
@@ -989,6 +1001,37 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
     fsm.approve_plan()?;
     fsm.arm()?;
 
+    // Setup and validate operator key for sealed journals (Δ39)
+    let keypair = match &args.key {
+        Some(k) => OperatorKeyPair::load_from_file(k)?,
+        None => {
+            if summary.sealed {
+                return Err(DcError::Usage(
+                    "This journal is SEALED with digital signatures. You must provide '--key <OPERATOR_KEY>' to resume.".to_string()
+                ));
+            }
+            OperatorKeyPair::generate()
+        }
+    };
+
+    if summary.sealed {
+        if let Some(JournalRecord::Header { operator_pubkey: Some(ref expected_pk), .. }) = records.first() {
+            if &keypair.public_key_hex() != expected_pk {
+                return Err(DcError::CertSigning(format!(
+                    "Key mismatch for sealed journal! Expected key: {}, Provided: {}",
+                    expected_pk,
+                    keypair.public_key_hex()
+                )));
+            }
+        }
+    }
+
+    let signing_key = if summary.sealed {
+        Some(keypair.signing_key.clone())
+    } else {
+        None
+    };
+
     let mut journal = JournalWriter::resume_from_chain(
         &args.journal,
         &summary.chain_head,
@@ -998,6 +1041,9 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         } else {
             None
         },
+        signing_key,
+        summary.uuid.clone(),
+        summary.sealed,
     )?;
 
     journal.append(&JournalRecord::Armed {
@@ -1019,11 +1065,6 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         discarded_tail_bytes: summary.discarded_tail_bytes,
         at: chrono_now_iso(),
     })?;
-
-    let keypair = match &args.key {
-        Some(k) => OperatorKeyPair::load_from_file(k)?,
-        None => OperatorKeyPair::generate(),
-    };
 
     let span = LbaSpan::new(
         identity.stable.size_bytes,
