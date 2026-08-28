@@ -13,8 +13,8 @@ pub mod tool;
 pub use audit::{AuditLogger, AuditOutcome, AuditRecord};
 pub use error::{DcError, GuardianRefusal};
 pub use fleet::{
-    AssignmentRow, BatchManifest, BatchReconstructor, ChildJournalState, FleetJobOutcome,
-    FleetJobRecord, FleetReport,
+    AdvisoryResolution, ArgvConstructor, AssignmentRow, BatchManifest, BatchReconstructor,
+    ChildJournalState, FleetJobOutcome, FleetJobRecord, FleetReport, IdentityResolver, SpawnContext,
 };
 pub use fsm::{FsmOrchestrator, FsmState, WritePermit};
 pub use identity::{BusType, DeviceIdentity, KernelIdentity, StableIdentity};
