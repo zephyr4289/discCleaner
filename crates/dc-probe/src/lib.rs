@@ -1,3 +1,4 @@
+pub mod bootfacts;
 pub mod classify;
 pub mod graph;
 pub mod guardian;
@@ -6,6 +7,7 @@ pub mod inventory;
 pub mod layer_stack;
 pub mod sniff;
 
+pub use bootfacts::{BootAttestation, BootAttestor, ReadOnlyCandidate};
 pub use classify::{classify_pure, BlockTree, DeviceNode};
 pub use graph::{BlockGraph, DangerHop, DangerPath, WalkOutcome};
 pub use guardian::{Guardian, GuardianFlags, GuardianLockHandle};
