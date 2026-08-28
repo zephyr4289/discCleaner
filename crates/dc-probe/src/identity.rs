@@ -11,6 +11,38 @@ pub enum IdentityComparison {
 pub struct IdentityComparator;
 
 impl IdentityComparator {
+    /// Derive the most specific confirmation token according to the Δ250 precedence rule:
+    /// NGUID > EUI64 > serial + nsid > kernel_name
+    pub fn derive_confirmation_token(
+        nguid: Option<&str>,
+        eui64: Option<&str>,
+        serial: Option<&str>,
+        nsid: Option<u32>,
+        kernel_name: &str,
+    ) -> String {
+        if let Some(ng) = nguid {
+            if !ng.is_empty() {
+                return format!("nguid:{}", ng);
+            }
+        }
+        if let Some(eui) = eui64 {
+            if !eui.is_empty() {
+                return format!("eui64:{}", eui);
+            }
+        }
+        if let (Some(sn), Some(ns)) = (serial, nsid) {
+            if !sn.is_empty() {
+                return format!("{}:n{}", sn, ns);
+            }
+        }
+        if let Some(sn) = serial {
+            if !sn.is_empty() {
+                return sn.to_string();
+            }
+        }
+        kernel_name.to_string()
+    }
+
     /// Compare observed runtime target identity against stored journal/cert plan identity (Δ46).
     pub fn compare(expected: &StableIdentity, observed: &StableIdentity) -> IdentityComparison {
         // 1. Strict size check

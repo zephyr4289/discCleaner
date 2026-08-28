@@ -6,7 +6,8 @@ pub mod tables;
 
 pub use ata_codec::{AtaCodec, AtaIdentifyData, AtaSecurityStatus};
 pub use nvme_codec::{
-    NvmeCodec, NvmeSanitizeAction, NvmeSanitizeStatus, NvmeSecureEraseSetting,
+    NvmeCodec, NvmeHealthLog, NvmeIdentifyController, NvmeIdentifyNamespace, NvmeSanitizeAction,
+    NvmeSanitizeStatus, NvmeSecureEraseSetting,
 };
 pub use raw::RawBlob;
 pub use scsi_codec::{ScsiCodec, ScsiSanitizeServiceAction, ScsiSenseData};
