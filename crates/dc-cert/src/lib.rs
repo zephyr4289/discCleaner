@@ -1,4 +1,6 @@
 pub mod cert;
+pub mod keystore;
+pub mod package;
 pub mod project;
 pub mod project2;
 pub mod schema2;
@@ -9,6 +11,8 @@ pub use cert::{
     InterruptionRecord, OperatorDetails, SanitizationCertificate, SignatureDetails,
     UnsignedCertificate, VERIFICATION_SCHEME_DOC,
 };
+pub use keystore::{KeyStoreRegistry, SigningKeySourceKind, SigningSiteId};
+pub use package::{EvidencePackageManifest, PackageArtifact, PackageVerifier};
 pub use project::CertificateProjector;
 pub use project2::Cert2Projector;
 pub use schema2::Cert2Document;
