@@ -11,6 +11,7 @@ members = [
     "crates/dc-hw",
     "crates/dc-nvme",
     "crates/dc-ata",
+    "crates/dc-scsi",
 ]
 
 [workspace.dependencies]
@@ -22,6 +23,7 @@ dc-cert = { path = "crates/dc-cert" }
 dc-hw = { path = "crates/dc-hw" }
 dc-nvme = { path = "crates/dc-nvme" }
 dc-ata = { path = "crates/dc-ata" }
+dc-scsi = { path = "crates/dc-scsi" }
 dc-testkit = { path = "crates/dc-testkit" }
 
 # System & I/O
