@@ -47,6 +47,9 @@ pub enum DcError {
     #[error("Certificate signing error: {0}")]
     CertSigning(String),
 
+    #[error("Certificate invalid or verification failed: {0}")]
+    CertInvalid(String),
+
     #[error("Usage error: {0}")]
     Usage(String),
 
@@ -71,6 +74,7 @@ impl DcError {
             Self::IdentityDrift { .. } => 7,
             Self::Usage(_) => 8,
             Self::OperatorAbort => 8,
+            Self::CertInvalid(_) => 10,
             _ => 1,
         }
     }

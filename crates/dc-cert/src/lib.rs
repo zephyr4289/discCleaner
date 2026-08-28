@@ -2,8 +2,9 @@ pub mod cert;
 pub mod signer;
 
 pub use cert::{
-    ExecutionDetails, ExecutionPassReport, FailureRecord, InterruptionRecord, OperatorDetails,
-    SanitizationCertificate, SignatureDetails, UnsignedCertificate, VERIFICATION_SCHEME_DOC,
+    CertVerificationResult, ExecutionDetails, ExecutionPassReport, FailureRecord,
+    InterruptionRecord, OperatorDetails, SanitizationCertificate, SignatureDetails,
+    UnsignedCertificate, VERIFICATION_SCHEME_DOC,
 };
 pub use signer::{verify_canonical_signature, OperatorKeyPair};
 
@@ -27,6 +28,8 @@ mod tests {
                 wwn: None,
                 size_bytes: 10 * 1024 * 1024 * 1024,
                 bus: BusType::Nvme,
+                dm_name: None,
+                dm_uuid: None,
             },
             kernel: KernelIdentity { major: 259, minor: 0 },
             kernel_name: "nvme0n1".to_string(),
@@ -53,7 +56,7 @@ mod tests {
                     pattern: "Zero".to_string(),
                     fast_path_used: true,
                     windows_written: 5000,
-                    throughput_mib_s: 3500.0,
+                    throughput_kib_s: 3500000,
                 }],
             },
             VerificationReport {
@@ -69,6 +72,9 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/test.dcj"),
                 chain_head: "0123456789abcdef".to_string(),
                 record_count: 5,
+                discarded_tail_bytes: 0,
+                uuid: "test-uuid".to_string(),
+                sealed: false,
             },
             keypair.public_key_hex(),
             keypair.key_fingerprint_blake3(),

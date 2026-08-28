@@ -232,8 +232,22 @@ pub struct CertArgs {
 pub enum CertSubcommands {
     /// Display certificate details
     Show { file: PathBuf },
-    /// Cryptographically verify certificate digital signature
-    Verify { file: PathBuf },
+    /// Cryptographically verify certificate digital signature and authenticity
+    Verify {
+        file: PathBuf,
+        /// Expected operator key fingerprint in hex (BLAKE3 of public key)
+        #[arg(long)]
+        fingerprint: Option<String>,
+        /// Path to trusted public keys list file
+        #[arg(long)]
+        trusted_keys: Option<PathBuf>,
+        /// Require verification to be anchored to a trusted fingerprint or key [Spec Delta Δ63]
+        #[arg(long)]
+        require_anchor: bool,
+        /// Reconcile against corresponding .dcj journal file [Spec Delta Δ40]
+        #[arg(long)]
+        journal: Option<PathBuf>,
+    },
     /// Reconstruct a lost certificate from a Completed journal [Spec Delta Δ21]
     Reconstruct {
         #[arg(short, long)]
@@ -1312,17 +1326,66 @@ fn cmd_cert(args: CertArgs) -> Result<(), DcError> {
             println!("{}", cert.render_summary());
             Ok(())
         }
-        CertSubcommands::Verify { file } => {
-            let content = std::fs::read_to_string(&file)?;
-            let cert: SanitizationCertificate = serde_json::from_str(&content)?;
-            let is_valid = cert.verify_signature()?;
-            if is_valid {
-                println!("[+] Certificate signature is VALID (Signed by: {})", cert.operator.public_key_ed25519);
-                Ok(())
+        CertSubcommands::Verify {
+            file,
+            fingerprint,
+            trusted_keys,
+            require_anchor,
+            journal,
+        } => {
+            let raw_bytes = std::fs::read(&file)?;
+
+            let trusted_list: Option<Vec<String>> = if let Some(ref tk_path) = trusted_keys {
+                let content = std::fs::read_to_string(tk_path)?;
+                Some(content.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
             } else {
-                eprintln!("[-] Certificate signature is INVALID or tampered!");
-                Err(DcError::CertSigning("Signature check failed".to_string()))
+                None
+            };
+
+            let res = SanitizationCertificate::verify_raw_cert_file(
+                &raw_bytes,
+                fingerprint.as_deref(),
+                trusted_list.as_deref(),
+            );
+
+            // Deterministic transcript (§5 / Δ69)
+            println!("file_blake3: {}", res.file_blake3);
+            println!("mode:        {}", res.mode);
+
+            if !res.is_valid {
+                let err_msg = res.error_detail.unwrap_or_else(|| "Signature or format invalid".to_string());
+                eprintln!("verdict:     INVALID ({})", err_msg);
+                return Err(DcError::CertInvalid(err_msg));
             }
+
+            if require_anchor && !res.is_authenticated {
+                eprintln!("verdict:     ANCHOR_REQUIRED (Certificate signature is valid but unauthenticated)");
+                return Err(DcError::CertInvalid("ANCHOR_REQUIRED: Verification must be anchored".to_string()));
+            }
+
+            // Journal Reconciliation (§5 / Δ40 / F6)
+            if let Some(ref j_path) = journal {
+                let (records, j_summary) = JournalReader::read_and_verify_chain(j_path)?;
+                let cert: SanitizationCertificate = serde_json::from_slice(&raw_bytes)?;
+
+                if cert.journal.chain_head != j_summary.chain_head {
+                    eprintln!("verdict:     RECONCILE_FAILED (Chain head mismatch with journal)");
+                    return Err(DcError::CertInvalid(format!(
+                        "Journal chain_head mismatch! Cert: {}, Journal: {}",
+                        cert.journal.chain_head, j_summary.chain_head
+                    )));
+                }
+
+                if cert.journal.uuid != j_summary.uuid {
+                    eprintln!("verdict:     RECONCILE_FAILED (Journal UUID mismatch)");
+                    return Err(DcError::CertInvalid("Journal UUID mismatch".to_string()));
+                }
+
+                println!("journal:     RECONCILED ({})", j_path.display());
+            }
+
+            println!("verdict:     VALID ({})", if res.is_authenticated { "AUTHENTICATED" } else { "INTEGRITY-ONLY" });
+            Ok(())
         }
         CertSubcommands::Reconstruct { journal, key, out_dir } => {
             cmd_cert_reconstruct(&journal, key.as_deref(), &out_dir)
