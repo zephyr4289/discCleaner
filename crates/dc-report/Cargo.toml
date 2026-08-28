@@ -1,0 +1,11 @@
+[package]
+name = "dc-report"
+version = "0.2.2"
+edition = "2021"
+
+[dependencies]
+dc-core = { workspace = true }
+dc-cert = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { workspace = true }

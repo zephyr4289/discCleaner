@@ -24,6 +24,7 @@ dc-scsi = { workspace = true }
 dc-mmc = { workspace = true }
 dc-opal = { workspace = true }
 dc-tui = { workspace = true }
+dc-report = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
 tracing = { workspace = true }

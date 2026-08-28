@@ -15,6 +15,7 @@ members = [
     "crates/dc-mmc",
     "crates/dc-opal",
     "crates/dc-tui",
+    "crates/dc-report",
 ]
 
 [workspace.dependencies]
@@ -30,6 +31,7 @@ dc-scsi = { path = "crates/dc-scsi" }
 dc-mmc = { path = "crates/dc-mmc" }
 dc-opal = { path = "crates/dc-opal" }
 dc-tui = { path = "crates/dc-tui" }
+dc-report = { path = "crates/dc-report" }
 dc-testkit = { path = "crates/dc-testkit" }
 
 # System & I/O
