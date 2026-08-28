@@ -1,2 +1,7 @@
 /target
 Cargo.lock
+docs/
+*.dcj
+audit-chain.log
+*.cert.json
+*.key
