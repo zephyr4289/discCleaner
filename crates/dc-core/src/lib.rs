@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod error;
+pub mod fleet;
 pub mod fsm;
 pub mod identity;
 pub mod journal;
@@ -11,6 +12,10 @@ pub mod tool;
 
 pub use audit::{AuditLogger, AuditOutcome, AuditRecord};
 pub use error::{DcError, GuardianRefusal};
+pub use fleet::{
+    AssignmentRow, BatchManifest, BatchReconstructor, ChildJournalState, FleetJobOutcome,
+    FleetJobRecord, FleetReport,
+};
 pub use fsm::{FsmOrchestrator, FsmState, WritePermit};
 pub use identity::{BusType, DeviceIdentity, KernelIdentity, StableIdentity};
 pub use journal::{
