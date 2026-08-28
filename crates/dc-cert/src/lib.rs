@@ -1,4 +1,6 @@
 pub mod cert;
+pub mod dualauth;
+pub mod keyring;
 pub mod keystore;
 pub mod package;
 pub mod project;
@@ -11,6 +13,8 @@ pub use cert::{
     InterruptionRecord, OperatorDetails, SanitizationCertificate, SignatureDetails,
     UnsignedCertificate, VERIFICATION_SCHEME_DOC,
 };
+pub use dualauth::{AuthSignatureEntry, AuthorizationSet, CustodyType};
+pub use keyring::{KeyringEntry, KeyringRegistry};
 pub use keystore::{KeyStoreRegistry, SigningKeySourceKind, SigningSiteId};
 pub use package::{EvidencePackageManifest, PackageArtifact, PackageVerifier};
 pub use project::CertificateProjector;
