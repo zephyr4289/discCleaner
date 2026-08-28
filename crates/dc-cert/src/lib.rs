@@ -1,4 +1,5 @@
 pub mod cert;
+pub mod project;
 pub mod signer;
 
 pub use cert::{
@@ -6,6 +7,7 @@ pub use cert::{
     InterruptionRecord, OperatorDetails, SanitizationCertificate, SignatureDetails,
     UnsignedCertificate, VERIFICATION_SCHEME_DOC,
 };
+pub use project::CertificateProjector;
 pub use signer::{verify_canonical_signature, OperatorKeyPair};
 
 #[cfg(test)]

@@ -99,4 +99,42 @@ impl AuditLogger {
         self.prev_hash = *record_hash.as_bytes();
         Ok(hex::encode(self.prev_hash))
     }
+
+    pub fn verify_audit_file(path: &Path) -> Result<(usize, String), DcError> {
+        let mut file = File::open(path)?;
+        let mut magic = [0u8; 4];
+        file.read_exact(&mut magic)?;
+        if &magic != b"DCA1" {
+            return Err(DcError::Usage("Invalid audit log magic (expected DCA1)".to_string()));
+        }
+
+        let mut prev_hash = [0u8; 32];
+        let h = blake3::hash(b"DCA1");
+        prev_hash.copy_from_slice(h.as_bytes());
+
+        let mut count = 0;
+        loop {
+            let mut len_buf = [0u8; 4];
+            if file.read_exact(&mut len_buf).is_err() {
+                break;
+            }
+            let len = u32::from_le_bytes(len_buf) as usize;
+            let mut rec = vec![0u8; len];
+            file.read_exact(&mut rec)?;
+            let mut hash = [0u8; 32];
+            file.read_exact(&mut hash)?;
+
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&rec);
+            hasher.update(&prev_hash);
+            let expected = hasher.finalize();
+            if hash != *expected.as_bytes() {
+                return Err(DcError::Usage(format!("Audit chain mismatch at record {}", count)));
+            }
+            prev_hash = hash;
+            count += 1;
+        }
+
+        Ok((count, hex::encode(prev_hash)))
+    }
 }
