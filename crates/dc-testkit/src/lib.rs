@@ -1,3 +1,4 @@
+pub mod adoption;
 pub mod artifacts;
 pub mod audit_oracle;
 pub mod cert_oracle;
@@ -28,6 +29,7 @@ pub mod ptrace_kill;
 pub mod pty;
 pub mod rebind;
 pub mod recipe;
+pub mod sanitize_mock;
 pub mod scale_oracle;
 pub mod sentinel;
 pub mod sigcraft;
@@ -38,6 +40,7 @@ pub mod udevdb;
 pub mod uevfire;
 pub mod watchdog;
 
+pub use adoption::{AdoptionArbiter, AdoptionDecision};
 pub use artifacts::ArtifactsDumper;
 pub use audit_oracle::AuditOracle;
 pub use cert_oracle::{CertOracle, CertOracleReport};
@@ -68,6 +71,7 @@ pub use ptrace_kill::PtraceKiller;
 pub use pty::PtyRunner;
 pub use rebind::RebindChoreographer;
 pub use recipe::{RecipeExtractor, ReproductionRecipe};
+pub use sanitize_mock::{MockLogFeed, SanitizeStatusSource};
 pub use scale_oracle::ScaleOracle;
 pub use sentinel::{MediaOracleResult, SentinelManager, SENTINEL_BYTE};
 pub use sigcraft::SigCraft;
