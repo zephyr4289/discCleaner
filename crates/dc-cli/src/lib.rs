@@ -56,6 +56,9 @@ pub enum Commands {
     /// Inspect, cryptographically verify, or reconstruct a Certificate of Sanitization
     Cert(CertArgs),
 
+    /// Inspect, parse, and diagnose .dcj journal files [Spec Delta Δ92]
+    Journal(JournalArgs),
+
     /// Generate an Ed25519 operator signing keypair
     Keygen(KeygenArgs),
 }
@@ -264,6 +267,18 @@ pub enum CertSubcommands {
 }
 
 #[derive(Args, Debug)]
+pub struct JournalArgs {
+    #[command(subcommand)]
+    pub sub: JournalSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum JournalSubcommands {
+    /// Inspect, parse, and diagnose a .dcj journal file in a strictly read-only manner [Spec Delta Δ92]
+    Inspect { file: PathBuf },
+}
+
+#[derive(Args, Debug)]
 pub struct KeygenArgs {
     /// Output path for operator private keyfile
     #[arg(short, long, default_value = "operator.key")]
@@ -314,6 +329,10 @@ pub fn run(cli: Cli) -> Result<(), DcError> {
         }
         Commands::Cert(args) => {
             cmd_cert(args)?;
+            Ok(())
+        }
+        Commands::Journal(args) => {
+            cmd_journal(args)?;
             Ok(())
         }
         Commands::Keygen(args) => {
@@ -1576,6 +1595,49 @@ fn cmd_keygen(args: KeygenArgs) -> Result<(), DcError> {
     println!("    Private Key File:    {}", args.out.display());
     println!("    Public Key (hex):    {}", keypair.public_key_hex());
     println!("    Key Fingerprint:     {}", keypair.key_fingerprint_blake3());
+    Ok(())
+}
+
+fn cmd_journal(args: JournalArgs) -> Result<(), DcError> {
+    match args.sub {
+        JournalSubcommands::Inspect { file } => cmd_journal_inspect(&file),
+    }
+}
+
+fn cmd_journal_inspect(path: &Path) -> Result<(), DcError> {
+    let (records, summary) = JournalReader::read_and_verify_chain(path)?;
+
+    println!("================================================================================");
+    println!("                         JOURNAL INSPECTION REPORT");
+    println!("================================================================================");
+    println!("File:               {}", path.display());
+    println!("Verdict:            {}", if summary.discarded_tail_bytes > 0 { "TORN_TAIL (Recoverable Prefix)" } else { "VALID (Complete Chain)" });
+    println!("Record Count:       {}", summary.record_count);
+    println!("Chain Head:         {}", summary.chain_head);
+    println!("Discarded Tail:     {} bytes", summary.discarded_tail_bytes);
+    println!("Journal UUID:       {}", summary.uuid);
+    println!("Sealed (Signed):    {}", summary.sealed);
+
+    if let Some(first) = records.first() {
+        if let JournalRecord::Header { plan, identity, started_utc, .. } = first {
+            println!("Target Device:      {}", identity.dev_path);
+            println!("Target Model:       {}", identity.stable.model.as_deref().unwrap_or("-"));
+            println!("Target Serial:      {}", identity.stable.serial.as_deref().unwrap_or("-"));
+            println!("Started UTC:        {}", started_utc);
+            println!("Passes Planned:     {}", match &plan.mechanism { dc_core::Mechanism::LogicalOverwrite { passes } => passes.len() });
+        }
+    }
+
+    if let Some(last) = records.last() {
+        println!("Terminal State:     {}", match last {
+            JournalRecord::Completed { .. } => "Completed",
+            JournalRecord::Interrupted { .. } => "Interrupted",
+            JournalRecord::Failed { .. } => "Failed",
+            _ => "Incomplete",
+        });
+    }
+
+    println!("================================================================================");
     Ok(())
 }
 

@@ -451,6 +451,21 @@ impl JournalReader {
             last_good_offset = file.stream_position()?;
         }
 
+        if discarded_tail > 0 {
+            file.seek(SeekFrom::Start(last_good_offset))?;
+            let mut tail = vec![0u8; discarded_tail as usize];
+            let _ = file.read_exact(&mut tail);
+            if tail.len() >= 4 && tail.iter().all(|&b| b == 0) {
+                return Err(DcError::JournalCorrupt {
+                    record_index: record_idx,
+                    reason: format!(
+                        "JOURNAL_ZERO_TAIL: File ends in {} trailing zero bytes (power-loss signature)",
+                        discarded_tail
+                    ),
+                });
+            }
+        }
+
         let summary = JournalChainSummary {
             path: path.to_path_buf(),
             chain_head: hex::encode(prev_hash),
