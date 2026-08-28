@@ -1,0 +1,9 @@
+[package]
+name = "dc-tui"
+version = "0.2.2"
+edition = "2021"
+
+[dependencies]
+dc-core = { workspace = true }
+serde = { workspace = true }
+blake3 = { workspace = true }
