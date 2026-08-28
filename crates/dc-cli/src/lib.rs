@@ -213,13 +213,17 @@ pub struct ResumeArgs {
 
 #[derive(Args, Debug)]
 pub struct VerifyArgs {
-    /// Target device path to verify
+    /// Target device path (if omitted, extracted from journal/cert)
     #[arg(short, long)]
-    pub target: PathBuf,
+    pub target: Option<PathBuf>,
 
     /// Path to .cert.json certificate to verify against
     #[arg(short, long)]
-    pub cert: PathBuf,
+    pub cert: Option<PathBuf>,
+
+    /// Path to .dcj journal file to re-verify against [Spec Delta Δ75]
+    #[arg(long)]
+    pub journal: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -1306,16 +1310,74 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
 }
 
 fn cmd_verify_standalone(args: VerifyArgs) -> Result<(), DcError> {
-    let cert_content = std::fs::read_to_string(&args.cert)?;
-    let cert: SanitizationCertificate = serde_json::from_str(&cert_content)?;
+    if let Some(ref j_path) = args.journal {
+        println!("Re-verifying media directly from journal: {}", j_path.display());
+        let (records, _summary) = JournalReader::read_and_verify_chain(j_path)?;
+        let (plan, identity) = records.iter().find_map(|r| match r {
+            JournalRecord::Header { plan, identity, .. } => Some((plan.clone(), identity.clone())),
+            _ => None,
+        }).ok_or_else(|| DcError::JournalCorrupt {
+            record_index: 0,
+            reason: "Missing Header record in journal".to_string(),
+        })?;
 
-    println!("Validating certificate signature...");
-    if !cert.verify_signature()? {
-        return Err(DcError::CertSigning("Certificate digital signature is INVALID or corrupted!".to_string()));
+        let target_path = args.target.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or(identity.dev_path.clone());
+        let target_file = OpenOptions::new().read(true).open(&target_path)?;
+
+        let span = LbaSpan::new(
+            identity.stable.size_bytes,
+            identity.logical_block_size,
+            plan.window_bytes,
+        );
+
+        let passes = match &plan.mechanism {
+            dc_core::Mechanism::LogicalOverwrite { passes } => passes,
+        };
+        let last_pass = passes.last().ok_or_else(|| DcError::Usage("No passes in plan".to_string()))?;
+        let pat_source = create_pattern_source(&last_pass.pattern);
+
+        let mut verifier = StreamVerifier::new(
+            VerifyLevel::Full,
+            plan.window_bytes,
+            identity.logical_block_size,
+            false,
+            true,
+        );
+
+        let mut engine: Box<dyn dc_io::Engine> = create_engine(
+            target_file,
+            plan.window_bytes as usize,
+            false,
+            64,
+        );
+        engine.read_verify(pat_source.as_ref(), &span, &mut verifier, &mut |_| {})?;
+
+        let report = verifier.finalize();
+        if report.mismatch_count > 0 {
+            eprintln!("[-] Verification FAILED with {} mismatching windows!", report.mismatch_count);
+            return Err(DcError::VerificationFailed {
+                mismatches: report.mismatch_count,
+                sample: report.first_mismatch_lbas,
+            });
+        }
+
+        println!("[+] Verification SUCCESSFUL: Whole-media matches pattern bit-for-bit (BLAKE3: {})", report.stream_hash_blake3);
+        return Ok(());
     }
-    println!("Certificate signature is valid (Ed25519 signed).");
-    println!("Target: {}", args.target.display());
-    Ok(())
+
+    if let Some(ref cert_path) = args.cert {
+        let cert_content = std::fs::read_to_string(cert_path)?;
+        let cert: SanitizationCertificate = serde_json::from_str(&cert_content)?;
+
+        println!("Validating certificate signature...");
+        if !cert.verify_signature()? {
+            return Err(DcError::CertSigning("Certificate digital signature is INVALID or corrupted!".to_string()));
+        }
+        println!("Certificate signature is valid (Ed25519 signed).");
+        return Ok(());
+    }
+
+    Err(DcError::Usage("Must specify either --journal <PATH> or --cert <PATH> to verify".to_string()))
 }
 
 fn cmd_cert(args: CertArgs) -> Result<(), DcError> {
