@@ -187,7 +187,24 @@ impl JournalWriter {
             }
         }
 
+        let file_len = file.metadata()?.len();
         if let Some(trunc_len) = truncate_offset {
+            if file_len > trunc_len {
+                let mut tail_bytes = vec![0u8; (file_len - trunc_len) as usize];
+                file.seek(SeekFrom::Start(trunc_len))?;
+                file.read_exact(&mut tail_bytes)?;
+
+                // Append to .tailsave file (Δ112)
+                let tailsave_path = path.with_extension("tailsave");
+                let mut ts_file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&tailsave_path)?;
+                ts_file.write_all(&(tail_bytes.len() as u32).to_le_bytes())?;
+                ts_file.write_all(&tail_bytes)?;
+                ts_file.flush()?;
+                ts_file.sync_data()?;
+            }
             file.set_len(trunc_len)?;
         }
 
@@ -301,6 +318,13 @@ impl JournalReader {
         let mut file = File::open(path)?;
         let total_file_size = file.metadata()?.len();
 
+        if total_file_size > 64 * 1024 * 1024 {
+            return Err(DcError::JournalCorrupt {
+                record_index: 0,
+                reason: "FILE_TOO_LARGE: Journal file exceeds 64 MiB limit".to_string(),
+            });
+        }
+
         let mut magic = [0u8; 4];
         if let Err(e) = file.read_exact(&mut magic) {
             return Err(DcError::JournalCorrupt {
@@ -345,6 +369,12 @@ impl JournalReader {
             }
 
             let len = u32::from_le_bytes(len_buf) as usize;
+            if len == 0 {
+                return Err(DcError::JournalCorrupt {
+                    record_index: record_idx,
+                    reason: "ZERO_LEN_RECORD: Invalid record with length 0".to_string(),
+                });
+            }
 
             // Bounds check against remaining file size (Δ79)
             if (current_pos + 4 + len as u64 + 32) > total_file_size && !journal_sealed {

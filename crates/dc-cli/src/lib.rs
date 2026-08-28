@@ -276,6 +276,19 @@ pub struct JournalArgs {
 pub enum JournalSubcommands {
     /// Inspect, parse, and diagnose a .dcj journal file in a strictly read-only manner [Spec Delta Δ92]
     Inspect { file: PathBuf },
+
+    /// Generate format-authentic test journals for testing and verification [Spec Delta Δ119]
+    SelftestSequence {
+        /// Flavor to generate: clean | failed | interrupted | 2-epoch | dod3 | sealed
+        #[arg(long, default_value = "clean")]
+        flavor: String,
+        /// Output path for generated .dcj file
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Optional Ed25519 signing key for sealed flavor
+        #[arg(short, long)]
+        key: Option<PathBuf>,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -1601,7 +1614,151 @@ fn cmd_keygen(args: KeygenArgs) -> Result<(), DcError> {
 fn cmd_journal(args: JournalArgs) -> Result<(), DcError> {
     match args.sub {
         JournalSubcommands::Inspect { file } => cmd_journal_inspect(&file),
+        JournalSubcommands::SelftestSequence { flavor, out, key } => {
+            cmd_journal_selftest_sequence(&flavor, &out, key.as_deref())
+        }
     }
+}
+
+fn cmd_journal_selftest_sequence(flavor: &str, out: &Path, key_path: Option<&Path>) -> Result<(), DcError> {
+    let keypair = match key_path {
+        Some(k) => Some(OperatorKeyPair::load_from_file(k)?),
+        None => if flavor == "sealed" { Some(OperatorKeyPair::generate()) } else { None },
+    };
+
+    let identity = DeviceIdentity {
+        stable: StableIdentity {
+            model: Some("FormatAuthenticNVMe".to_string()),
+            serial: Some("SN-FORMAT-001".to_string()),
+            wwn: None,
+            size_bytes: 64 * 1024 * 1024,
+            bus: BusType::Nvme,
+            dm_name: None,
+            dm_uuid: None,
+        },
+        kernel: KernelIdentity { major: 259, minor: 0 },
+        kernel_name: "nvme0n1".to_string(),
+        dev_path: "/dev/nvme0n1".to_string(),
+        logical_block_size: 512,
+        physical_block_size: 4096,
+    };
+
+    let plan = if flavor == "dod3" {
+        SanitizationPlan::legacy_dod3(identity.stable.clone(), None, FastPathPolicy::PreferWriteZeroes)?
+    } else {
+        SanitizationPlan::clear_zero(identity.stable.clone(), FastPathPolicy::PreferWriteZeroes)
+    };
+
+    let plan_hash = plan.compute_plan_hash()?;
+    let is_sealed = keypair.is_some();
+    let signing_key = keypair.as_ref().map(|k| k.signing_key.clone());
+
+    let header = JournalRecord::Header {
+        uuid: "format-authentic-uuid-001".to_string(),
+        sealed: is_sealed,
+        operator_pubkey: keypair.as_ref().map(|k| k.public_key_hex()),
+        plan: plan.clone(),
+        plan_hash,
+        identity,
+        tool: ToolBuild::current(),
+        engine: "synthetic".to_string(),
+        tuning: EngineTuning {
+            qd: 64,
+            pool_mib: 128,
+            window_bytes: 2 * 1024 * 1024,
+            checkpoint_mib: 512,
+            checkpoint_ms: 5000,
+        },
+        argv_hash: "selftest".to_string(),
+        started_utc: chrono_now_iso(),
+    };
+
+    let mut writer = JournalWriter::create_new(out, "format-authentic-uuid-001".to_string(), signing_key)?;
+    writer.append(&header)?;
+    writer.append(&JournalRecord::Armed {
+        overrides: vec!["allow-loop".to_string()],
+        locks_held: vec!["259:0".to_string()],
+        at: chrono_now_iso(),
+    })?;
+
+    match flavor {
+        "clean" | "sealed" => {
+            writer.append(&JournalRecord::BeginPass {
+                pass: 0,
+                pattern: PatternDescriptor { name: "Zero".to_string(), pattern: Pattern::Zero, description: "Zero".to_string() },
+                window_bytes: 2 * 1024 * 1024,
+            })?;
+            writer.append(&JournalRecord::RangeCommit { pass: 0, first_window: 0, num_windows: 32 })?;
+            writer.append(&JournalRecord::EndPass { pass: 0 })?;
+            writer.append(&JournalRecord::Flushed { pass: 0 })?;
+            writer.append(&JournalRecord::Verify {
+                level: "Full".to_string(),
+                windows_checked: 32,
+                mismatch_count: 0,
+                first_mismatch_lbas: vec![],
+                stream_hash_blake3: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+                stream_hash_sha256: None,
+                fast_path_used: true,
+            })?;
+            writer.append(&JournalRecord::Completed { at: chrono_now_iso(), duration_mono_ms: 15000 })?;
+        }
+        "failed" => {
+            writer.append(&JournalRecord::BeginPass {
+                pass: 0,
+                pattern: PatternDescriptor { name: "Zero".to_string(), pattern: Pattern::Zero, description: "Zero".to_string() },
+                window_bytes: 2 * 1024 * 1024,
+            })?;
+            writer.append(&JournalRecord::RangeCommit { pass: 0, first_window: 0, num_windows: 16 })?;
+            writer.append(&JournalRecord::Failed {
+                code: "EIO".to_string(),
+                errno: Some(5),
+                op: Some("write".to_string()),
+                at_lba: Some(32768),
+                detail: "Synthetic I/O error".to_string(),
+            })?;
+        }
+        "interrupted" => {
+            writer.append(&JournalRecord::BeginPass {
+                pass: 0,
+                pattern: PatternDescriptor { name: "Zero".to_string(), pattern: Pattern::Zero, description: "Zero".to_string() },
+                window_bytes: 2 * 1024 * 1024,
+            })?;
+            writer.append(&JournalRecord::RangeCommit { pass: 0, first_window: 0, num_windows: 16 })?;
+            writer.append(&JournalRecord::Interrupted {
+                at: chrono_now_iso(),
+                hint: "Graceful drain".to_string(),
+                completed_through_pass: Some(0),
+                completed_through_window: Some(16),
+                signals_received: Some(1),
+            })?;
+        }
+        "dod3" => {
+            for p in 0..3 {
+                writer.append(&JournalRecord::BeginPass {
+                    pass: p,
+                    pattern: PatternDescriptor { name: format!("DoD Pass {}", p), pattern: Pattern::Zero, description: "DoD".to_string() },
+                    window_bytes: 2 * 1024 * 1024,
+                })?;
+                writer.append(&JournalRecord::RangeCommit { pass: p, first_window: 0, num_windows: 32 })?;
+                writer.append(&JournalRecord::EndPass { pass: p })?;
+                writer.append(&JournalRecord::Flushed { pass: p })?;
+            }
+            writer.append(&JournalRecord::Verify {
+                level: "Full".to_string(),
+                windows_checked: 32,
+                mismatch_count: 0,
+                first_mismatch_lbas: vec![],
+                stream_hash_blake3: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+                stream_hash_sha256: None,
+                fast_path_used: false,
+            })?;
+            writer.append(&JournalRecord::Completed { at: chrono_now_iso(), duration_mono_ms: 45000 })?;
+        }
+        _ => {}
+    }
+
+    println!("[+] Selftest sequence '{}' written to: {}", flavor, out.display());
+    Ok(())
 }
 
 fn cmd_journal_inspect(path: &Path) -> Result<(), DcError> {
