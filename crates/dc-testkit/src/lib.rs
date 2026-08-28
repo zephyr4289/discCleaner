@@ -8,6 +8,7 @@ pub mod fingerprint;
 pub mod janitor;
 pub mod journal_oracle;
 pub mod loopdev;
+pub mod ptrace_kill;
 pub mod sentinel;
 pub mod watchdog;
 
@@ -21,5 +22,6 @@ pub use fingerprint::EnvironmentFingerprint;
 pub use janitor::Janitor;
 pub use journal_oracle::{JournalOracle, JournalOracleReport};
 pub use loopdev::{LoopConfig, LoopDevice, LoopInfo64};
+pub use ptrace_kill::PtraceKiller;
 pub use sentinel::{MediaOracleResult, SentinelManager, SENTINEL_BYTE};
 pub use watchdog::JournalWatchdog;

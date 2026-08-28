@@ -5,9 +5,9 @@ use dc_cert::{
 };
 use dc_core::{
     create_pattern_source, AuditLogger, AuditOutcome, AuditRecord, BusType, DcError,
-    FastPathPolicy, FsmOrchestrator, GuardianRefusal, JournalChainSummary, JournalReader,
-    JournalRecord, JournalWriter, LbaSpan, Pass, Pattern, PatternDescriptor, SanitizationPlan,
-    ToolBuild, VerifyLevel, ZeroPattern,
+    EngineTuning, FastPathPolicy, FsmOrchestrator, GuardianRefusal, JournalChainSummary,
+    JournalReader, JournalRecord, JournalWriter, LbaSpan, Pass, Pattern, PatternDescriptor,
+    SanitizationPlan, ToolBuild, VerifyLevel, ZeroPattern,
 };
 use dc_io::{create_engine, SyncEngine, UringEngine};
 use dc_probe::{Guardian, GuardianFlags, InventoryScanner, LayerStackDetector};
@@ -50,7 +50,7 @@ pub enum Commands {
     /// Standalone verification of a wiped disk against a plan or certificate
     Verify(VerifyArgs),
 
-    /// Inspect and cryptographically verify a Certificate of Sanitization
+    /// Inspect, cryptographically verify, or reconstruct a Certificate of Sanitization
     Cert(CertArgs),
 
     /// Generate an Ed25519 operator signing keypair
@@ -100,6 +100,14 @@ pub struct ExecuteArgs {
     /// I/O Engine selection (auto, uring, sync) [Spec Delta Δ2]
     #[arg(long, value_enum, default_value_t = EngineChoice::Auto)]
     pub engine: EngineChoice,
+
+    /// Checkpoint size interval in MiB [Spec Delta Δ16]
+    #[arg(long, default_value_t = 512)]
+    pub checkpoint_mib: u64,
+
+    /// Checkpoint time interval in milliseconds [Spec Delta Δ16]
+    #[arg(long, default_value_t = 5000)]
+    pub checkpoint_ms: u64,
 
     /// Operator Ed25519 signing key path
     #[arg(short, long)]
@@ -184,6 +192,15 @@ pub enum CertSubcommands {
     Show { file: PathBuf },
     /// Cryptographically verify certificate digital signature
     Verify { file: PathBuf },
+    /// Reconstruct a lost certificate from a Completed journal [Spec Delta Δ21]
+    Reconstruct {
+        #[arg(short, long)]
+        journal: PathBuf,
+        #[arg(short, long)]
+        key: Option<PathBuf>,
+        #[arg(short, long, default_value = ".")]
+        out_dir: PathBuf,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -440,7 +457,7 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
     let lock_handle = Guardian::arm_and_lock(&args.target, &identity.stable)?;
     fsm.arm()?;
 
-    // 5. Initialize Hash-Chained Journal
+    // 5. Initialize Hash-Chained Journal [Spec Delta Δ16]
     let timestamp_str = chrono_now_iso();
     let journal_dir = args.journal_dir.as_ref().unwrap_or(&args.out_dir);
     let journal_filename = format!(
@@ -450,11 +467,25 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
     );
     let journal_path = journal_dir.join(&journal_filename);
 
+    let engine_name = match args.engine {
+        EngineChoice::Auto => "auto",
+        EngineChoice::Uring => "uring",
+        EngineChoice::Sync => "sync",
+    };
+
     let header_record = JournalRecord::Header {
         plan: plan.clone(),
         plan_hash: plan_hash.clone(),
         identity: identity.clone(),
         tool: ToolBuild::current(),
+        engine: engine_name.to_string(),
+        tuning: EngineTuning {
+            qd: 64,
+            pool_mib: 128,
+            window_bytes: plan.window_bytes,
+            checkpoint_mib: args.checkpoint_mib,
+            checkpoint_ms: args.checkpoint_ms,
+        },
         argv_hash: "cli-exec".to_string(),
         started_utc: timestamp_str.clone(),
     };
@@ -843,6 +874,14 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         }
     }
 
+    // If no explicit failure/interrupted record, record crash interruption
+    if records.last().map(|r| !matches!(r, JournalRecord::Failed { .. } | JournalRecord::Interrupted { .. })).unwrap_or(false) {
+        interruptions.push(InterruptionRecord {
+            at_utc: chrono_now_iso(),
+            resumed_utc: chrono_now_iso(),
+        });
+    }
+
     // Arm and Lock Hardware
     let lock_handle = Guardian::arm_and_lock(Path::new(&identity.dev_path), &identity.stable)?;
     let mut fsm = FsmOrchestrator::new();
@@ -850,7 +889,17 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
     fsm.approve_plan()?;
     fsm.arm()?;
 
-    let mut journal = JournalWriter::resume_from_chain(&args.journal, &summary.chain_head, summary.record_count)?;
+    let mut journal = JournalWriter::resume_from_chain(
+        &args.journal,
+        &summary.chain_head,
+        summary.record_count,
+        if summary.discarded_tail_bytes > 0 {
+            Some(args.journal.metadata()?.len() - summary.discarded_tail_bytes)
+        } else {
+            None
+        },
+    )?;
+
     journal.append(&JournalRecord::Armed {
         overrides: vec![],
         locks_held: vec![format!("{}:{}", identity.kernel.major, identity.kernel.minor)],
@@ -867,6 +916,7 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         phase: phase_str,
         from_pass: last_pass_idx,
         from_window: last_pass_committed_windows,
+        discarded_tail_bytes: summary.discarded_tail_bytes,
         at: chrono_now_iso(),
     })?;
 
@@ -950,7 +1000,7 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         }
     }
 
-    // Verify Phase
+    // Verify Phase (Δ17: verifies entire device from 0)
     fsm.begin_verify()?;
     let last_pass = passes.last().unwrap();
     let verify_pat_source = create_pattern_source(&last_pass.pattern);
@@ -1051,7 +1101,124 @@ fn cmd_cert(args: CertArgs) -> Result<(), DcError> {
                 Err(DcError::CertSigning("Signature check failed".to_string()))
             }
         }
+        CertSubcommands::Reconstruct { journal, key, out_dir } => {
+            cmd_cert_reconstruct(&journal, key.as_deref(), &out_dir)
+        }
     }
+}
+
+fn cmd_cert_reconstruct(journal_path: &Path, key_path: Option<&Path>, out_dir: &Path) -> Result<(), DcError> {
+    let (records, summary) = JournalReader::read_and_verify_chain(journal_path)?;
+
+    let last_record = records.last().ok_or_else(|| DcError::JournalCorrupt {
+        record_index: 0,
+        reason: "Journal is empty".to_string(),
+    })?;
+
+    if !matches!(last_record, JournalRecord::Completed { .. }) {
+        eprintln!("[ERROR] Cannot reconstruct certificate: Journal is not in Completed state");
+        return Err(DcError::JournalCorrupt {
+            record_index: summary.record_count,
+            reason: "JOURNAL_NOT_COMPLETE".to_string(),
+        });
+    }
+
+    let (plan, plan_hash, identity, started_utc) = records.iter().find_map(|r| match r {
+        JournalRecord::Header { plan, plan_hash, identity, started_utc, .. } => {
+            Some((plan.clone(), plan_hash.clone(), identity.clone(), started_utc.clone()))
+        }
+        _ => None,
+    }).ok_or_else(|| DcError::JournalCorrupt {
+        record_index: 0,
+        reason: "Missing Header in journal".to_string(),
+    })?;
+
+    let (finished_utc, duration_mono_ms) = records.iter().find_map(|r| match r {
+        JournalRecord::Completed { at, duration_mono_ms } => Some((at.clone(), *duration_mono_ms)),
+        _ => None,
+    }).unwrap_or_else(|| (chrono_now_iso(), 0));
+
+    let verify_report = records.iter().find_map(|r| match r {
+        JournalRecord::Verify {
+            windows_checked,
+            mismatch_count,
+            first_mismatch_lbas,
+            stream_hash_blake3,
+            stream_hash_sha256,
+            ..
+        } => Some(dc_verify::VerificationReport {
+            level: VerifyLevel::Full,
+            windows_checked: *windows_checked,
+            mismatch_count: *mismatch_count,
+            first_mismatch_lbas: first_mismatch_lbas.clone(),
+            stream_hash_blake3: stream_hash_blake3.clone(),
+            stream_hash_sha256: stream_hash_sha256.clone(),
+            entropy: None,
+        }),
+        _ => None,
+    }).ok_or_else(|| DcError::JournalCorrupt {
+        record_index: summary.record_count,
+        reason: "Missing Verify record in completed journal".to_string(),
+    })?;
+
+    let mut failures = Vec::new();
+    let mut interruptions = Vec::new();
+    for r in &records {
+        match r {
+            JournalRecord::Failed { code, errno, op, at_lba, .. } => {
+                failures.push(FailureRecord {
+                    at_utc: chrono_now_iso(),
+                    code: code.clone(),
+                    errno: *errno,
+                    op: op.clone(),
+                    at_lba: *at_lba,
+                });
+            }
+            JournalRecord::Interrupted { at, .. } => {
+                interruptions.push(InterruptionRecord {
+                    at_utc: at.clone(),
+                    resumed_utc: chrono_now_iso(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    let keypair = match key_path {
+        Some(k) => OperatorKeyPair::load_from_file(k)?,
+        None => OperatorKeyPair::generate(),
+    };
+
+    let mut cert = SanitizationCertificate::new(
+        plan,
+        plan_hash,
+        identity,
+        ExecutionDetails {
+            started_utc,
+            finished_utc,
+            duration_mono_ms,
+            interruptions,
+            failures,
+            passes: vec![],
+        },
+        verify_report,
+        summary,
+        keypair.public_key_hex(),
+        keypair.key_fingerprint_blake3(),
+    );
+
+    cert.sign(&keypair)?;
+
+    let cert_filename = format!(
+        "{}.cert.json",
+        journal_path.file_name().unwrap().to_string_lossy().trim_end_matches(".dcj")
+    );
+    let cert_path = out_dir.join(&cert_filename);
+    let cert_json = serde_json::to_string_pretty(&cert)?;
+    std::fs::write(&cert_path, cert_json)?;
+
+    println!("[+] Certificate reconstructed successfully: {}", cert_path.display());
+    Ok(())
 }
 
 fn cmd_keygen(args: KeygenArgs) -> Result<(), DcError> {

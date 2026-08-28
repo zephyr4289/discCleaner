@@ -12,7 +12,8 @@ pub use error::{DcError, GuardianRefusal};
 pub use fsm::{FsmOrchestrator, FsmState, WritePermit};
 pub use identity::{BusType, DeviceIdentity, KernelIdentity, StableIdentity};
 pub use journal::{
-    JournalChainSummary, JournalReader, JournalRecord, JournalWriter, JOURNAL_MAGIC,
+    check_cqe_or_verify_crash, check_crash_hook, EngineTuning, JournalChainSummary,
+    JournalReader, JournalRecord, JournalWriter, JOURNAL_MAGIC,
 };
 pub use pattern::{
     create_pattern_source, ChaCha20Pattern, FixedPattern, Pattern, PatternDescriptor,
@@ -42,7 +43,6 @@ mod tests {
         assert_eq!(buf_w0_a, buf_w0_b, "Identical (seed, window) must be identical");
         assert_ne!(buf_w0_a, buf_w1, "Different window indices must differ");
 
-        // Verify repeatability of first 16 bytes
         let hex_prefix = hex::encode(&buf_w0_a[..16]);
         assert_eq!(hex_prefix.len(), 32);
     }
@@ -75,6 +75,14 @@ mod tests {
             plan_hash: plan_hash.clone(),
             identity,
             tool: ToolBuild::current(),
+            engine: "auto".to_string(),
+            tuning: EngineTuning {
+                qd: 64,
+                pool_mib: 128,
+                window_bytes: 2 * 1024 * 1024,
+                checkpoint_mib: 512,
+                checkpoint_ms: 5000,
+            },
             argv_hash: "0000".to_string(),
             started_utc: "2026-08-28T20:00:00Z".to_string(),
         };

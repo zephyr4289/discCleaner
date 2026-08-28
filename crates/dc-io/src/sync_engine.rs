@@ -1,6 +1,6 @@
-use crate::buffer_pool::{AlignedBuffer, BufferPool};
+use crate::buffer_pool::AlignedBuffer;
 use crate::traits::{Engine, EngineCaps, EngineProgress, LbaSpan, PassOutcome, VerifySink};
-use dc_core::{DcError, PatternSource, WritePermit, ZeroPattern};
+use dc_core::{check_cqe_or_verify_crash, DcError, PatternSource, WritePermit, ZeroPattern};
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,8 +11,8 @@ const BLKZEROOUT: libc::c_ulong = 0x1277;
 
 pub struct SyncEngine {
     file: File,
-    caps: EngineCaps,
     buffer: AlignedBuffer,
+    caps: EngineCaps,
     cancel_flag: Arc<AtomicBool>,
 }
 
@@ -21,27 +21,19 @@ impl SyncEngine {
         file: File,
         window_bytes: usize,
         supports_write_zeroes: bool,
-    ) -> Result<Self, std::io::Error> {
+    ) -> Result<Self, DcError> {
         let buffer = AlignedBuffer::allocate(window_bytes, 4096)?;
-        let caps = EngineCaps {
-            engine_name: "SyncEngine (O_DIRECT / pwrite)",
-            supports_io_uring: false,
-            supports_write_zeroes,
-            max_write_zeroes_bytes: 2 * 1024 * 1024 * 1024, // 2 GiB chunks
-            max_qd: 1,
-            window_bytes: window_bytes as u64,
-        };
-
         Ok(Self {
             file,
-            caps,
             buffer,
+            caps: EngineCaps {
+                queue_depth: 1,
+                supports_write_zeroes,
+                max_write_zeroes_bytes: 2 * 1024 * 1024 * 1024, // 2 GiB chunking
+                is_uring: false,
+            },
             cancel_flag: Arc::new(AtomicBool::new(false)),
         })
-    }
-
-    pub fn cancel_handle(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.cancel_flag)
     }
 }
 
@@ -69,7 +61,7 @@ impl Engine for SyncEngine {
 
         let start_time = Instant::now();
         let mut last_prog_time = Instant::now();
-        let mut bytes_written_in_pass: u64 = 0;
+        let mut bytes_written_in_pass = 0u64;
 
         for w in start_window..total_windows {
             if self.cancel_flag.load(Ordering::Relaxed) {
@@ -87,7 +79,6 @@ impl Engine for SyncEngine {
                 pat.fill(w, &mut self.buffer[..len]);
             }
 
-            // Perform direct pwrite
             let slice = &self.buffer[..len];
             let mut written = 0;
             while written < len {
@@ -100,7 +91,7 @@ impl Engine for SyncEngine {
                     )
                 };
 
-                if ret < 0 {
+                if ret <= 0 {
                     let err = std::io::Error::last_os_error();
                     return Err(DcError::Io {
                         op: "pwrite",
@@ -112,6 +103,7 @@ impl Engine for SyncEngine {
             }
 
             bytes_written_in_pass += len as u64;
+            check_cqe_or_verify_crash("cqe", w + 1);
 
             if last_prog_time.elapsed().as_millis() >= 250 || w + 1 == total_windows {
                 let elapsed_secs = start_time.elapsed().as_secs_f64().max(0.001);
@@ -179,10 +171,12 @@ impl Engine for SyncEngine {
                 current_offset += this_chunk;
                 total_zeroed += this_chunk;
 
+                let windows_done = (current_offset + span.window_bytes - 1) / span.window_bytes;
+                check_cqe_or_verify_crash("cqe", windows_done);
+
                 if last_prog_time.elapsed().as_millis() >= 250 || current_offset >= total_bytes {
                     let elapsed_secs = start_time.elapsed().as_secs_f64().max(0.001);
                     let throughput = (total_zeroed as f64 / (1024.0 * 1024.0)) / elapsed_secs;
-                    let windows_done = (current_offset + span.window_bytes - 1) / span.window_bytes;
                     prog(EngineProgress {
                         pass: pass_index,
                         windows_done: windows_done.min(total_windows),
@@ -270,6 +264,7 @@ impl Engine for SyncEngine {
             sink.on_window(w, is_valid, slice)?;
 
             bytes_verified += len as u64;
+            check_cqe_or_verify_crash("verify-read", w + 1);
 
             if last_prog_time.elapsed().as_millis() >= 250 || w + 1 == total_windows {
                 let elapsed_secs = start_time.elapsed().as_secs_f64().max(0.001);

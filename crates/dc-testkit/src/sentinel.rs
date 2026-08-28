@@ -74,6 +74,60 @@ impl SentinelManager {
         Ok(())
     }
 
+    /// Scan media prefix P (longest all-zero prefix in windows) and holes H (zeros beyond P).
+    pub fn scan_media_prefix_and_holes(
+        backing_path: &Path,
+        window_bytes: u64,
+        total_bytes: u64,
+    ) -> Result<(u64, u64), String> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(backing_path)
+            .map_err(|e| format!("Failed to open backing file: {}", e))?;
+        let fd = file.as_raw_fd();
+
+        let total_windows = (total_bytes + window_bytes - 1) / window_bytes;
+        let mut raw_ptr: *mut libc::c_void = std::ptr::null_mut();
+        unsafe { libc::posix_memalign(&mut raw_ptr, 4096, window_bytes as usize) };
+        if raw_ptr.is_null() {
+            return Err("Allocation failed".to_string());
+        }
+
+        let mut prefix_p = 0u64;
+        let mut in_prefix = true;
+        let mut holes_h = 0u64;
+
+        for w in 0..total_windows {
+            let offset = w * window_bytes;
+            let remaining = total_bytes - offset;
+            let read_len = (remaining.min(window_bytes)) as usize;
+            let aligned_len = (read_len + 4095) & !4095;
+
+            let ret = unsafe { libc::pread(fd, raw_ptr, aligned_len, offset as libc::off_t) };
+            if ret < read_len as isize {
+                unsafe { libc::free(raw_ptr) };
+                return Err(format!("pread failed at window {}", w));
+            }
+
+            let slice = unsafe { std::slice::from_raw_parts(raw_ptr as *const u8, read_len) };
+            let is_zero = slice.iter().all(|&b| b == 0x00);
+
+            if in_prefix {
+                if is_zero {
+                    prefix_p += 1;
+                } else {
+                    in_prefix = false;
+                }
+            } else if is_zero {
+                holes_h += 1;
+            }
+        }
+
+        unsafe { libc::free(raw_ptr) };
+        Ok((prefix_p, holes_h))
+    }
+
     /// Full sequential O_DIRECT verification of backing file after wipe.
     pub fn verify_zero_media_oracle(
         backing_path: &Path,
@@ -104,7 +158,6 @@ impl SentinelManager {
         while offset < total_bytes {
             let remaining = total_bytes - offset;
             let read_len = (remaining.min(window_size as u64)) as usize;
-            // Pad read_len to 4096 for O_DIRECT alignment on last short window
             let aligned_read_len = (read_len + 4095) & !4095;
 
             let ret = unsafe { libc::pread(fd, raw_ptr, aligned_read_len, offset as libc::off_t) };
@@ -147,7 +200,6 @@ impl SentinelManager {
 
     /// Dual-view cross-check through loop device (both O_DIRECT and buffered).
     pub fn verify_dual_view_cross_check(loop_dev_path: &Path, total_bytes: u64) -> Result<(), String> {
-        // 1. Buffered read at beginning, middle, and end
         let mut file = File::open(loop_dev_path)
             .map_err(|e| format!("Failed to open loop for buffered cross-check: {}", e))?;
 
