@@ -8,7 +8,7 @@ use dc_core::{
     JournalRecord, JournalWriter, LbaSpan, Pass, Pattern, PatternDescriptor, SanitizationPlan,
     ToolBuild, VerifyLevel, ZeroPattern,
 };
-use dc_io::create_engine;
+use dc_io::{create_engine, SyncEngine, UringEngine};
 use dc_probe::{Guardian, GuardianFlags, InventoryScanner, LayerStackDetector};
 use dc_verify::StreamVerifier;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -63,6 +63,14 @@ pub enum ProfileOption {
     LegacyDod3,
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EngineChoice {
+    #[default]
+    Auto,
+    Uring,
+    Sync,
+}
+
 #[derive(Args, Debug)]
 pub struct PlanArgs {
     /// Target device path (e.g. /dev/sda or /dev/nvme0n1)
@@ -80,13 +88,17 @@ pub struct PlanArgs {
 
 #[derive(Args, Debug)]
 pub struct ExecuteArgs {
-    /// Target device path (e.g. /dev/sda or /dev/nvme0n1)
+    /// Target device path (e.g. /dev/sda, /dev/nvme0n1, /dev/loop0)
     #[arg(short, long)]
     pub target: PathBuf,
 
     /// Sanitization profile
     #[arg(short, long, default_value = "clear-zero")]
     pub profile: ProfileOption,
+
+    /// I/O Engine selection (auto, uring, sync) [Spec Delta Δ2]
+    #[arg(long, value_enum, default_value_t = EngineChoice::Auto)]
+    pub engine: EngineChoice,
 
     /// Operator Ed25519 signing key path
     #[arg(short, long)]
@@ -96,7 +108,7 @@ pub struct ExecuteArgs {
     #[arg(long)]
     pub allow_system_disk: bool,
 
-    /// Drive serial number confirmation for scripted/non-interactive execution
+    /// Drive serial or loop device name confirmation for scripted execution [Spec Delta Δ5]
     #[arg(long)]
     pub serial_confirm: Option<String>,
 
@@ -112,13 +124,21 @@ pub struct ExecuteArgs {
     #[arg(long)]
     pub no_write_zeroes: bool,
 
+    /// Suppress progress bar output (for testing/automation) [Spec Delta Δ4]
+    #[arg(long)]
+    pub no_progress: bool,
+
     /// Also compute SHA-256 stream digest during verification
     #[arg(long)]
     pub sha256: bool,
 
-    /// Output directory for journal and certificate files
+    /// Output directory for certificate files [Spec Delta Δ3]
     #[arg(short, long, default_value = ".")]
     pub out_dir: PathBuf,
+
+    /// Output directory for journal files [Spec Delta Δ3]
+    #[arg(long)]
+    pub journal_dir: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -327,23 +347,62 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         return Err(e);
     }
 
-    // 2. Interactive Confirmation (unless serial_confirm was passed and matched)
-    let drive_serial = identity.stable.serial.clone().unwrap_or_else(|| "UNKNOWN".to_string());
-    if args.serial_confirm.as_deref() != Some(&drive_serial) {
+    // 2. Interactive or Non-Interactive Confirmation Token [Spec Delta Δ5 & Δ6]
+    // If drive has serial, use serial; if serial is None (e.g. loop devices), use kernel_name
+    let expected_confirm_token = identity
+        .stable
+        .serial
+        .clone()
+        .unwrap_or_else(|| identity.kernel_name.clone());
+
+    if let Some(ref provided) = args.serial_confirm {
+        if provided != &expected_confirm_token {
+            if let Some(a) = audit {
+                let _ = a.log(&AuditRecord {
+                    timestamp_utc: chrono_now_iso(),
+                    argv_hash: "execute".to_string(),
+                    target_path: Some(identity.dev_path.clone()),
+                    outcome: AuditOutcome::Refusal {
+                        code: "CONFIRM_MISMATCH".to_string(),
+                        detail: format!(
+                            "Provided token '{}' does not match expected '{}'",
+                            provided, expected_confirm_token
+                        ),
+                    },
+                });
+            }
+            eprintln!(
+                "[ERROR] Confirmation token mismatch: expected '{}', got '{}'",
+                expected_confirm_token, provided
+            );
+            return Err(DcError::Usage("Confirmation token mismatch".to_string()));
+        }
+    } else {
         println!("\n[WARNING] YOU ARE ABOUT TO PERMANENTLY AND IRREVERSIBLY WIPE:");
         println!("  Target Device:  {}", identity.dev_path);
         println!("  Device Model:   {}", identity.stable.model.as_deref().unwrap_or("Unknown"));
-        println!("  Device Serial:  {}", drive_serial);
+        println!("  Confirm Token:  {}", expected_confirm_token);
         println!("  Capacity:       {} GiB\n", identity.stable.size_bytes / (1024 * 1024 * 1024));
-        println!("Type the exact device serial number '{}' to confirm execution:", drive_serial);
+        println!("Type the exact confirmation token '{}' to confirm execution:", expected_confirm_token);
 
         let mut input = String::new();
         std::io::stdin()
             .read_line(&mut input)
             .map_err(|e| DcError::StdIo(e))?;
 
-        if input.trim() != drive_serial {
-            println!("Serial confirmation mismatch. Aborting.");
+        if input.trim() != expected_confirm_token {
+            if let Some(a) = audit {
+                let _ = a.log(&AuditRecord {
+                    timestamp_utc: chrono_now_iso(),
+                    argv_hash: "execute".to_string(),
+                    target_path: Some(identity.dev_path.clone()),
+                    outcome: AuditOutcome::Refusal {
+                        code: "CONFIRM_MISMATCH".to_string(),
+                        detail: "Interactive token entry mismatch".to_string(),
+                    },
+                });
+            }
+            println!("Confirmation token mismatch. Aborting.");
             return Err(DcError::OperatorAbort);
         }
     }
@@ -375,12 +434,13 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
 
     // 5. Initialize Hash-Chained Journal
     let timestamp_str = chrono_now_iso();
+    let journal_dir = args.journal_dir.as_ref().unwrap_or(&args.out_dir);
     let journal_filename = format!(
         "{}-{}.dcj",
-        drive_serial.replace('/', "_"),
+        expected_confirm_token.replace('/', "_"),
         timestamp_str.replace(':', "-")
     );
-    let journal_path = args.out_dir.join(&journal_filename);
+    let journal_path = journal_dir.join(&journal_filename);
 
     let header_record = JournalRecord::Header {
         plan: plan.clone(),
@@ -414,12 +474,25 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
     let supports_write_zeroes = LayerStackDetector::can_write_zeroes(&identity.kernel_name)
         && (fast_path == FastPathPolicy::PreferWriteZeroes);
 
-    let mut engine = create_engine(
-        lock_handle.disk_file,
-        plan.window_bytes as usize,
-        supports_write_zeroes,
-        64,
-    );
+    let mut engine: Box<dyn dc_io::Engine> = match args.engine {
+        EngineChoice::Sync => Box::new(SyncEngine::new(
+            lock_handle.disk_file,
+            plan.window_bytes as usize,
+            supports_write_zeroes,
+        )?),
+        EngineChoice::Uring => Box::new(UringEngine::try_new(
+            lock_handle.disk_file,
+            plan.window_bytes as usize,
+            supports_write_zeroes,
+            64,
+        )?),
+        EngineChoice::Auto => create_engine(
+            lock_handle.disk_file,
+            plan.window_bytes as usize,
+            supports_write_zeroes,
+            64,
+        ),
+    };
 
     let passes = match &plan.mechanism {
         dc_core::Mechanism::LogicalOverwrite { passes } => passes.clone(),
@@ -438,28 +511,42 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
             window_bytes: plan.window_bytes,
         })?;
 
-        println!("\n[>] Executing Pass {}/{}: {}", pass_idx + 1, passes.len(), pass.label);
-        let pb = ProgressBar::new(span.total_windows());
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} windows ({percent}%) | {msg}")
-                .unwrap()
-                .progress_chars("=>-"),
-        );
+        if !args.no_progress {
+            println!("\n[>] Executing Pass {}/{}: {}", pass_idx + 1, passes.len(), pass.label);
+        }
+
+        let pb = if !args.no_progress {
+            let p = ProgressBar::new(span.total_windows());
+            p.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} windows ({percent}%) | {msg}")
+                    .unwrap()
+                    .progress_chars("=>-"),
+            );
+            Some(p)
+        } else {
+            None
+        };
 
         let outcome = if matches!(pass.pattern, Pattern::Zero) && supports_write_zeroes {
             engine.zero_pass(&permit, pass_idx as u8, &span, 0, &mut |p| {
-                pb.set_position(p.windows_done);
-                pb.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
+                if let Some(ref bar) = pb {
+                    bar.set_position(p.windows_done);
+                    bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
+                }
             })?
         } else {
             engine.write_pass(&permit, pass_idx as u8, pat_source.as_ref(), &span, 0, &mut |p| {
-                pb.set_position(p.windows_done);
-                pb.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
+                if let Some(ref bar) = pb {
+                    bar.set_position(p.windows_done);
+                    bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
+                }
             })?
         };
 
-        pb.finish_with_message("Pass Completed");
+        if let Some(bar) = pb {
+            bar.finish_with_message("Pass Completed");
+        }
 
         journal.append(&JournalRecord::RangeCommit {
             pass: pass_idx as u8,
@@ -492,14 +579,22 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
 
     // 8. Verification Phase
     fsm.begin_verify()?;
-    println!("\n[>] Performing 100% Full LBA Read-Back Verification & Stream Hashing...");
-    let pb_verify = ProgressBar::new(span.total_windows());
-    pb_verify.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.green/white}] {pos}/{len} windows ({percent}%) | {msg}")
-            .unwrap()
-            .progress_chars("=>-"),
-    );
+    if !args.no_progress {
+        println!("\n[>] Performing 100% Full LBA Read-Back Verification & Stream Hashing...");
+    }
+
+    let pb_verify = if !args.no_progress {
+        let p = ProgressBar::new(span.total_windows());
+        p.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.green/white}] {pos}/{len} windows ({percent}%) | {msg}")
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        Some(p)
+    } else {
+        None
+    };
 
     let last_pass = passes.last().unwrap();
     let verify_pat_source = create_pattern_source(&last_pass.pattern);
@@ -516,12 +611,16 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         &span,
         &mut verifier,
         &mut |p| {
-            pb_verify.set_position(p.windows_done);
-            pb_verify.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
+            if let Some(ref bar) = pb_verify {
+                bar.set_position(p.windows_done);
+                bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
+            }
         },
     )?;
 
-    pb_verify.finish_with_message("Verification Complete");
+    if let Some(bar) = pb_verify {
+        bar.finish_with_message("Verification Complete");
+    }
 
     let verify_report = verifier.finalize();
 
@@ -578,9 +677,11 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
     let cert_json = serde_json::to_string_pretty(&cert)?;
     std::fs::write(&cert_path, cert_json)?;
 
-    println!("\n{}", cert.render_summary());
-    println!("\n[+] Certificate written to: {}", cert_path.display());
-    println!("[+] Journal written to:     {}", journal_path.display());
+    if !args.no_progress {
+        println!("\n{}", cert.render_summary());
+        println!("\n[+] Certificate written to: {}", cert_path.display());
+        println!("[+] Journal written to:     {}", journal_path.display());
+    }
 
     if let Some(a) = audit {
         let _ = a.log(&AuditRecord {

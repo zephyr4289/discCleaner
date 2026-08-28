@@ -12,7 +12,7 @@ env:
 
 jobs:
   test:
-    name: Unit & Forensic Invariants Test Matrix
+    name: Unit & Forensic Invariants Test Matrix (including T1 Zero-Trust)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,14 +22,17 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Setup Kernel Loop Module
+        run: sudo modprobe loop
+
       - name: Cargo Format Check
         run: cargo fmt --all -- --check
 
       - name: Cargo Clippy Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Run Workspace Tests
-        run: cargo test --workspace --verbose
+      - name: Run Workspace Tests as Root (T1 Zero-Trust Suite)
+        run: sudo -E env "PATH=$PATH" cargo test --workspace --verbose
 
-      - name: Build musl static binaries
+      - name: Build Release Binaries
         run: cargo build --release --workspace

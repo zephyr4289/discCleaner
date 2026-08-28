@@ -7,6 +7,7 @@ members = [
     "crates/dc-verify",
     "crates/dc-cert",
     "crates/dc-cli",
+    "crates/dc-testkit",
 ]
 
 [workspace.dependencies]
@@ -15,6 +16,7 @@ dc-probe = { path = "crates/dc-probe" }
 dc-io = { path = "crates/dc-io" }
 dc-verify = { path = "crates/dc-verify" }
 dc-cert = { path = "crates/dc-cert" }
+dc-testkit = { path = "crates/dc-testkit" }
 
 # System & I/O
 rustix = { version = "0.38", features = ["fs", "param", "process", "thread", "system"] }
@@ -43,3 +45,8 @@ base64 = "0.22"
 
 # Error Handling
 thiserror = "2.0"
+
+# Testing
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.14"
