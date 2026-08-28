@@ -38,6 +38,9 @@ pub enum Commands {
     /// Scan and display inventory of all physical storage devices
     List,
 
+    /// Non-destructive pre-flight safety classification and try-lock probe [Spec Delta Δ23]
+    Check(CheckArgs),
+
     /// Compile and display a formal Sanitization Plan without executing
     Plan(PlanArgs),
 
@@ -70,6 +73,25 @@ pub enum EngineChoice {
     Auto,
     Uring,
     Sync,
+}
+
+#[derive(Args, Debug)]
+pub struct CheckArgs {
+    /// Target device path (e.g. /dev/sda, /dev/nvme0n1, /dev/loop0)
+    #[arg(short, long)]
+    pub target: PathBuf,
+
+    /// Override root / system disk protection
+    #[arg(long)]
+    pub allow_system_disk: bool,
+
+    /// Allow targeting loopback virtual block devices
+    #[arg(long)]
+    pub allow_loop: bool,
+
+    /// Allow overwriting disks with inactive storage signatures
+    #[arg(long)]
+    pub allow_inactive_signatures: bool,
 }
 
 #[derive(Args, Debug)]
@@ -232,6 +254,10 @@ pub fn run(cli: Cli) -> Result<(), DcError> {
             cmd_list();
             Ok(())
         }
+        Commands::Check(args) => {
+            cmd_check(args, &mut audit)?;
+            Ok(())
+        }
         Commands::Plan(args) => {
             cmd_plan(args, &mut audit)?;
             Ok(())
@@ -288,6 +314,57 @@ fn cmd_list() {
         );
     }
     println!("{:-<100}", "");
+}
+
+fn cmd_check(args: CheckArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
+    let identity = InventoryScanner::probe_device(&args.target)?;
+
+    let flags = GuardianFlags {
+        allow_system_disk: args.allow_system_disk,
+        serial_confirm: None,
+        allow_loop: args.allow_loop,
+        allow_inactive_signatures: args.allow_inactive_signatures,
+    };
+
+    match Guardian::evaluate(&args.target, &identity, &flags) {
+        Ok(()) => {
+            println!("================================================================================");
+            println!("                     GUARDIAN SAFETY PRE-FLIGHT CHECK");
+            println!("================================================================================");
+            println!("Target Device:     {}", identity.dev_path);
+            println!("Target Model:      {}", identity.stable.model.as_deref().unwrap_or("-"));
+            println!("Target Serial:     {}", identity.stable.serial.as_deref().unwrap_or("-"));
+            println!("Capacity:          {} GiB", identity.stable.size_bytes / (1024 * 1024 * 1024));
+            println!("VERDICT:           CLEAN (Target is safe for sanitization)");
+            println!("================================================================================");
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(a) = audit {
+                if let DcError::Guardian(ref g) = e {
+                    let _ = a.log(&AuditRecord {
+                        timestamp_utc: chrono_now_iso(),
+                        argv_hash: "check".to_string(),
+                        target_path: Some(identity.dev_path.clone()),
+                        outcome: AuditOutcome::Refusal {
+                            code: g.code.to_string(),
+                            detail: g.detail.clone(),
+                        },
+                    });
+                }
+            }
+            if let DcError::Guardian(ref g) = e {
+                eprintln!("================================================================================");
+                eprintln!("                     GUARDIAN REFUSAL: [{}]", g.code);
+                eprintln!("================================================================================");
+                eprintln!("Target:  {}", identity.dev_path);
+                eprintln!("Detail:  {}", g.detail);
+                eprintln!("Hint:    {}", g.hint);
+                eprintln!("================================================================================");
+            }
+            Err(e)
+        }
+    }
 }
 
 fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
@@ -355,7 +432,7 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         allow_inactive_signatures: args.allow_inactive_signatures,
     };
 
-    // 1. Guardian Evaluation
+    // 1. Guardian Evaluation (Runs BEFORE confirmation prompt - Δ25)
     if let Err(e) = Guardian::evaluate(&args.target, &identity, &flags) {
         if let Some(a) = audit {
             if let DcError::Guardian(ref g) = e {
@@ -453,7 +530,7 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
     let plan_hash = fsm.compile_plan(plan.clone())?;
     fsm.approve_plan()?;
 
-    // 4. Arm and Lock Hardware
+    // 4. Arm and Lock Hardware (with O_EXCL and flock - Δ24)
     let lock_handle = Guardian::arm_and_lock(&args.target, &identity.stable)?;
     fsm.arm()?;
 
@@ -874,7 +951,6 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         }
     }
 
-    // If no explicit failure/interrupted record, record crash interruption
     if records.last().map(|r| !matches!(r, JournalRecord::Failed { .. } | JournalRecord::Interrupted { .. })).unwrap_or(false) {
         interruptions.push(InterruptionRecord {
             at_utc: chrono_now_iso(),

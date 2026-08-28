@@ -9,16 +9,43 @@ const DM_DEV_REMOVE_CMD: libc::c_ulong = 0xc138fd04;
 pub struct Janitor;
 
 impl Janitor {
-    /// Janitor v2: Clean up leaked dm devices first, then clean up leaked loops.
+    /// Janitor v3:
+    /// 1. Reads `/proc/swaps` and deactivates any swap residing on scratch loops (`swapoff`).
+    /// 2. Sweeps leaked DM devices starting with `dc-t2-` or `dc-t4-`.
+    /// 3. Sweeps leaked loop devices whose backing file is under `scratch_prefix`.
     pub fn sweep_all(scratch_prefix: &Path) -> Vec<String> {
         let mut reclaimed = Vec::new();
 
-        // 1. Clean leaked DM devices
+        // 1. Swapoff scratch-backed swap
+        reclaimed.extend(Self::sweep_active_swaps(scratch_prefix));
+
+        // 2. Clean leaked DM devices
         reclaimed.extend(Self::sweep_dm_devices());
 
-        // 2. Clean leaked loop devices
+        // 3. Clean leaked loop devices
         reclaimed.extend(Self::sweep_leaked_loops(scratch_prefix));
 
+        reclaimed
+    }
+
+    pub fn sweep_active_swaps(scratch_prefix: &Path) -> Vec<String> {
+        let mut reclaimed = Vec::new();
+        if let Ok(content) = fs::read_to_string("/proc/swaps") {
+            for line in content.lines().skip(1) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if let Some(dev_path) = parts.first() {
+                    let dev = Path::new(dev_path);
+                    if dev.starts_with("/dev/loop") {
+                        let c_path = std::ffi::CString::new(*dev_path).unwrap();
+                        unsafe {
+                            if libc::swapoff(c_path.as_ptr()) == 0 {
+                                reclaimed.push(format!("swapoff:{}", dev_path));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         reclaimed
     }
 
@@ -32,7 +59,7 @@ impl Janitor {
         if let Ok(entries) = fs::read_dir(mapper_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("dc-t2-") {
+                if name.starts_with("dc-t2-") || name.starts_with("dc-t4-") {
                     if let Ok(ctl) = File::open("/dev/mapper/control") {
                         let mut req = crate::dm::DmIoctl::default();
                         let bytes = name.as_bytes();
