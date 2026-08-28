@@ -6,6 +6,7 @@ pub mod journal;
 pub mod orchestrator;
 pub mod pattern;
 pub mod plan;
+pub mod strategy;
 pub mod tool;
 
 pub use audit::{AuditLogger, AuditOutcome, AuditRecord};
@@ -22,6 +23,9 @@ pub use pattern::{
     PatternSource, PrngScheme, ZeroPattern,
 };
 pub use plan::{FastPathPolicy, Mechanism, Pass, SanitizationPlan, VerifyLevel};
+pub use strategy::{
+    AttestedCapabilities, DeviceTransportClass, MechanismStep, StrategyCompiler, StrategyLadder,
+};
 pub use tool::ToolBuild;
 
 #[cfg(test)]

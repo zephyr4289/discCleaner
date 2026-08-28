@@ -1,5 +1,7 @@
 pub mod cert;
 pub mod project;
+pub mod project2;
+pub mod schema2;
 pub mod signer;
 
 pub use cert::{
@@ -8,6 +10,8 @@ pub use cert::{
     UnsignedCertificate, VERIFICATION_SCHEME_DOC,
 };
 pub use project::CertificateProjector;
+pub use project2::Cert2Projector;
+pub use schema2::Cert2Document;
 pub use signer::{verify_canonical_signature, OperatorKeyPair};
 
 #[cfg(test)]
