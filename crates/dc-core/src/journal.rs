@@ -71,6 +71,12 @@ pub enum JournalRecord {
     Interrupted {
         at: String,
         hint: String,
+        #[serde(default)]
+        completed_through_pass: Option<u8>,
+        #[serde(default)]
+        completed_through_window: Option<u64>,
+        #[serde(default)]
+        signals_received: Option<u32>,
     },
     Resumed {
         phase: String, // "pass_N", "verify"
@@ -85,9 +91,6 @@ pub enum JournalRecord {
         op: Option<String>,
         at_lba: Option<u64>,
         detail: String,
-    },
-    Aborted {
-        at: String,
     },
     Completed {
         at: String,
@@ -116,76 +119,71 @@ pub struct JournalWriter {
 }
 
 impl JournalWriter {
-    pub fn create(
+    pub fn create_new(
         path: &Path,
-        header: JournalRecord,
+        uuid: String,
         signing_key: Option<SigningKey>,
     ) -> Result<Self, DcError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .open(path)?;
 
         // Exclusive non-blocking flock on journal file (Δ43)
         unsafe {
-            if libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 {
-                return Err(DcError::Usage(format!(
-                    "JOURNAL_BUSY: Journal file '{}' is locked by another process",
-                    path.display()
-                )));
+            let fd = file.as_raw_fd();
+            if libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) != 0 {
+                return Err(DcError::JournalCorrupt {
+                    record_index: 0,
+                    reason: "Failed to acquire exclusive lock on journal file".to_string(),
+                });
             }
         }
 
-        let (uuid, sealed) = match &header {
-            JournalRecord::Header { uuid, sealed, .. } => (uuid.clone(), *sealed),
-            _ => ("".to_string(), false),
-        };
-
-        // Write Magic DCJ1
         file.write_all(JOURNAL_MAGIC)?;
         file.flush()?;
+        file.sync_data()?;
 
-        let mut writer = Self {
+        let mut initial_hash = [0u8; 32];
+        let h = blake3::hash(JOURNAL_MAGIC);
+        initial_hash.copy_from_slice(h.as_bytes());
+
+        let sealed = signing_key.is_some();
+
+        Ok(Self {
             file,
             path: path.to_path_buf(),
-            prev_hash: [0u8; 32],
+            prev_hash: initial_hash,
             record_count: 0,
             signing_key,
             uuid,
             sealed,
-        };
-
-        writer.append(&header)?;
-        Ok(writer)
+        })
     }
 
-    pub fn resume_from_chain(
+    pub fn open_for_resume(
         path: &Path,
         chain_head_hex: &str,
         record_count: u64,
         truncate_offset: Option<u64>,
-        signing_key: Option<SigningKey>,
         uuid: String,
         sealed: bool,
+        signing_key: Option<SigningKey>,
     ) -> Result<Self, DcError> {
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)?;
 
         // Exclusive non-blocking flock on journal file (Δ43)
         unsafe {
-            if libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 {
-                return Err(DcError::Usage(format!(
-                    "JOURNAL_BUSY: Journal file '{}' is locked by another process",
-                    path.display()
-                )));
+            let fd = file.as_raw_fd();
+            if libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) != 0 {
+                return Err(DcError::JournalCorrupt {
+                    record_index: record_count,
+                    reason: "Failed to acquire exclusive lock on journal file".to_string(),
+                });
             }
         }
 
@@ -254,8 +252,9 @@ impl JournalWriter {
         self.prev_hash = *record_hash.as_bytes();
         self.record_count += 1;
 
-        // Check crash hook if enabled
+        // Check crash and signal hooks if enabled (Δ87)
         check_crash_hook(record);
+        check_signal_hook(record);
 
         Ok(hex::encode(self.prev_hash))
     }
@@ -300,147 +299,165 @@ impl JournalReader {
         }
 
         let mut file = File::open(path)?;
-        let file_len = meta.len();
+        let total_file_size = file.metadata()?.len();
 
         let mut magic = [0u8; 4];
-        if file.read_exact(&mut magic).is_err() || &magic != JOURNAL_MAGIC {
+        if let Err(e) = file.read_exact(&mut magic) {
             return Err(DcError::JournalCorrupt {
                 record_index: 0,
-                reason: "Invalid or missing DCJ1 journal magic".to_string(),
+                reason: format!("Cannot read journal magic: {}", e),
+            });
+        }
+
+        if &magic != JOURNAL_MAGIC {
+            return Err(DcError::JournalCorrupt {
+                record_index: 0,
+                reason: "Invalid journal magic".to_string(),
             });
         }
 
         let mut prev_hash = [0u8; 32];
+        let h = blake3::hash(JOURNAL_MAGIC);
+        prev_hash.copy_from_slice(h.as_bytes());
+
         let mut records = Vec::new();
-        let mut record_idx = 0;
-        let mut last_valid_offset = 4u64;
-        let mut is_sealed = false;
-        let mut verifier_key: Option<VerifyingKey> = None;
+        let mut record_idx = 0u64;
+        let mut last_good_offset = 4u64;
+        let mut discarded_tail = 0u64;
         let mut journal_uuid = String::new();
+        let mut journal_sealed = false;
+        let mut op_verifying_key: Option<VerifyingKey> = None;
 
         loop {
+            let current_pos = file.stream_position()?;
+            if current_pos == total_file_size {
+                break; // Clean EOF
+            }
+
             let mut len_buf = [0u8; 4];
-            let read_len_res = file.read_exact(&mut len_buf);
-            if let Err(e) = read_len_res {
-                if e.kind() == std::io::ErrorKind::UnexpectedEof {
+            match file.read_exact(&mut len_buf) {
+                Ok(()) => {}
+                Err(_) => {
+                    // Torn length prefix at EOF
+                    discarded_tail = total_file_size - last_good_offset;
                     break;
                 }
-                return Err(DcError::StdIo(e));
             }
 
             let len = u32::from_le_bytes(len_buf) as usize;
-            let curr_pos = file.stream_position().unwrap_or(last_valid_offset);
 
-            // Bounded allocation check before reading body (Δ38, Δ79 DoS guard)
-            let needed = len as u64 + 32 + if is_sealed { 64 } else { 0 };
-            if curr_pos + needed > file_len {
-                // Potential torn tail at EOF
+            // Bounds check against remaining file size (Δ79)
+            if (current_pos + 4 + len as u64 + 32) > total_file_size && !journal_sealed {
+                discarded_tail = total_file_size - last_good_offset;
                 break;
             }
 
             let mut record_bytes = vec![0u8; len];
             if file.read_exact(&mut record_bytes).is_err() {
+                // Torn record body at EOF
+                discarded_tail = total_file_size - last_good_offset;
                 break;
             }
 
-            let mut expected_hash = [0u8; 32];
-            if file.read_exact(&mut expected_hash).is_err() {
+            let mut hash_bytes = [0u8; 32];
+            if file.read_exact(&mut hash_bytes).is_err() {
+                // Torn record hash at EOF
+                discarded_tail = total_file_size - last_good_offset;
                 break;
             }
 
-            // If sealed, read 64-byte signature
-            let mut stored_sig = [0u8; 64];
-            if is_sealed {
-                if file.read_exact(&mut stored_sig).is_err() {
-                    break;
-                }
-            }
-
-            // Layer 1: BLAKE3 Self-Hash and Linkage
+            // Verify hash chain
             let mut hasher = blake3::Hasher::new();
             hasher.update(&record_bytes);
             hasher.update(&prev_hash);
-            let calculated_hash = hasher.finalize();
+            let expected_hash = hasher.finalize();
 
-            if calculated_hash.as_bytes() != &expected_hash {
+            if hash_bytes != *expected_hash.as_bytes() {
                 return Err(DcError::JournalCorrupt {
                     record_index: record_idx,
-                    reason: format!(
-                        "Hash mismatch! Calculated: {}, Stored: {}",
-                        hex::encode(calculated_hash.as_bytes()),
-                        hex::encode(expected_hash)
-                    ),
+                    reason: "BLAKE3 hash chain mismatch".to_string(),
                 });
             }
 
-            // Layer 3: Sealed signature verification (Δ39)
-            if is_sealed {
-                if let Some(ref vk) = verifier_key {
-                    let mut msg = Vec::with_capacity(record_bytes.len() + 32);
-                    msg.extend_from_slice(&record_bytes);
-                    msg.extend_from_slice(&prev_hash);
-                    let sig = Signature::from_bytes(&stored_sig);
-                    if vk.verify(&msg, &sig).is_err() {
-                        return Err(DcError::JournalCorrupt {
-                            record_index: record_idx,
-                            reason: format!(
-                                "Sealed record #{} digital signature verification FAILED",
-                                record_idx
-                            ),
-                        });
-                    }
-                }
-            }
-
-            let record: Result<JournalRecord, _> = serde_json::from_slice(&record_bytes);
-            let valid_record = match record {
+            let record: JournalRecord = match serde_json::from_slice(&record_bytes) {
                 Ok(r) => r,
                 Err(e) => {
                     return Err(DcError::JournalCorrupt {
                         record_index: record_idx,
-                        reason: format!("Failed to deserialize record JSON: {}", e),
+                        reason: format!("JSON record parse error: {}", e),
                     });
                 }
             };
 
-            // Inspect Header on record 0 to determine sealed status and verifier key
+            // Inspect Header (Record 0) for sealed journal state and UUID (Δ39, Δ40)
             if record_idx == 0 {
                 if let JournalRecord::Header {
-                    uuid,
+                    ref uuid,
                     sealed,
-                    operator_pubkey,
+                    ref operator_pubkey,
                     ..
-                } = &valid_record
+                } = record
                 {
                     journal_uuid = uuid.clone();
-                    is_sealed = *sealed;
-                    if is_sealed {
+                    journal_sealed = sealed;
+                    if sealed {
                         if let Some(pk_hex) = operator_pubkey {
-                            if let Ok(pk_bytes) = hex::decode(pk_hex) {
-                                if let Ok(arr) = pk_bytes.as_slice().try_into() {
-                                    verifier_key = VerifyingKey::from_bytes(arr).ok();
-                                }
-                            }
+                            let pk_bytes = hex::decode(pk_hex).map_err(|_| DcError::JournalCorrupt {
+                                record_index: 0,
+                                reason: "Invalid operator_pubkey hex in Header".to_string(),
+                            })?;
+                            let vk = VerifyingKey::from_bytes(
+                                pk_bytes.as_slice().try_into().map_err(|_| DcError::JournalCorrupt {
+                                    record_index: 0,
+                                    reason: "Invalid operator_pubkey length in Header".to_string(),
+                                })?,
+                            ).map_err(|_| DcError::JournalCorrupt {
+                                record_index: 0,
+                                reason: "Invalid Ed25519 public key in Header".to_string(),
+                            })?;
+                            op_verifying_key = Some(vk);
                         }
                     }
                 }
             }
 
-            records.push(valid_record);
-            prev_hash = expected_hash;
-            last_valid_offset = file.stream_position().unwrap_or(last_valid_offset);
-            record_idx += 1;
-        }
+            // If sealed journal, verify Ed25519 signature per record (Δ39)
+            if journal_sealed {
+                let mut sig_bytes = [0u8; 64];
+                if file.read_exact(&mut sig_bytes).is_err() {
+                    return Err(DcError::JournalCorrupt {
+                        record_index: record_idx,
+                        reason: "Missing Ed25519 signature in sealed journal record".to_string(),
+                    });
+                }
 
-        let discarded = file_len.saturating_sub(last_valid_offset);
+                if let Some(ref vk) = op_verifying_key {
+                    let mut msg = Vec::with_capacity(record_bytes.len() + 32);
+                    msg.extend_from_slice(&record_bytes);
+                    msg.extend_from_slice(&prev_hash);
+                    let sig = Signature::from_bytes(&sig_bytes);
+                    if vk.verify(&msg, &sig).is_err() {
+                        return Err(DcError::JournalCorrupt {
+                            record_index: record_idx,
+                            reason: "Invalid Ed25519 digital signature in sealed journal record".to_string(),
+                        });
+                    }
+                }
+            }
+
+            prev_hash = hash_bytes;
+            records.push(record);
+            record_idx += 1;
+            last_good_offset = file.stream_position()?;
+        }
 
         let summary = JournalChainSummary {
             path: path.to_path_buf(),
             chain_head: hex::encode(prev_hash),
             record_count: records.len() as u64,
-            discarded_tail_bytes: discarded,
+            discarded_tail_bytes: discarded_tail,
             uuid: journal_uuid,
-            sealed: is_sealed,
+            sealed: journal_sealed,
         };
 
         Ok((records, summary))
@@ -491,6 +508,51 @@ pub fn check_cqe_or_verify_crash(event_type: &str, count: u64) {
             eprintln!("[CRASH_HOOK] Intentionally raising SIGKILL on {}:{}", event_type, count);
             unsafe {
                 libc::raise(libc::SIGKILL);
+            }
+        }
+    }
+}
+
+/// Deterministic signal injection hook (activated by `DC_SIGNAL_AT=event[:count]`) (Δ87)
+pub fn check_signal_hook(record: &JournalRecord) {
+    if let Ok(sig_spec) = std::env::var("DC_SIGNAL_AT") {
+        let parts: Vec<&str> = sig_spec.split(':').collect();
+        let event = parts[0];
+        let count_target: u64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
+
+        static COMMIT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+        let should_signal = match (event, record) {
+            ("commit-write", JournalRecord::RangeCommit { .. }) => {
+                let current = COMMIT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                current == count_target
+            }
+            ("endpass", JournalRecord::EndPass { .. }) => true,
+            ("flushed", JournalRecord::Flushed { .. }) => true,
+            ("verify", JournalRecord::Verify { .. }) => true,
+            _ => false,
+        };
+
+        if should_signal {
+            eprintln!("[SIGNAL_HOOK] Intentionally raising SIGINT on event: {}", sig_spec);
+            unsafe {
+                libc::kill(libc::getpid(), libc::SIGINT);
+            }
+        }
+    }
+}
+
+/// Helper to trigger CQE or Verify-read signal hook (Δ87)
+pub fn check_cqe_or_verify_signal(event_type: &str, count: u64) {
+    if let Ok(sig_spec) = std::env::var("DC_SIGNAL_AT") {
+        let parts: Vec<&str> = sig_spec.split(':').collect();
+        let target_event = parts[0];
+        let target_count: u64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
+
+        if target_event == event_type && count == target_count {
+            eprintln!("[SIGNAL_HOOK] Intentionally raising SIGINT on {}:{}", event_type, count);
+            unsafe {
+                libc::kill(libc::getpid(), libc::SIGINT);
             }
         }
     }

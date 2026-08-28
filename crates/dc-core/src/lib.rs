@@ -12,8 +12,8 @@ pub use error::{DcError, GuardianRefusal};
 pub use fsm::{FsmOrchestrator, FsmState, WritePermit};
 pub use identity::{BusType, DeviceIdentity, KernelIdentity, StableIdentity};
 pub use journal::{
-    check_cqe_or_verify_crash, check_crash_hook, EngineTuning, JournalChainSummary,
-    JournalReader, JournalRecord, JournalWriter, JOURNAL_MAGIC,
+    check_cqe_or_verify_crash, check_cqe_or_verify_signal, check_crash_hook, check_signal_hook,
+    EngineTuning, JournalChainSummary, JournalReader, JournalRecord, JournalWriter, JOURNAL_MAGIC,
 };
 pub use pattern::{
     create_pattern_source, ChaCha20Pattern, FixedPattern, Pattern, PatternDescriptor,
@@ -59,6 +59,8 @@ mod tests {
                 wwn: None,
                 size_bytes: 1024 * 1024 * 1024,
                 bus: BusType::Nvme,
+                dm_name: None,
+                dm_uuid: None,
             },
             kernel: KernelIdentity { major: 259, minor: 0 },
             kernel_name: "nvme0n1".to_string(),
@@ -90,7 +92,8 @@ mod tests {
             started_utc: "2026-08-28T20:00:00Z".to_string(),
         };
 
-        let mut writer = JournalWriter::create(journal_path, header, None).unwrap();
+        let mut writer = JournalWriter::create_new(journal_path, "test-uuid-1234".to_string(), None).unwrap();
+        writer.append(&header).unwrap();
         writer
             .append(&JournalRecord::BeginPass {
                 pass: 0,
