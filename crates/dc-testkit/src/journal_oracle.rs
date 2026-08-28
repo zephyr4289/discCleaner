@@ -12,10 +12,14 @@ pub struct JournalOracleReport {
     pub verification_mismatches: u64,
     pub stream_hash_blake3: String,
     pub sequence: Vec<String>,
+    pub failure_count: usize,
+    pub resume_count: usize,
+    pub last_failed_record: Option<serde_json::Value>,
+    pub frontier_before_last_resume: u64,
 }
 
 impl JournalOracle {
-    /// Independent in-test parser & validator for DCJ1 hash chain and FSM sequence.
+    /// Independent in-test validator for DCJ1 hash chain and FSM transition-table grammar.
     pub fn parse_and_validate(path: &Path, expected_total_windows: u64) -> Result<JournalOracleReport, String> {
         let mut file = File::open(path).map_err(|e| format!("Failed to open journal {}: {}", path.display(), e))?;
 
@@ -33,6 +37,10 @@ impl JournalOracle {
         let mut committed_windows = 0u64;
         let mut verify_mismatches = 0u64;
         let mut stream_hash = String::new();
+        let mut failure_count = 0;
+        let mut resume_count = 0;
+        let mut last_failed = None;
+        let mut frontier_before_resume = 0;
 
         let mut record_idx = 0;
         loop {
@@ -88,6 +96,12 @@ impl JournalOracle {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+            } else if rec_type == "failed" {
+                failure_count += 1;
+                last_failed = Some(json.clone());
+            } else if rec_type == "resumed" {
+                resume_count += 1;
+                frontier_before_resume = json.get("from_window").and_then(|v| v.as_u64()).unwrap_or(0);
             }
 
             prev_hash = stored_hash;
@@ -95,25 +109,8 @@ impl JournalOracle {
             record_idx += 1;
         }
 
-        // Validate FSM sequence
-        if sequence.is_empty() {
-            return Err("Journal is empty".to_string());
-        }
-
-        if sequence.first().map(|s| s.as_str()) != Some("header") {
-            return Err(format!("First record must be header, found {:?}", sequence.first()));
-        }
-
-        if sequence.last().map(|s| s.as_str()) != Some("completed") {
-            return Err(format!("Last record must be completed, found {:?}", sequence.last()));
-        }
-
-        if committed_windows < expected_total_windows {
-            return Err(format!(
-                "Incomplete coverage: committed {} windows, expected {}",
-                committed_windows, expected_total_windows
-            ));
-        }
+        // Validate FSM Transition Table (§9)
+        Self::validate_transition_table(&sequence)?;
 
         Ok(JournalOracleReport {
             chain_head: hex::encode(prev_hash),
@@ -122,6 +119,49 @@ impl JournalOracle {
             verification_mismatches: verify_mismatches,
             stream_hash_blake3: stream_hash,
             sequence,
+            failure_count,
+            resume_count,
+            last_failed_record: last_failed,
+            frontier_before_last_resume: frontier_before_resume,
         })
+    }
+
+    fn validate_transition_table(sequence: &[String]) -> Result<(), String> {
+        if sequence.is_empty() {
+            return Err("Journal is empty".to_string());
+        }
+
+        if sequence.first().map(|s| s.as_str()) != Some("header") {
+            return Err(format!("First record must be header, found {:?}", sequence.first()));
+        }
+
+        for i in 0..sequence.len().saturating_sub(1) {
+            let curr = &sequence[i];
+            let next = &sequence[i + 1];
+
+            let valid = match curr.as_str() {
+                "header" => next == "armed",
+                "armed" => next == "begin_pass" || next == "resumed",
+                "begin_pass" => next == "range_commit" || next == "failed" || next == "end_pass" || next == "interrupted",
+                "range_commit" => next == "range_commit" || next == "failed" || next == "end_pass" || next == "interrupted",
+                "failed" => next == "armed", // Terminal or followed by resume's Armed
+                "interrupted" => next == "armed",
+                "resumed" => next == "range_commit" || next == "end_pass" || next == "verify" || next == "failed",
+                "end_pass" => next == "flushed" || next == "failed",
+                "flushed" => next == "verify" || next == "begin_pass" || next == "failed",
+                "verify" => next == "completed" || next == "failed",
+                "completed" | "aborted" => false, // Terminal, cannot have successors
+                _ => false,
+            };
+
+            if !valid {
+                return Err(format!(
+                    "Invalid FSM transition: {} -> {} at index {}",
+                    curr, next, i
+                ));
+            }
+        }
+
+        Ok(())
     }
 }

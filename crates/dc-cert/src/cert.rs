@@ -31,11 +31,21 @@ pub struct InterruptionRecord {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FailureRecord {
+    pub at_utc: String,
+    pub code: String,
+    pub errno: Option<i32>,
+    pub op: Option<String>,
+    pub at_lba: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ExecutionDetails {
     pub started_utc: String,
     pub finished_utc: String,
     pub duration_mono_ms: u64,
     pub interruptions: Vec<InterruptionRecord>,
+    pub failures: Vec<FailureRecord>,
     pub passes: Vec<ExecutionPassReport>,
 }
 
@@ -181,6 +191,7 @@ Mechanism:         Logical Overwrite ({} passes)
 Verification:      {} (Mismatches: {})
 Stream BLAKE3:     {}
 Journal Chain:     {}
+Prior Failures:    {}
 Operator PubKey:   {}
 Signature Valid:   {}
 ================================================================================"#,
@@ -199,6 +210,7 @@ Signature Valid:   {}
             self.verification.mismatch_count,
             self.verification.stream_hash_blake3,
             self.journal.chain_head,
+            self.execution.failures.len(),
             self.operator.public_key_ed25519,
             if self.verify_signature().unwrap_or(false) {
                 "VERIFIED (Ed25519)"

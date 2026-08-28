@@ -13,6 +13,8 @@ pub struct CertOracleReport {
     pub chain_head: String,
     pub fast_path_used: bool,
     pub signature_valid: bool,
+    pub failure_count: usize,
+    pub interruption_count: usize,
 }
 
 impl CertOracle {
@@ -73,6 +75,20 @@ impl CertOracle {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let failure_count = root
+            .get("execution")
+            .and_then(|e| e.get("failures"))
+            .and_then(|f| f.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+
+        let interruption_count = root
+            .get("execution")
+            .and_then(|e| e.get("interruptions"))
+            .and_then(|i| i.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+
         // 1. Re-canonicalize unsigned payload (remove signature field)
         if let Some(obj) = root.as_object_mut() {
             obj.remove("signature");
@@ -128,17 +144,14 @@ impl CertOracle {
             ));
         }
 
-        // 5. Assert fast_path_used corresponds to wz_max
-        if wz_max > 0 && !fast_path_used {
-            // Note: K9 asserts fast path is used when supported
-        }
-
         Ok(CertOracleReport {
             stream_hash_blake3: stream_hash_stored,
             plan_hash: plan_hash_stored,
             chain_head: chain_head_stored,
             fast_path_used,
             signature_valid: true,
+            failure_count,
+            interruption_count,
         })
     }
 }

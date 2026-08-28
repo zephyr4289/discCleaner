@@ -2,7 +2,7 @@ pub mod cert;
 pub mod signer;
 
 pub use cert::{
-    ExecutionDetails, ExecutionPassReport, InterruptionRecord, OperatorDetails,
+    ExecutionDetails, ExecutionPassReport, FailureRecord, InterruptionRecord, OperatorDetails,
     SanitizationCertificate, SignatureDetails, UnsignedCertificate, VERIFICATION_SCHEME_DOC,
 };
 pub use signer::{verify_canonical_signature, OperatorKeyPair};
@@ -47,6 +47,7 @@ mod tests {
                 finished_utc: "2026-08-28T20:10:00Z".to_string(),
                 duration_mono_ms: 600000,
                 interruptions: vec![],
+                failures: vec![],
                 passes: vec![ExecutionPassReport {
                     index: 0,
                     pattern: "Zero".to_string(),

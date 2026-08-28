@@ -56,12 +56,16 @@ pub enum JournalRecord {
         hint: String,
     },
     Resumed {
-        at: String,
+        phase: String, // "pass_N", "verify"
         from_pass: u8,
         from_window: u64,
+        at: String,
     },
     Failed {
         code: String,
+        errno: Option<i32>,
+        op: Option<String>,
+        at_lba: Option<u64>,
         detail: String,
     },
     Aborted {
@@ -113,6 +117,40 @@ impl JournalWriter {
 
         writer.append(&header)?;
         Ok(writer)
+    }
+
+    pub fn resume_from_chain(
+        path: &Path,
+        chain_head_hex: &str,
+        record_count: u64,
+    ) -> Result<Self, DcError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path)?;
+
+        let hash_bytes = hex::decode(chain_head_hex)
+            .map_err(|e| DcError::JournalCorrupt {
+                record_index: record_count,
+                reason: format!("Invalid chain head hex: {}", e),
+            })?;
+
+        if hash_bytes.len() != 32 {
+            return Err(DcError::JournalCorrupt {
+                record_index: record_count,
+                reason: "Invalid chain head length".to_string(),
+            });
+        }
+
+        let mut prev_hash = [0u8; 32];
+        prev_hash.copy_from_slice(&hash_bytes);
+
+        Ok(Self {
+            file,
+            path: path.to_path_buf(),
+            prev_hash,
+            record_count,
+        })
     }
 
     pub fn append(&mut self, record: &JournalRecord) -> Result<String, DcError> {
@@ -184,7 +222,6 @@ impl JournalReader {
             match file.read_exact(&mut len_buf) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    // Clean EOF
                     break;
                 }
                 Err(e) => return Err(DcError::StdIo(e)),

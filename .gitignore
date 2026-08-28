@@ -1,6 +1,8 @@
 /target
 Cargo.lock
 docs/
+.gemini/
+.agents/
 *.dcj
 audit-chain.log
 *.cert.json

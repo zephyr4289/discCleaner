@@ -11,6 +11,7 @@ pub enum BusType {
     Ufs,
     Virtio,
     Loop,
+    DeviceMapper,
     File,
     Unknown,
 }
@@ -26,6 +27,7 @@ impl std::fmt::Display for BusType {
             Self::Ufs => write!(f, "UFS"),
             Self::Virtio => write!(f, "VirtIO"),
             Self::Loop => write!(f, "Loopback"),
+            Self::DeviceMapper => write!(f, "DeviceMapper"),
             Self::File => write!(f, "File"),
             Self::Unknown => write!(f, "Unknown"),
         }
@@ -60,7 +62,7 @@ impl std::fmt::Display for KernelIdentity {
 pub struct DeviceIdentity {
     pub stable: StableIdentity,
     pub kernel: KernelIdentity,
-    pub kernel_name: String,      // "sdb", "nvme0n1"
+    pub kernel_name: String,      // "sdb", "nvme0n1", "dm-0"
     pub dev_path: String,         // resolved path at open time (informational only)
     pub logical_block_size: u32,  // BLKSSZGET
     pub physical_block_size: u32, // BLKPBSZGET

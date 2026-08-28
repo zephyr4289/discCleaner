@@ -42,7 +42,7 @@ impl InventoryScanner {
         list
     }
 
-    /// Probe a single device path (e.g. `/dev/sda` or `/dev/nvme0n1`).
+    /// Probe a single device path (e.g. `/dev/sda`, `/dev/nvme0n1`, `/dev/mapper/foo`, `/dev/dm-0`).
     pub fn probe_device(path: &Path) -> Result<DeviceIdentity, std::io::Error> {
         let metadata = fs::metadata(path)?;
         let file_type = metadata.file_type();
@@ -62,21 +62,41 @@ impl InventoryScanner {
             ));
         };
 
-        let kernel_name = path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+        let kernel_name = if file_type.is_block_device() {
+            // Find canonical kernel name from /sys/dev/block/maj:min
+            let sys_dev_link = PathBuf::from(format!("/sys/dev/block/{}:{}", major, minor));
+            if let Ok(canon) = fs::canonicalize(&sys_dev_link) {
+                canon
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| {
+                        path.file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    })
+            } else {
+                path.file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            }
+        } else {
+            path.file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        };
 
         let sys_dev_dir = PathBuf::from(format!("/sys/dev/block/{}:{}", major, minor));
         let sys_block_dir = PathBuf::from(format!("/sys/block/{}", kernel_name));
 
         let model = Self::read_trimmed_string(&sys_block_dir.join("device/model"))
             .or_else(|| Self::read_trimmed_string(&sys_dev_dir.join("device/model")))
-            .or_else(|| Self::read_trimmed_string(&sys_block_dir.join("device/name")));
+            .or_else(|| Self::read_trimmed_string(&sys_block_dir.join("device/name")))
+            .or_else(|| Self::read_trimmed_string(&sys_block_dir.join("dm/name")));
 
         let serial = Self::read_trimmed_string(&sys_block_dir.join("device/serial"))
             .or_else(|| Self::read_trimmed_string(&sys_dev_dir.join("device/serial")))
-            .or_else(|| Self::read_trimmed_string(&sys_block_dir.join("device/wwid")));
+            .or_else(|| Self::read_trimmed_string(&sys_block_dir.join("device/wwid")))
+            .or_else(|| Self::read_trimmed_string(&sys_block_dir.join("dm/uuid")));
 
         let wwn = Self::read_trimmed_string(&sys_block_dir.join("device/wwn"))
             .or_else(|| Self::read_trimmed_string(&sys_dev_dir.join("device/wwn")));
@@ -149,6 +169,8 @@ impl InventoryScanner {
             BusType::Mmc
         } else if name.starts_with("loop") {
             BusType::Loop
+        } else if name.starts_with("dm-") || name.starts_with("dm") {
+            BusType::DeviceMapper
         } else if name.starts_with("vd") {
             BusType::Virtio
         } else {

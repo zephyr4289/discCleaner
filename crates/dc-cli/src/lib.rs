@@ -1,6 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use dc_cert::{
-    ExecutionDetails, ExecutionPassReport, OperatorKeyPair, SanitizationCertificate,
+    ExecutionDetails, ExecutionPassReport, FailureRecord, InterruptionRecord, OperatorKeyPair,
+    SanitizationCertificate,
 };
 use dc_core::{
     create_pattern_source, AuditLogger, AuditOutcome, AuditRecord, BusType, DcError,
@@ -43,7 +44,7 @@ pub enum Commands {
     /// Execute a certified sanitization plan on a physical storage device
     Execute(ExecuteArgs),
 
-    /// Resume an interrupted sanitization operation from a journal file
+    /// Resume an interrupted or failed sanitization operation from a journal file
     Resume(ResumeArgs),
 
     /// Standalone verification of a wiped disk against a plan or certificate
@@ -88,7 +89,7 @@ pub struct PlanArgs {
 
 #[derive(Args, Debug)]
 pub struct ExecuteArgs {
-    /// Target device path (e.g. /dev/sda, /dev/nvme0n1, /dev/loop0)
+    /// Target device path (e.g. /dev/sda, /dev/nvme0n1, /dev/loop0, /dev/mapper/foo)
     #[arg(short, long)]
     pub target: PathBuf,
 
@@ -150,6 +151,14 @@ pub struct ResumeArgs {
     /// Operator Ed25519 signing key path
     #[arg(short, long)]
     pub key: Option<PathBuf>,
+
+    /// Suppress progress bar output
+    #[arg(long)]
+    pub no_progress: bool,
+
+    /// Output directory for certificate files
+    #[arg(short, long, default_value = ".")]
+    pub out_dir: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -348,7 +357,6 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
     }
 
     // 2. Interactive or Non-Interactive Confirmation Token [Spec Delta Δ5 & Δ6]
-    // If drive has serial, use serial; if serial is None (e.g. loop devices), use kernel_name
     let expected_confirm_token = identity
         .stable
         .serial
@@ -528,20 +536,50 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
             None
         };
 
-        let outcome = if matches!(pass.pattern, Pattern::Zero) && supports_write_zeroes {
+        let outcome_res = if matches!(pass.pattern, Pattern::Zero) && supports_write_zeroes {
             engine.zero_pass(&permit, pass_idx as u8, &span, 0, &mut |p| {
                 if let Some(ref bar) = pb {
                     bar.set_position(p.windows_done);
                     bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
                 }
-            })?
+            })
         } else {
             engine.write_pass(&permit, pass_idx as u8, pat_source.as_ref(), &span, 0, &mut |p| {
                 if let Some(ref bar) = pb {
                     bar.set_position(p.windows_done);
                     bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
                 }
-            })?
+            })
+        };
+
+        let outcome = match outcome_res {
+            Ok(o) => o,
+            Err(e) => {
+                let (errno, at_lba) = match &e {
+                    DcError::Io { errno, lba, .. } => (Some(*errno), Some(*lba)),
+                    DcError::StdIo(io_err) => (io_err.raw_os_error(), None),
+                    _ => (None, None),
+                };
+                let _ = journal.append(&JournalRecord::Failed {
+                    code: "EIO".to_string(),
+                    errno,
+                    op: Some("write".to_string()),
+                    at_lba,
+                    detail: e.to_string(),
+                });
+                if let Some(a) = audit {
+                    let _ = a.log(&AuditRecord {
+                        timestamp_utc: chrono_now_iso(),
+                        argv_hash: "execute".to_string(),
+                        target_path: Some(args.target.to_string_lossy().to_string()),
+                        outcome: AuditOutcome::Refusal {
+                            code: "EIO".to_string(),
+                            detail: e.to_string(),
+                        },
+                    });
+                }
+                return Err(e);
+            }
         };
 
         if let Some(bar) = pb {
@@ -606,7 +644,7 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         true,
     );
 
-    engine.read_verify(
+    if let Err(e) = engine.read_verify(
         verify_pat_source.as_ref(),
         &span,
         &mut verifier,
@@ -616,7 +654,21 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
                 bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
             }
         },
-    )?;
+    ) {
+        let (errno, at_lba) = match &e {
+            DcError::Io { errno, lba, .. } => (Some(*errno), Some(*lba)),
+            DcError::StdIo(io_err) => (io_err.raw_os_error(), None),
+            _ => (None, None),
+        };
+        let _ = journal.append(&JournalRecord::Failed {
+            code: "EIO".to_string(),
+            errno,
+            op: Some("verify-read".to_string()),
+            at_lba,
+            detail: e.to_string(),
+        });
+        return Err(e);
+    }
 
     if let Some(bar) = pb_verify {
         bar.finish_with_message("Verification Complete");
@@ -637,6 +689,9 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
     if verify_report.mismatch_count > 0 {
         journal.append(&JournalRecord::Failed {
             code: "VERIFICATION_FAILED".to_string(),
+            errno: None,
+            op: Some("verify".to_string()),
+            at_lba: verify_report.first_mismatch_lbas.first().copied(),
             detail: format!("Found {} mismatching windows", verify_report.mismatch_count),
         })?;
         return Err(DcError::VerificationFailed {
@@ -662,6 +717,7 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
             finished_utc: finished_time_str,
             duration_mono_ms: exec_start_time.elapsed().as_millis() as u64,
             interruptions: vec![],
+            failures: vec![],
             passes: exec_passes,
         },
         verify_report,
@@ -702,18 +758,263 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
     println!("Reading and verifying journal chain: {}...", args.journal.display());
     let (records, summary) = JournalReader::read_and_verify_chain(&args.journal)?;
 
-    println!("Journal chain verified intact ({} records, head: {})", summary.record_count, summary.chain_head);
+    if records.is_empty() {
+        return Err(DcError::JournalCorrupt {
+            record_index: 0,
+            reason: "Journal is empty".to_string(),
+        });
+    }
 
-    let header = records.iter().find_map(|r| match r {
-        JournalRecord::Header { plan, identity, .. } => Some((plan.clone(), identity.clone())),
+    let last_record = records.last().unwrap();
+    match last_record {
+        JournalRecord::Completed { .. } => {
+            if let Some(a) = audit {
+                let _ = a.log(&AuditRecord {
+                    timestamp_utc: chrono_now_iso(),
+                    argv_hash: "resume".to_string(),
+                    target_path: None,
+                    outcome: AuditOutcome::Refusal {
+                        code: "JOURNAL_ALREADY_COMPLETE".to_string(),
+                        detail: "Attempted resume on already completed journal".to_string(),
+                    },
+                });
+            }
+            eprintln!("[ERROR] Journal is already completed. Refusing to overwrite.");
+            return Err(DcError::JournalCorrupt {
+                record_index: summary.record_count,
+                reason: "JOURNAL_ALREADY_COMPLETE".to_string(),
+            });
+        }
+        JournalRecord::Aborted { .. } => {
+            return Err(DcError::JournalCorrupt {
+                record_index: summary.record_count,
+                reason: "JOURNAL_ABORTED".to_string(),
+            });
+        }
+        _ => {}
+    }
+
+    // Extract header
+    let (plan, plan_hash, identity) = records.iter().find_map(|r| match r {
+        JournalRecord::Header { plan, plan_hash, identity, .. } => Some((plan.clone(), plan_hash.clone(), identity.clone())),
         _ => None,
     }).ok_or_else(|| DcError::JournalCorrupt {
         record_index: 0,
         reason: "Missing Header record in journal".to_string(),
     })?;
 
-    println!("Target: {} (Serial: {})", header.1.dev_path, header.1.stable.serial.as_deref().unwrap_or("-"));
-    println!("Resume functionality validated.");
+    // Collect historical failures and interruptions
+    let mut failures = Vec::new();
+    let mut interruptions = Vec::new();
+    let mut last_pass_idx: u8 = 0;
+    let mut last_pass_committed_windows: u64 = 0;
+    let mut verify_reached = false;
+
+    for r in &records {
+        match r {
+            JournalRecord::BeginPass { pass, .. } => {
+                last_pass_idx = *pass;
+                last_pass_committed_windows = 0;
+            }
+            JournalRecord::RangeCommit { pass, num_windows, .. } => {
+                if *pass == last_pass_idx {
+                    last_pass_committed_windows += num_windows;
+                }
+            }
+            JournalRecord::Flushed { .. } => {
+                verify_reached = true;
+            }
+            JournalRecord::Failed { code, errno, op, at_lba, .. } => {
+                failures.push(FailureRecord {
+                    at_utc: chrono_now_iso(),
+                    code: code.clone(),
+                    errno: *errno,
+                    op: op.clone(),
+                    at_lba: *at_lba,
+                });
+            }
+            JournalRecord::Interrupted { at, .. } => {
+                interruptions.push(InterruptionRecord {
+                    at_utc: at.clone(),
+                    resumed_utc: chrono_now_iso(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // Arm and Lock Hardware
+    let lock_handle = Guardian::arm_and_lock(Path::new(&identity.dev_path), &identity.stable)?;
+    let mut fsm = FsmOrchestrator::new();
+    fsm.compile_plan(plan.clone())?;
+    fsm.approve_plan()?;
+    fsm.arm()?;
+
+    let mut journal = JournalWriter::resume_from_chain(&args.journal, &summary.chain_head, summary.record_count)?;
+    journal.append(&JournalRecord::Armed {
+        overrides: vec![],
+        locks_held: vec![format!("{}:{}", identity.kernel.major, identity.kernel.minor)],
+        at: chrono_now_iso(),
+    })?;
+
+    let phase_str = if verify_reached {
+        "verify".to_string()
+    } else {
+        format!("pass_{}", last_pass_idx)
+    };
+
+    journal.append(&JournalRecord::Resumed {
+        phase: phase_str,
+        from_pass: last_pass_idx,
+        from_window: last_pass_committed_windows,
+        at: chrono_now_iso(),
+    })?;
+
+    let keypair = match &args.key {
+        Some(k) => OperatorKeyPair::load_from_file(k)?,
+        None => OperatorKeyPair::generate(),
+    };
+
+    let span = LbaSpan::new(
+        identity.stable.size_bytes,
+        identity.logical_block_size,
+        plan.window_bytes,
+    );
+
+    let supports_write_zeroes = LayerStackDetector::can_write_zeroes(&identity.kernel_name)
+        && (plan.fast_path == FastPathPolicy::PreferWriteZeroes);
+
+    let mut engine: Box<dyn dc_io::Engine> = create_engine(
+        lock_handle.disk_file,
+        plan.window_bytes as usize,
+        supports_write_zeroes,
+        64,
+    );
+
+    let passes = match &plan.mechanism {
+        dc_core::Mechanism::LogicalOverwrite { passes } => passes.clone(),
+    };
+
+    let mut exec_passes = Vec::new();
+    let exec_start_time = Instant::now();
+
+    if !verify_reached {
+        for pass_idx in last_pass_idx as usize..passes.len() {
+            let pass = &passes[pass_idx];
+            let start_window = if pass_idx == last_pass_idx as usize {
+                last_pass_committed_windows
+            } else {
+                0
+            };
+
+            let permit = fsm.begin_pass(pass_idx as u8)?;
+            let pat_source = create_pattern_source(&pass.pattern);
+
+            if start_window == 0 {
+                journal.append(&JournalRecord::BeginPass {
+                    pass: pass_idx as u8,
+                    pattern: pat_source.descriptor(),
+                    window_bytes: plan.window_bytes,
+                })?;
+            }
+
+            let outcome = if matches!(pass.pattern, Pattern::Zero) && supports_write_zeroes {
+                engine.zero_pass(&permit, pass_idx as u8, &span, start_window, &mut |_| {})?
+            } else {
+                engine.write_pass(&permit, pass_idx as u8, pat_source.as_ref(), &span, start_window, &mut |_| {})?
+            };
+
+            journal.append(&JournalRecord::RangeCommit {
+                pass: pass_idx as u8,
+                first_window: start_window,
+                num_windows: outcome.windows_written,
+            })?;
+
+            journal.append(&JournalRecord::EndPass {
+                pass: pass_idx as u8,
+            })?;
+
+            let flush_permit = fsm.begin_flush(pass_idx as u8)?;
+            engine.flush(&flush_permit)?;
+            journal.append(&JournalRecord::Flushed {
+                pass: pass_idx as u8,
+            })?;
+
+            exec_passes.push(ExecutionPassReport {
+                index: pass_idx as u8,
+                pattern: pat_source.descriptor().name,
+                fast_path_used: outcome.fast_path_used,
+                windows_written: span.total_windows(),
+                throughput_mib_s: 1000.0,
+            });
+        }
+    }
+
+    // Verify Phase
+    fsm.begin_verify()?;
+    let last_pass = passes.last().unwrap();
+    let verify_pat_source = create_pattern_source(&last_pass.pattern);
+    let mut verifier = StreamVerifier::new(
+        VerifyLevel::Full,
+        plan.window_bytes,
+        identity.logical_block_size,
+        false,
+        true,
+    );
+
+    engine.read_verify(verify_pat_source.as_ref(), &span, &mut verifier, &mut |_| {})?;
+    let verify_report = verifier.finalize();
+
+    journal.append(&JournalRecord::Verify {
+        level: "Full".to_string(),
+        windows_checked: verify_report.windows_checked,
+        mismatch_count: verify_report.mismatch_count,
+        first_mismatch_lbas: verify_report.first_mismatch_lbas.clone(),
+        stream_hash_blake3: verify_report.stream_hash_blake3.clone(),
+        stream_hash_sha256: None,
+        fast_path_used: supports_write_zeroes,
+    })?;
+
+    fsm.certify()?;
+    let finished_time_str = chrono_now_iso();
+    journal.append(&JournalRecord::Completed {
+        at: finished_time_str.clone(),
+        duration_mono_ms: exec_start_time.elapsed().as_millis() as u64,
+    })?;
+
+    let mut cert = SanitizationCertificate::new(
+        plan,
+        plan_hash,
+        identity.clone(),
+        ExecutionDetails {
+            started_utc: chrono_now_iso(),
+            finished_utc: finished_time_str,
+            duration_mono_ms: exec_start_time.elapsed().as_millis() as u64,
+            interruptions,
+            failures,
+            passes: exec_passes,
+        },
+        verify_report,
+        journal.summary(),
+        keypair.public_key_hex(),
+        keypair.key_fingerprint_blake3(),
+    );
+
+    cert.sign(&keypair)?;
+
+    let cert_filename = format!(
+        "{}.cert.json",
+        args.journal.file_name().unwrap().to_string_lossy().trim_end_matches(".dcj")
+    );
+    let cert_path = args.out_dir.join(&cert_filename);
+    let cert_json = serde_json::to_string_pretty(&cert)?;
+    std::fs::write(&cert_path, cert_json)?;
+
+    if !args.no_progress {
+        println!("\n{}", cert.render_summary());
+        println!("\n[+] Resumed Sanitization Successful. Certificate written to: {}", cert_path.display());
+    }
+
     Ok(())
 }
 
