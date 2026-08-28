@@ -1,0 +1,20 @@
+[package]
+name = "dc-cert"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dc-core = { workspace = true }
+dc-verify = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_jcs = { workspace = true }
+ed25519-dalek = { workspace = true }
+blake3 = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.14"

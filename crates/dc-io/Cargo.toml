@@ -1,0 +1,15 @@
+[package]
+name = "dc-io"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dc-core = { workspace = true }
+rustix = { workspace = true }
+libc = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.14"

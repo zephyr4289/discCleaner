@@ -1,0 +1,27 @@
+[package]
+name = "dc-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "diskcleaner"
+path = "src/main.rs"
+
+[[bin]]
+name = "dc"
+path = "src/bin/dc.rs"
+
+[dependencies]
+dc-core = { workspace = true }
+dc-probe = { workspace = true }
+dc-io = { workspace = true }
+dc-verify = { workspace = true }
+dc-cert = { workspace = true }
+clap = { workspace = true }
+indicatif = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }

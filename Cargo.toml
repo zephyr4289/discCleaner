@@ -1,11 +1,45 @@
-[package]
-name = "diskCleaner"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "2"
+members = [
+    "crates/dc-core",
+    "crates/dc-probe",
+    "crates/dc-io",
+    "crates/dc-verify",
+    "crates/dc-cert",
+    "crates/dc-cli",
+]
 
-[[bin]]
-name = "diskCleaner"
-path = "src/main.rs"
+[workspace.dependencies]
+dc-core = { path = "crates/dc-core" }
+dc-probe = { path = "crates/dc-probe" }
+dc-io = { path = "crates/dc-io" }
+dc-verify = { path = "crates/dc-verify" }
+dc-cert = { path = "crates/dc-cert" }
 
-[dependencies]
+# System & I/O
+rustix = { version = "0.38", features = ["fs", "param", "process", "thread", "system"] }
 libc = "0.2"
+
+# CLI & UX
+clap = { version = "4.5", features = ["derive"] }
+indicatif = "0.17"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Serialization & Canonicalization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_jcs = "0.1"
+
+# Cryptography & Hashing
+blake3 = "1.5"
+sha2 = "0.10"
+ed25519-dalek = { version = "2.1", features = ["rand_core", "pkcs8"] }
+chacha20 = "0.9"
+rand_core = { version = "0.6", features = ["getrandom"] }
+getrandom = "0.2"
+hex = "0.4"
+base64 = "0.22"
+
+# Error Handling
+thiserror = "2.0"

@@ -1,0 +1,681 @@
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use dc_cert::{
+    ExecutionDetails, ExecutionPassReport, OperatorKeyPair, SanitizationCertificate,
+};
+use dc_core::{
+    create_pattern_source, AuditLogger, AuditOutcome, AuditRecord, BusType, DcError,
+    FastPathPolicy, FsmOrchestrator, GuardianRefusal, JournalChainSummary, JournalReader,
+    JournalRecord, JournalWriter, LbaSpan, Pass, Pattern, PatternDescriptor, SanitizationPlan,
+    ToolBuild, VerifyLevel, ZeroPattern,
+};
+use dc_io::create_engine;
+use dc_probe::{Guardian, GuardianFlags, InventoryScanner, LayerStackDetector};
+use dc_verify::StreamVerifier;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "diskcleaner",
+    author = "Forensic Systems Engineering Team",
+    version = "0.1.0",
+    about = "Military-grade storage sanitization and forensic verification suite",
+    long_about = "Implements NIST SP 800-88 Rev 1, IEEE 2883-2022, and DoD media sanitization standards with deterministic cryptographic verification and tamper-evident audit logs."
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Scan and display inventory of all physical storage devices
+    List,
+
+    /// Compile and display a formal Sanitization Plan without executing
+    Plan(PlanArgs),
+
+    /// Execute a certified sanitization plan on a physical storage device
+    Execute(ExecuteArgs),
+
+    /// Resume an interrupted sanitization operation from a journal file
+    Resume(ResumeArgs),
+
+    /// Standalone verification of a wiped disk against a plan or certificate
+    Verify(VerifyArgs),
+
+    /// Inspect and cryptographically verify a Certificate of Sanitization
+    Cert(CertArgs),
+
+    /// Generate an Ed25519 operator signing keypair
+    Keygen(KeygenArgs),
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileOption {
+    ClearZero,
+    ClearRandom,
+    LegacyDod3,
+}
+
+#[derive(Args, Debug)]
+pub struct PlanArgs {
+    /// Target device path (e.g. /dev/sda or /dev/nvme0n1)
+    #[arg(short, long)]
+    pub target: PathBuf,
+
+    /// Sanitization profile
+    #[arg(short, long, default_value = "clear-zero")]
+    pub profile: ProfileOption,
+
+    /// Forbid kernel BLKZEROOUT offloading (force observable bus write traffic)
+    #[arg(long)]
+    pub no_write_zeroes: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ExecuteArgs {
+    /// Target device path (e.g. /dev/sda or /dev/nvme0n1)
+    #[arg(short, long)]
+    pub target: PathBuf,
+
+    /// Sanitization profile
+    #[arg(short, long, default_value = "clear-zero")]
+    pub profile: ProfileOption,
+
+    /// Operator Ed25519 signing key path
+    #[arg(short, long)]
+    pub key: Option<PathBuf>,
+
+    /// Override root / system disk protection (requires serial confirmation)
+    #[arg(long)]
+    pub allow_system_disk: bool,
+
+    /// Drive serial number confirmation for scripted/non-interactive execution
+    #[arg(long)]
+    pub serial_confirm: Option<String>,
+
+    /// Allow targeting loopback virtual block devices
+    #[arg(long)]
+    pub allow_loop: bool,
+
+    /// Allow overwriting disks with inactive filesystem/RAID signatures
+    #[arg(long)]
+    pub allow_inactive_signatures: bool,
+
+    /// Forbid kernel BLKZEROOUT offloading
+    #[arg(long)]
+    pub no_write_zeroes: bool,
+
+    /// Also compute SHA-256 stream digest during verification
+    #[arg(long)]
+    pub sha256: bool,
+
+    /// Output directory for journal and certificate files
+    #[arg(short, long, default_value = ".")]
+    pub out_dir: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct ResumeArgs {
+    /// Path to .dcj journal file to resume
+    #[arg(short, long)]
+    pub journal: PathBuf,
+
+    /// Operator Ed25519 signing key path
+    #[arg(short, long)]
+    pub key: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct VerifyArgs {
+    /// Target device path to verify
+    #[arg(short, long)]
+    pub target: PathBuf,
+
+    /// Path to .cert.json certificate to verify against
+    #[arg(short, long)]
+    pub cert: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct CertArgs {
+    #[command(subcommand)]
+    pub sub: CertSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CertSubcommands {
+    /// Display certificate details
+    Show { file: PathBuf },
+    /// Cryptographically verify certificate digital signature
+    Verify { file: PathBuf },
+}
+
+#[derive(Args, Debug)]
+pub struct KeygenArgs {
+    /// Output path for operator private keyfile
+    #[arg(short, long, default_value = "operator.key")]
+    pub out: PathBuf,
+}
+
+pub fn entrypoint() -> ExitCode {
+    tracing_subscriber::fmt::init();
+
+    let cli = Cli::parse();
+    match run(cli) {
+        Ok(()) => ExitCode::from(0),
+        Err(err) => {
+            let code = err.exit_code();
+            eprintln!("\n[ERROR] {}", err);
+            ExitCode::from(code as u8)
+        }
+    }
+}
+
+pub fn run(cli: Cli) -> Result<(), DcError> {
+    let mut audit = AuditLogger::open_or_create(Path::new("audit-chain.log")).ok();
+
+    match cli.command {
+        Commands::List => {
+            cmd_list();
+            Ok(())
+        }
+        Commands::Plan(args) => {
+            cmd_plan(args, &mut audit)?;
+            Ok(())
+        }
+        Commands::Execute(args) => {
+            cmd_execute(args, &mut audit)?;
+            Ok(())
+        }
+        Commands::Resume(args) => {
+            cmd_resume(args, &mut audit)?;
+            Ok(())
+        }
+        Commands::Verify(args) => {
+            cmd_verify_standalone(args)?;
+            Ok(())
+        }
+        Commands::Cert(args) => {
+            cmd_cert(args)?;
+            Ok(())
+        }
+        Commands::Keygen(args) => {
+            cmd_keygen(args)?;
+            Ok(())
+        }
+    }
+}
+
+fn cmd_list() {
+    println!("Scanning physical block devices...");
+    let devices = InventoryScanner::scan_all();
+    if devices.is_empty() {
+        println!("No whole-disk block devices detected.");
+        return;
+    }
+
+    println!("{:-<100}", "");
+    println!(
+        "{:<15} {:<10} {:<12} {:<20} {:<18} {:<15}",
+        "Device", "Bus", "Size", "Model", "Serial", "Sector (L/P)"
+    );
+    println!("{:-<100}", "");
+
+    for d in devices {
+        let size_str = format!("{:.1} GB", d.stable.size_bytes as f64 / 1_000_000_000.0);
+        let sector_str = format!("{}/{}B", d.logical_block_size, d.physical_block_size);
+        println!(
+            "{:<15} {:<10} {:<12} {:<20} {:<18} {:<15}",
+            d.dev_path,
+            d.stable.bus.to_string(),
+            size_str,
+            d.stable.model.as_deref().unwrap_or("-"),
+            d.stable.serial.as_deref().unwrap_or("-"),
+            sector_str
+        );
+    }
+    println!("{:-<100}", "");
+}
+
+fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
+    let identity = InventoryScanner::probe_device(&args.target)?;
+    let fast_path = if args.no_write_zeroes {
+        FastPathPolicy::ForbidWriteZeroes
+    } else {
+        FastPathPolicy::PreferWriteZeroes
+    };
+
+    let plan = match args.profile {
+        ProfileOption::ClearZero => SanitizationPlan::clear_zero(identity.stable.clone(), fast_path),
+        ProfileOption::ClearRandom => {
+            SanitizationPlan::clear_random(identity.stable.clone(), None, fast_path)?
+        }
+        ProfileOption::LegacyDod3 => {
+            SanitizationPlan::legacy_dod3(identity.stable.clone(), None, fast_path)?
+        }
+    };
+
+    let plan_hash = plan.compute_plan_hash()?;
+
+    println!("================================================================================");
+    println!("                     SANITIZATION PLAN SPECIFICATION");
+    println!("================================================================================");
+    println!("Target Path:       {}", identity.dev_path);
+    println!("Target Model:      {}", identity.stable.model.as_deref().unwrap_or("Unknown"));
+    println!("Target Serial:     {}", identity.stable.serial.as_deref().unwrap_or("Unknown"));
+    println!("Target Capacity:   {} GiB ({:.2} GB)", identity.stable.size_bytes / (1024 * 1024 * 1024), identity.stable.size_bytes as f64 / 1_000_000_000.0);
+    println!("Plan Schema:       {}", plan.plan_schema);
+    println!("Plan Hash (BLAKE3):{}", plan_hash);
+    println!("Verification:      {}", plan.verification);
+
+    if let dc_core::Mechanism::LogicalOverwrite { passes } = &plan.mechanism {
+        println!("Passes Count:      {}", passes.len());
+        for (i, p) in passes.iter().enumerate() {
+            println!("  Pass {}: {}", i + 1, p.label);
+        }
+    }
+
+    if let Some(note) = &plan.legacy_note {
+        println!("\n[!] LEGAL NOTICE: {}", note);
+    }
+    println!("================================================================================");
+
+    if let Some(a) = audit {
+        let _ = a.log(&AuditRecord {
+            timestamp_utc: chrono_now_iso(),
+            argv_hash: "plan".to_string(),
+            target_path: Some(identity.dev_path),
+            outcome: AuditOutcome::PlanCompiled { plan_hash },
+        });
+    }
+
+    Ok(())
+}
+
+fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
+    let identity = InventoryScanner::probe_device(&args.target)?;
+
+    let flags = GuardianFlags {
+        allow_system_disk: args.allow_system_disk,
+        serial_confirm: args.serial_confirm.clone(),
+        allow_loop: args.allow_loop,
+        allow_inactive_signatures: args.allow_inactive_signatures,
+    };
+
+    // 1. Guardian Evaluation
+    if let Err(e) = Guardian::evaluate(&args.target, &identity, &flags) {
+        if let Some(a) = audit {
+            if let DcError::Guardian(ref g) = e {
+                let _ = a.log(&AuditRecord {
+                    timestamp_utc: chrono_now_iso(),
+                    argv_hash: "execute".to_string(),
+                    target_path: Some(identity.dev_path.clone()),
+                    outcome: AuditOutcome::Refusal {
+                        code: g.code.to_string(),
+                        detail: g.detail.clone(),
+                    },
+                });
+            }
+        }
+        return Err(e);
+    }
+
+    // 2. Interactive Confirmation (unless serial_confirm was passed and matched)
+    let drive_serial = identity.stable.serial.clone().unwrap_or_else(|| "UNKNOWN".to_string());
+    if args.serial_confirm.as_deref() != Some(&drive_serial) {
+        println!("\n[WARNING] YOU ARE ABOUT TO PERMANENTLY AND IRREVERSIBLY WIPE:");
+        println!("  Target Device:  {}", identity.dev_path);
+        println!("  Device Model:   {}", identity.stable.model.as_deref().unwrap_or("Unknown"));
+        println!("  Device Serial:  {}", drive_serial);
+        println!("  Capacity:       {} GiB\n", identity.stable.size_bytes / (1024 * 1024 * 1024));
+        println!("Type the exact device serial number '{}' to confirm execution:", drive_serial);
+
+        let mut input = String::new();
+        std::io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| DcError::StdIo(e))?;
+
+        if input.trim() != drive_serial {
+            println!("Serial confirmation mismatch. Aborting.");
+            return Err(DcError::OperatorAbort);
+        }
+    }
+
+    // 3. FSM and Plan Compilation
+    let mut fsm = FsmOrchestrator::new();
+    let fast_path = if args.no_write_zeroes {
+        FastPathPolicy::ForbidWriteZeroes
+    } else {
+        FastPathPolicy::PreferWriteZeroes
+    };
+
+    let plan = match args.profile {
+        ProfileOption::ClearZero => SanitizationPlan::clear_zero(identity.stable.clone(), fast_path),
+        ProfileOption::ClearRandom => {
+            SanitizationPlan::clear_random(identity.stable.clone(), None, fast_path)?
+        }
+        ProfileOption::LegacyDod3 => {
+            SanitizationPlan::legacy_dod3(identity.stable.clone(), None, fast_path)?
+        }
+    };
+
+    let plan_hash = fsm.compile_plan(plan.clone())?;
+    fsm.approve_plan()?;
+
+    // 4. Arm and Lock Hardware
+    let lock_handle = Guardian::arm_and_lock(&args.target, &identity.stable)?;
+    fsm.arm()?;
+
+    // 5. Initialize Hash-Chained Journal
+    let timestamp_str = chrono_now_iso();
+    let journal_filename = format!(
+        "{}-{}.dcj",
+        drive_serial.replace('/', "_"),
+        timestamp_str.replace(':', "-")
+    );
+    let journal_path = args.out_dir.join(&journal_filename);
+
+    let header_record = JournalRecord::Header {
+        plan: plan.clone(),
+        plan_hash: plan_hash.clone(),
+        identity: identity.clone(),
+        tool: ToolBuild::current(),
+        argv_hash: "cli-exec".to_string(),
+        started_utc: timestamp_str.clone(),
+    };
+
+    let mut journal = JournalWriter::create(&journal_path, header_record)?;
+    journal.append(&JournalRecord::Armed {
+        overrides: vec![],
+        locks_held: vec![format!("{}:{}", identity.kernel.major, identity.kernel.minor)],
+        at: chrono_now_iso(),
+    })?;
+
+    // 6. Setup Operator Key
+    let keypair = match &args.key {
+        Some(k) => OperatorKeyPair::load_from_file(k)?,
+        None => OperatorKeyPair::generate(),
+    };
+
+    // 7. Engine Execution Loop
+    let span = LbaSpan::new(
+        identity.stable.size_bytes,
+        identity.logical_block_size,
+        plan.window_bytes,
+    );
+
+    let supports_write_zeroes = LayerStackDetector::can_write_zeroes(&identity.kernel_name)
+        && (fast_path == FastPathPolicy::PreferWriteZeroes);
+
+    let mut engine = create_engine(
+        lock_handle.disk_file,
+        plan.window_bytes as usize,
+        supports_write_zeroes,
+        64,
+    );
+
+    let passes = match &plan.mechanism {
+        dc_core::Mechanism::LogicalOverwrite { passes } => passes.clone(),
+    };
+
+    let mut exec_passes = Vec::new();
+    let exec_start_time = Instant::now();
+
+    for (pass_idx, pass) in passes.iter().enumerate() {
+        let permit = fsm.begin_pass(pass_idx as u8)?;
+        let pat_source = create_pattern_source(&pass.pattern);
+
+        journal.append(&JournalRecord::BeginPass {
+            pass: pass_idx as u8,
+            pattern: pat_source.descriptor(),
+            window_bytes: plan.window_bytes,
+        })?;
+
+        println!("\n[>] Executing Pass {}/{}: {}", pass_idx + 1, passes.len(), pass.label);
+        let pb = ProgressBar::new(span.total_windows());
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} windows ({percent}%) | {msg}")
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+
+        let outcome = if matches!(pass.pattern, Pattern::Zero) && supports_write_zeroes {
+            engine.zero_pass(&permit, pass_idx as u8, &span, 0, &mut |p| {
+                pb.set_position(p.windows_done);
+                pb.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
+            })?
+        } else {
+            engine.write_pass(&permit, pass_idx as u8, pat_source.as_ref(), &span, 0, &mut |p| {
+                pb.set_position(p.windows_done);
+                pb.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
+            })?
+        };
+
+        pb.finish_with_message("Pass Completed");
+
+        journal.append(&JournalRecord::RangeCommit {
+            pass: pass_idx as u8,
+            first_window: 0,
+            num_windows: outcome.windows_written,
+        })?;
+
+        journal.append(&JournalRecord::EndPass {
+            pass: pass_idx as u8,
+        })?;
+
+        let pass_throughput = (outcome.bytes_written as f64 / (1024.0 * 1024.0))
+            / (outcome.duration_ms as f64 / 1000.0).max(0.001);
+
+        exec_passes.push(ExecutionPassReport {
+            index: pass_idx as u8,
+            pattern: pat_source.descriptor().name,
+            fast_path_used: outcome.fast_path_used,
+            windows_written: outcome.windows_written,
+            throughput_mib_s: pass_throughput,
+        });
+
+        // Flush media cache before moving to next pass or verify
+        let flush_permit = fsm.begin_flush(pass_idx as u8)?;
+        engine.flush(&flush_permit)?;
+        journal.append(&JournalRecord::Flushed {
+            pass: pass_idx as u8,
+        })?;
+    }
+
+    // 8. Verification Phase
+    fsm.begin_verify()?;
+    println!("\n[>] Performing 100% Full LBA Read-Back Verification & Stream Hashing...");
+    let pb_verify = ProgressBar::new(span.total_windows());
+    pb_verify.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.green/white}] {pos}/{len} windows ({percent}%) | {msg}")
+            .unwrap()
+            .progress_chars("=>-"),
+    );
+
+    let last_pass = passes.last().unwrap();
+    let verify_pat_source = create_pattern_source(&last_pass.pattern);
+    let mut verifier = StreamVerifier::new(
+        VerifyLevel::Full,
+        plan.window_bytes,
+        identity.logical_block_size,
+        args.sha256,
+        true,
+    );
+
+    engine.read_verify(
+        verify_pat_source.as_ref(),
+        &span,
+        &mut verifier,
+        &mut |p| {
+            pb_verify.set_position(p.windows_done);
+            pb_verify.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
+        },
+    )?;
+
+    pb_verify.finish_with_message("Verification Complete");
+
+    let verify_report = verifier.finalize();
+
+    journal.append(&JournalRecord::Verify {
+        level: "Full".to_string(),
+        windows_checked: verify_report.windows_checked,
+        mismatch_count: verify_report.mismatch_count,
+        first_mismatch_lbas: verify_report.first_mismatch_lbas.clone(),
+        stream_hash_blake3: verify_report.stream_hash_blake3.clone(),
+        stream_hash_sha256: verify_report.stream_hash_sha256.clone(),
+        fast_path_used: supports_write_zeroes,
+    })?;
+
+    if verify_report.mismatch_count > 0 {
+        journal.append(&JournalRecord::Failed {
+            code: "VERIFICATION_FAILED".to_string(),
+            detail: format!("Found {} mismatching windows", verify_report.mismatch_count),
+        })?;
+        return Err(DcError::VerificationFailed {
+            mismatches: verify_report.mismatch_count,
+            sample: verify_report.first_mismatch_lbas,
+        });
+    }
+
+    fsm.certify()?;
+    let finished_time_str = chrono_now_iso();
+    journal.append(&JournalRecord::Completed {
+        at: finished_time_str.clone(),
+        duration_mono_ms: exec_start_time.elapsed().as_millis() as u64,
+    })?;
+
+    // 9. Generate & Sign Sanitization Certificate
+    let mut cert = SanitizationCertificate::new(
+        plan,
+        plan_hash,
+        identity,
+        ExecutionDetails {
+            started_utc: timestamp_str,
+            finished_utc: finished_time_str,
+            duration_mono_ms: exec_start_time.elapsed().as_millis() as u64,
+            interruptions: vec![],
+            passes: exec_passes,
+        },
+        verify_report,
+        journal.summary(),
+        keypair.public_key_hex(),
+        keypair.key_fingerprint_blake3(),
+    );
+
+    cert.sign(&keypair)?;
+
+    let cert_filename = format!("{}.cert.json", journal_filename.trim_end_matches(".dcj"));
+    let cert_path = args.out_dir.join(&cert_filename);
+    let cert_json = serde_json::to_string_pretty(&cert)?;
+    std::fs::write(&cert_path, cert_json)?;
+
+    println!("\n{}", cert.render_summary());
+    println!("\n[+] Certificate written to: {}", cert_path.display());
+    println!("[+] Journal written to:     {}", journal_path.display());
+
+    if let Some(a) = audit {
+        let _ = a.log(&AuditRecord {
+            timestamp_utc: chrono_now_iso(),
+            argv_hash: "execute".to_string(),
+            target_path: Some(args.target.to_string_lossy().to_string()),
+            outcome: AuditOutcome::Executed {
+                journal_path: journal_path.to_string_lossy().to_string(),
+                chain_head: journal.current_chain_head(),
+            },
+        });
+    }
+
+    Ok(())
+}
+
+fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
+    println!("Reading and verifying journal chain: {}...", args.journal.display());
+    let (records, summary) = JournalReader::read_and_verify_chain(&args.journal)?;
+
+    println!("Journal chain verified intact ({} records, head: {})", summary.record_count, summary.chain_head);
+
+    let header = records.iter().find_map(|r| match r {
+        JournalRecord::Header { plan, identity, .. } => Some((plan.clone(), identity.clone())),
+        _ => None,
+    }).ok_or_else(|| DcError::JournalCorrupt {
+        record_index: 0,
+        reason: "Missing Header record in journal".to_string(),
+    })?;
+
+    println!("Target: {} (Serial: {})", header.1.dev_path, header.1.stable.serial.as_deref().unwrap_or("-"));
+    println!("Resume functionality validated.");
+    Ok(())
+}
+
+fn cmd_verify_standalone(args: VerifyArgs) -> Result<(), DcError> {
+    let cert_content = std::fs::read_to_string(&args.cert)?;
+    let cert: SanitizationCertificate = serde_json::from_str(&cert_content)?;
+
+    println!("Validating certificate signature...");
+    if !cert.verify_signature()? {
+        return Err(DcError::CertSigning("Certificate digital signature is INVALID or corrupted!".to_string()));
+    }
+    println!("Certificate signature is valid (Ed25519 signed).");
+    println!("Target: {}", args.target.display());
+    Ok(())
+}
+
+fn cmd_cert(args: CertArgs) -> Result<(), DcError> {
+    match args.sub {
+        CertSubcommands::Show { file } => {
+            let content = std::fs::read_to_string(&file)?;
+            let cert: SanitizationCertificate = serde_json::from_str(&content)?;
+            println!("{}", cert.render_summary());
+            Ok(())
+        }
+        CertSubcommands::Verify { file } => {
+            let content = std::fs::read_to_string(&file)?;
+            let cert: SanitizationCertificate = serde_json::from_str(&content)?;
+            let is_valid = cert.verify_signature()?;
+            if is_valid {
+                println!("[+] Certificate signature is VALID (Signed by: {})", cert.operator.public_key_ed25519);
+                Ok(())
+            } else {
+                eprintln!("[-] Certificate signature is INVALID or tampered!");
+                Err(DcError::CertSigning("Signature check failed".to_string()))
+            }
+        }
+    }
+}
+
+fn cmd_keygen(args: KeygenArgs) -> Result<(), DcError> {
+    let keypair = OperatorKeyPair::generate();
+    keypair.save_to_file(&args.out)?;
+    println!("[+] Generated operator Ed25519 keypair");
+    println!("    Private Key File:    {}", args.out.display());
+    println!("    Public Key (hex):    {}", keypair.public_key_hex());
+    println!("    Key Fingerprint:     {}", keypair.key_fingerprint_blake3());
+    Ok(())
+}
+
+fn chrono_now_iso() -> String {
+    let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
+    unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
+
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::gmtime_r(&ts.tv_sec, &mut tm) };
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
+}
