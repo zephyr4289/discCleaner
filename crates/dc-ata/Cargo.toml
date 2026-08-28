@@ -1,0 +1,15 @@
+[package]
+name = "dc-ata"
+version = "0.2.0"
+edition = "2021"
+description = "Native Linux ATA & SAT purge executor and no-harm FSM for diskcleaner"
+
+[dependencies]
+dc-hw = { workspace = true }
+dc-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+blake3 = { workspace = true }
+libc = { workspace = true }

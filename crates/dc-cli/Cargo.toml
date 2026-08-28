@@ -19,6 +19,7 @@ dc-verify = { workspace = true }
 dc-cert = { workspace = true }
 dc-hw = { workspace = true }
 dc-nvme = { workspace = true }
+dc-ata = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
 tracing = { workspace = true }
