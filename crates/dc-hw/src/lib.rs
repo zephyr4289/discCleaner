@@ -1,12 +1,19 @@
 pub mod ata_codec;
 pub mod nvme_codec;
+pub mod raw;
 pub mod scsi_codec;
+pub mod tables;
 
 pub use ata_codec::{AtaCodec, AtaIdentifyData, AtaSecurityStatus};
 pub use nvme_codec::{
     NvmeCodec, NvmeSanitizeAction, NvmeSanitizeStatus, NvmeSecureEraseSetting,
 };
+pub use raw::RawBlob;
 pub use scsi_codec::{ScsiCodec, ScsiSanitizeServiceAction, ScsiSenseData};
+pub use tables::{
+    NvmeSstatStatus, CITATION_ATA_IDENTIFY_W128, CITATION_NVME_LOG_81, CITATION_NVME_SANITIZE,
+    CITATION_SCSI_SANITIZE, SPEC_ATA8_ACS, SPEC_NVME_BASE, SPEC_SPC4,
+};
 
 #[cfg(test)]
 mod tests {
