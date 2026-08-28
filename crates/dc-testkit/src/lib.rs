@@ -56,6 +56,8 @@ pub mod udevdb;
 pub mod uevfire;
 pub mod ufs_overlay_mock;
 pub mod watchdog;
+pub mod zoneplanner_vec;
+pub mod zonereport_oracle;
 
 pub use adoption::{AdoptionArbiter, AdoptionDecision};
 pub use archagree::{ArchAgreementDriver, ArchAgreementResult, TargetArch};
@@ -115,3 +117,5 @@ pub use udevdb::UdevDb;
 pub use uevfire::UevFire;
 pub use ufs_overlay_mock::UfsOverlayMock;
 pub use watchdog::JournalWatchdog;
+pub use zoneplanner_vec::{ZoneDisciplinePlanner, ZoneOp};
+pub use zonereport_oracle::{ZoneCondition, ZoneDesc, ZoneReport, ZoneReportOracle, ZoneType};
