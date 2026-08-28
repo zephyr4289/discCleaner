@@ -1,0 +1,14 @@
+[package]
+name = "dc-nvme"
+version = "0.2.0"
+edition = "2021"
+description = "Native Linux NVMe admin ioctl client and purge executor for diskcleaner"
+
+[dependencies]
+dc-hw = { workspace = true }
+dc-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+libc = { workspace = true }
