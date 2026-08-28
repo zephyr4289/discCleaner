@@ -1,5 +1,7 @@
 pub mod adoption;
 pub mod artifacts;
+pub mod ata_lying;
+pub mod atadev;
 pub mod audit_oracle;
 pub mod cert_oracle;
 pub mod certforge;
@@ -42,6 +44,8 @@ pub mod watchdog;
 
 pub use adoption::{AdoptionArbiter, AdoptionDecision};
 pub use artifacts::ArtifactsDumper;
+pub use ata_lying::{BridgeLieClass, BridgeLieDetector};
+pub use atadev::{AtaDev, AtaDeviceState, AtaSecurityResult};
 pub use audit_oracle::AuditOracle;
 pub use cert_oracle::{CertOracle, CertOracleReport};
 pub use certforge::CertForge;
