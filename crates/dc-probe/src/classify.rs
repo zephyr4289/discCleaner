@@ -149,7 +149,21 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
         });
     }
 
-    // 13. HOLDERS_PRESENT
+    // 13. STACK_IN_USE (Δ199, Δ201 - Transitive Dependency Upward Closure)
+    let graph = crate::graph::BlockGraph::new(tree);
+    if let crate::graph::WalkOutcome::Danger(dangers) = graph.live_dangers(target_name, 16) {
+        let first = &dangers[0];
+        return Err(GuardianRefusal {
+            code: "STACK_IN_USE",
+            detail: format!(
+                "Target '{}' is transitively held by live upper layer ({}: {}) via stack path: {:?}",
+                node.name, first.terminal_class, first.terminal_detail, first.hops
+            ),
+            hint: "Unmount or deactivate the upper-layer filesystem/device before wiping.".to_string(),
+        });
+    }
+
+    // 14. HOLDERS_PRESENT
     if !node.holders.is_empty() {
         return Err(GuardianRefusal {
             code: "HOLDERS_PRESENT",
