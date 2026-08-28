@@ -111,6 +111,10 @@ pub struct PlanArgs {
     /// Forbid kernel BLKZEROOUT offloading (force observable bus write traffic)
     #[arg(long)]
     pub no_write_zeroes: bool,
+
+    /// Optional output file path for compiled Sanitization Plan JSON [Spec Delta Δ49]
+    #[arg(short, long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -118,6 +122,10 @@ pub struct ExecuteArgs {
     /// Target device path (e.g. /dev/sda, /dev/nvme0n1, /dev/loop0, /dev/mapper/foo)
     #[arg(short, long)]
     pub target: PathBuf,
+
+    /// Bind execution to a pre-compiled Sanitization Plan JSON file [Spec Delta Δ49]
+    #[arg(long)]
+    pub plan: Option<PathBuf>,
 
     /// Sanitization profile
     #[arg(short, long, default_value = "clear-zero")]
@@ -419,6 +427,12 @@ fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcErr
     }
     println!("================================================================================");
 
+    if let Some(ref out_path) = args.out {
+        let plan_json = serde_json::to_string_pretty(&plan)?;
+        std::fs::write(out_path, plan_json)?;
+        println!("[+] Plan specification saved to: {}", out_path.display());
+    }
+
     if let Some(a) = audit {
         let _ = a.log(&AuditRecord {
             timestamp_utc: chrono_now_iso(),
@@ -433,6 +447,48 @@ fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcErr
 
 fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
     let identity = InventoryScanner::probe_device(&args.target)?;
+
+    // 0. Plan-to-Execute Binding Verification (Spec Delta Δ49)
+    if let Some(ref plan_path) = args.plan {
+        let plan_content = std::fs::read_to_string(plan_path)?;
+        let plan_from_file: SanitizationPlan = serde_json::from_str(&plan_content).map_err(|e| {
+            DcError::JournalCorrupt {
+                record_index: 0,
+                reason: format!("PLAN_TAMPERED: Invalid JSON: {}", e),
+            }
+        })?;
+
+        // Verify plan file hash
+        let computed_hash = plan_from_file.compute_plan_hash()?;
+        let canonical_json = serde_jcs::to_string(&plan_from_file)?;
+        let verify_hash = blake3::hash(canonical_json.as_bytes()).to_hex().to_string();
+        if computed_hash != verify_hash {
+            return Err(DcError::JournalCorrupt {
+                record_index: 0,
+                reason: "PLAN_TAMPERED".to_string(),
+            });
+        }
+
+        // Check identity compatibility
+        if let Err(contradiction) = identity.stable.check_compatibility(&plan_from_file.target_identity) {
+            eprintln!("[ERROR] IDENTITY_DRIFT against plan: {}", contradiction);
+            if let Some(a) = audit {
+                let _ = a.log(&AuditRecord {
+                    timestamp_utc: chrono_now_iso(),
+                    argv_hash: "execute".to_string(),
+                    target_path: Some(identity.dev_path.clone()),
+                    outcome: AuditOutcome::Refusal {
+                        code: "IDENTITY_DRIFT".to_string(),
+                        detail: contradiction.clone(),
+                    },
+                });
+            }
+            return Err(DcError::IdentityDrift {
+                expected: plan_from_file.target_identity,
+                observed: identity.stable,
+            });
+        }
+    }
 
     let flags = GuardianFlags {
         allow_system_disk: args.allow_system_disk,
@@ -460,11 +516,12 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         return Err(e);
     }
 
-    // 2. Interactive or Non-Interactive Confirmation Token [Spec Delta Δ5 & Δ6]
+    // 2. Interactive or Non-Interactive Confirmation Token [Spec Delta Δ5, Δ6, Δ47]
     let expected_confirm_token = identity
         .stable
-        .serial
+        .dm_uuid
         .clone()
+        .or(identity.stable.serial.clone())
         .unwrap_or_else(|| identity.kernel_name.clone());
 
     if let Some(ref provided) = args.serial_confirm {

@@ -101,6 +101,9 @@ impl InventoryScanner {
         let wwn = Self::read_trimmed_string(&sys_block_dir.join("device/wwn"))
             .or_else(|| Self::read_trimmed_string(&sys_dev_dir.join("device/wwn")));
 
+        let dm_name = Self::read_trimmed_string(&sys_block_dir.join("dm/name"));
+        let dm_uuid = Self::read_trimmed_string(&sys_block_dir.join("dm/uuid"));
+
         let bus = Self::detect_bus_type(&kernel_name, &sys_block_dir);
 
         // Open read-only to query block sizes and capacity via ioctls
@@ -153,6 +156,8 @@ impl InventoryScanner {
                 wwn,
                 size_bytes,
                 bus,
+                dm_name,
+                dm_uuid,
             },
             kernel: KernelIdentity { major, minor },
             kernel_name,
