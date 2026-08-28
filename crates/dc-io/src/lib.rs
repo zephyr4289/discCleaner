@@ -1,12 +1,18 @@
 pub mod buffer_pool;
+pub mod geometry;
 pub mod sync_engine;
+pub mod tracker;
 pub mod traits;
 pub mod uring_engine;
+pub mod zeropath;
 
 pub use buffer_pool::{AlignedBuffer, BufferPool};
+pub use geometry::WindowGeometry;
 pub use sync_engine::SyncEngine;
+pub use tracker::{CompletionTracker, RangeCommitSpec};
 pub use traits::{Engine, EngineCaps, EngineProgress, LbaSpan, PassOutcome, VerifySink};
 pub use uring_engine::UringEngine;
+pub use zeropath::{ZeroPath, DEFAULT_CHUNK_BYTES};
 
 use std::fs::File;
 
@@ -22,7 +28,6 @@ pub fn create_engine(
         // Fallback to sync
         let f = unsafe {
             use std::os::unix::io::{FromRawFd, IntoRawFd};
-            // Note: If UringEngine::try_new fails before taking ownership, create fallback
             std::fs::File::open("/dev/null").unwrap()
         };
         Box::new(SyncEngine::new(f, window_bytes, supports_write_zeroes).unwrap())
