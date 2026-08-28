@@ -1,10 +1,16 @@
+pub mod classify;
 pub mod guardian;
+pub mod identity;
 pub mod inventory;
 pub mod layer_stack;
+pub mod sniff;
 
+pub use classify::{classify_pure, BlockTree, DeviceNode};
 pub use guardian::{Guardian, GuardianFlags, GuardianLockHandle};
+pub use identity::{IdentityComparison, IdentityComparator};
 pub use inventory::InventoryScanner;
 pub use layer_stack::{LayerStackDetector, MountEntry};
+pub use sniff::{Sniffer, StorageSignature};
 
 #[cfg(test)]
 mod tests {
