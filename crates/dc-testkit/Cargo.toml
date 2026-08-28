@@ -3,6 +3,10 @@ name = "dc-testkit"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "dc-victim"
+path = "src/bin/dc_victim.rs"
+
 [dependencies]
 rustix = { workspace = true }
 libc = { workspace = true }
@@ -15,3 +19,8 @@ base64 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+dc-core = { workspace = true }
+dc-cert = { workspace = true }
+dc-verify = { workspace = true }
+chacha20 = { workspace = true }
+tempfile = { workspace = true }
