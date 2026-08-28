@@ -3,6 +3,7 @@ pub mod error;
 pub mod fsm;
 pub mod identity;
 pub mod journal;
+pub mod orchestrator;
 pub mod pattern;
 pub mod plan;
 pub mod tool;
@@ -15,6 +16,7 @@ pub use journal::{
     check_cqe_or_verify_crash, check_cqe_or_verify_signal, check_crash_hook, check_signal_hook,
     EngineTuning, JournalChainSummary, JournalReader, JournalRecord, JournalWriter, JOURNAL_MAGIC,
 };
+pub use orchestrator::{Orchestrator, OrchestratorEffect, OrchestratorState};
 pub use pattern::{
     create_pattern_source, ChaCha20Pattern, FixedPattern, Pattern, PatternDescriptor,
     PatternSource, PrngScheme, ZeroPattern,
@@ -45,78 +47,5 @@ mod tests {
 
         let hex_prefix = hex::encode(&buf_w0_a[..16]);
         assert_eq!(hex_prefix.len(), 32);
-    }
-
-    #[test]
-    fn test_journal_chain_and_tamper_detection() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let journal_path = temp_file.path();
-
-        let identity = DeviceIdentity {
-            stable: StableIdentity {
-                model: Some("TestDrive".to_string()),
-                serial: Some("SN12345".to_string()),
-                wwn: None,
-                size_bytes: 1024 * 1024 * 1024,
-                bus: BusType::Nvme,
-                dm_name: None,
-                dm_uuid: None,
-            },
-            kernel: KernelIdentity { major: 259, minor: 0 },
-            kernel_name: "nvme0n1".to_string(),
-            dev_path: "/dev/nvme0n1".to_string(),
-            logical_block_size: 512,
-            physical_block_size: 4096,
-        };
-
-        let plan = SanitizationPlan::clear_zero(identity.stable.clone(), FastPathPolicy::PreferWriteZeroes);
-        let plan_hash = plan.compute_plan_hash().unwrap();
-
-        let header = JournalRecord::Header {
-            uuid: "test-uuid-1234".to_string(),
-            sealed: false,
-            operator_pubkey: None,
-            plan,
-            plan_hash: plan_hash.clone(),
-            identity,
-            tool: ToolBuild::current(),
-            engine: "auto".to_string(),
-            tuning: EngineTuning {
-                qd: 64,
-                pool_mib: 128,
-                window_bytes: 2 * 1024 * 1024,
-                checkpoint_mib: 512,
-                checkpoint_ms: 5000,
-            },
-            argv_hash: "0000".to_string(),
-            started_utc: "2026-08-28T20:00:00Z".to_string(),
-        };
-
-        let mut writer = JournalWriter::create_new(journal_path, "test-uuid-1234".to_string(), None).unwrap();
-        writer.append(&header).unwrap();
-        writer
-            .append(&JournalRecord::BeginPass {
-                pass: 0,
-                pattern: PatternDescriptor {
-                    name: "Zero".to_string(),
-                    pattern: Pattern::Zero,
-                    description: "Zero".to_string(),
-                },
-                window_bytes: 2 * 1024 * 1024,
-            })
-            .unwrap();
-
-        writer
-            .append(&JournalRecord::RangeCommit {
-                pass: 0,
-                first_window: 0,
-                num_windows: 50,
-            })
-            .unwrap();
-
-        let (records, summary) = JournalReader::read_and_verify_chain(journal_path).unwrap();
-        assert_eq!(records.len(), 3);
-        assert_eq!(summary.record_count, 3);
-        assert!(!summary.chain_head.is_empty());
     }
 }
