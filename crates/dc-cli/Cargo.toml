@@ -17,6 +17,7 @@ dc-probe = { workspace = true }
 dc-io = { workspace = true }
 dc-verify = { workspace = true }
 dc-cert = { workspace = true }
+dc-hw = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
 tracing = { workspace = true }

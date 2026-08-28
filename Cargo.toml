@@ -8,6 +8,7 @@ members = [
     "crates/dc-cert",
     "crates/dc-cli",
     "crates/dc-testkit",
+    "crates/dc-hw",
 ]
 
 [workspace.dependencies]
@@ -16,6 +17,7 @@ dc-probe = { path = "crates/dc-probe" }
 dc-io = { path = "crates/dc-io" }
 dc-verify = { path = "crates/dc-verify" }
 dc-cert = { path = "crates/dc-cert" }
+dc-hw = { path = "crates/dc-hw" }
 dc-testkit = { path = "crates/dc-testkit" }
 
 # System & I/O
