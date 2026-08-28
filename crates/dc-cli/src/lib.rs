@@ -115,6 +115,10 @@ pub struct PlanArgs {
     /// Optional output file path for compiled Sanitization Plan JSON [Spec Delta Δ49]
     #[arg(short, long)]
     pub out: Option<PathBuf>,
+
+    /// Explicit 32-byte CSPRNG seed in hex (64 chars) for deterministic PRNG passes [Spec Delta Δ56]
+    #[arg(long)]
+    pub seed: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -392,13 +396,34 @@ fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcErr
         FastPathPolicy::PreferWriteZeroes
     };
 
+    let explicit_seed = if let Some(ref s) = args.seed {
+        if args.profile == ProfileOption::ClearZero {
+            return Err(DcError::Usage(
+                "Cannot specify --seed for 'clear-zero' profile (no deterministic random pass)".to_string(),
+            ));
+        }
+        if s.len() != 64 {
+            return Err(DcError::Usage(
+                format!("Seed must be exactly 64 hex characters (32 bytes), got length {}", s.len()),
+            ));
+        }
+        let bytes = hex::decode(s).map_err(|e| {
+            DcError::Usage(format!("Invalid hex string in --seed: {}", e))
+        })?;
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Some(arr)
+    } else {
+        None
+    };
+
     let plan = match args.profile {
         ProfileOption::ClearZero => SanitizationPlan::clear_zero(identity.stable.clone(), fast_path),
         ProfileOption::ClearRandom => {
-            SanitizationPlan::clear_random(identity.stable.clone(), None, fast_path)?
+            SanitizationPlan::clear_random(identity.stable.clone(), explicit_seed, fast_path)?
         }
         ProfileOption::LegacyDod3 => {
-            SanitizationPlan::legacy_dod3(identity.stable.clone(), None, fast_path)?
+            SanitizationPlan::legacy_dod3(identity.stable.clone(), explicit_seed, fast_path)?
         }
     };
 
