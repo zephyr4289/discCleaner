@@ -1,0 +1,15 @@
+[package]
+name = "dc-mmc"
+version = "0.2.0"
+edition = "2021"
+description = "Native Linux eMMC purge executor, register transactions, and two-axis confirmation for diskcleaner"
+
+[dependencies]
+dc-hw = { workspace = true }
+dc-core = { workspace = true }
+dc-nvme = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+libc = { workspace = true }
