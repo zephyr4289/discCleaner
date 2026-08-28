@@ -22,6 +22,7 @@ dc-nvme = { workspace = true }
 dc-ata = { workspace = true }
 dc-scsi = { workspace = true }
 dc-mmc = { workspace = true }
+dc-opal = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
 tracing = { workspace = true }

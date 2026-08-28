@@ -1,0 +1,16 @@
+[package]
+name = "dc-opal"
+version = "0.2.0"
+edition = "2021"
+description = "Native Linux TCG Opal SSC client, PSID revert, and key-grade memory hygiene for diskcleaner"
+
+[dependencies]
+dc-hw = { workspace = true }
+dc-core = { workspace = true }
+dc-nvme = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }
+libc = { workspace = true }
