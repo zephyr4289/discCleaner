@@ -92,6 +92,10 @@ pub struct CheckArgs {
     /// Allow overwriting disks with inactive storage signatures
     #[arg(long)]
     pub allow_inactive_signatures: bool,
+
+    /// Allow overwriting retired LVM / RAID members [Spec Delta Δ32]
+    #[arg(long)]
+    pub allow_member: bool,
 }
 
 #[derive(Args, Debug)]
@@ -150,6 +154,10 @@ pub struct ExecuteArgs {
     /// Allow overwriting disks with inactive filesystem/RAID signatures
     #[arg(long)]
     pub allow_inactive_signatures: bool,
+
+    /// Allow overwriting retired LVM / RAID members [Spec Delta Δ32]
+    #[arg(long)]
+    pub allow_member: bool,
 
     /// Forbid kernel BLKZEROOUT offloading
     #[arg(long)]
@@ -324,6 +332,7 @@ fn cmd_check(args: CheckArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcE
         serial_confirm: None,
         allow_loop: args.allow_loop,
         allow_inactive_signatures: args.allow_inactive_signatures,
+        allow_member: args.allow_member,
     };
 
     match Guardian::evaluate(&args.target, &identity, &flags) {
@@ -430,6 +439,7 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         serial_confirm: args.serial_confirm.clone(),
         allow_loop: args.allow_loop,
         allow_inactive_signatures: args.allow_inactive_signatures,
+        allow_member: args.allow_member,
     };
 
     // 1. Guardian Evaluation (Runs BEFORE confirmation prompt - Δ25)
@@ -567,9 +577,23 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         started_utc: timestamp_str.clone(),
     };
 
+    let mut overrides = Vec::new();
+    if args.allow_system_disk {
+        overrides.push("allow-system-disk".to_string());
+    }
+    if args.allow_loop {
+        overrides.push("allow-loop".to_string());
+    }
+    if args.allow_member {
+        overrides.push("allow-member".to_string());
+    }
+    if args.allow_inactive_signatures {
+        overrides.push("allow-inactive-signatures".to_string());
+    }
+
     let mut journal = JournalWriter::create(&journal_path, header_record)?;
     journal.append(&JournalRecord::Armed {
-        overrides: vec![],
+        overrides,
         locks_held: vec![format!("{}:{}", identity.kernel.major, identity.kernel.minor)],
         at: chrono_now_iso(),
     })?;

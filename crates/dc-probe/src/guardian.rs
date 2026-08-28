@@ -13,6 +13,7 @@ pub struct GuardianFlags {
     pub serial_confirm: Option<String>,
     pub allow_loop: bool,
     pub allow_inactive_signatures: bool,
+    pub allow_member: bool,
 }
 
 pub struct GuardianLockHandle {
@@ -155,7 +156,7 @@ impl Guardian {
             }));
         }
 
-        // 10. HAS_HOLDERS (Danger: kernel-verified)
+        // 10. HAS_HOLDERS (Danger: kernel-verified, NEVER demoted by --allow-member)
         if LayerStackDetector::has_holders(name) {
             return Err(DcError::Guardian(GuardianRefusal {
                 code: "HAS_HOLDERS",
@@ -164,7 +165,7 @@ impl Guardian {
             }));
         }
 
-        // 11. MD_MEMBER (Danger: kernel-verified)
+        // 11. MD_MEMBER (Danger: kernel-verified active array, NEVER demoted by --allow-member)
         if LayerStackDetector::is_md_member(name) {
             return Err(DcError::Guardian(GuardianRefusal {
                 code: "MD_MEMBER",
@@ -173,8 +174,9 @@ impl Guardian {
             }));
         }
 
-        // 12. Sniffed Storage Signatures (Danger: sniffed)
+        // 12. Sniffed Storage Signatures (Danger: sniffed advisory tier - Δ32)
         if let Some(sig) = LayerStackDetector::sniff_signatures(target_path) {
+            let allow_advisory = flags.allow_member || flags.allow_inactive_signatures;
             if sig.contains("LUKS") {
                 if !flags.allow_inactive_signatures {
                     return Err(DcError::Guardian(GuardianRefusal {
@@ -184,19 +186,27 @@ impl Guardian {
                     }));
                 }
             } else if sig.contains("LVM2") {
-                if !flags.allow_inactive_signatures {
+                if !allow_advisory {
                     return Err(DcError::Guardian(GuardianRefusal {
                         code: "LVM_PV",
                         detail: format!("Found LVM physical volume signature: '{}'", sig),
-                        hint: "Pass '--allow-inactive-signatures' to overwrite LVM metadata.".to_string(),
+                        hint: "Pass '--allow-member' to permit wiping retired LVM physical volume.".to_string(),
                     }));
                 }
             } else if sig.contains("SWAP") {
-                if !flags.allow_inactive_signatures {
+                if !allow_advisory {
                     return Err(DcError::Guardian(GuardianRefusal {
                         code: "STALE_SWAP",
                         detail: format!("Found inactive swap signature: '{}'", sig),
-                        hint: "Pass '--allow-inactive-signatures' to overwrite swap metadata.".to_string(),
+                        hint: "Pass '--allow-member' to permit wiping stale swap signature.".to_string(),
+                    }));
+                }
+            } else if sig.contains("RAID") {
+                if !allow_advisory {
+                    return Err(DcError::Guardian(GuardianRefusal {
+                        code: "MD_MEMBER",
+                        detail: format!("Found inactive RAID superblock signature: '{}'", sig),
+                        hint: "Pass '--allow-member' to permit wiping stale RAID member.".to_string(),
                     }));
                 }
             } else if !flags.allow_inactive_signatures {

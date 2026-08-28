@@ -19,13 +19,11 @@ impl LayerStackDetector {
         let content = match fs::read_to_string("/proc/self/mountinfo") {
             Ok(c) => c,
             Err(_) => {
-                // Fallback to /proc/mounts if mountinfo is missing
                 return Self::get_legacy_mounts();
             }
         };
 
         for line in content.lines() {
-            // Format: 36 35 98:0 /mnt /rw,noatime master:1 - ext4 /dev/root rw,data=ordered
             let fields: Vec<&str> = line.split_whitespace().collect();
             if fields.len() >= 5 {
                 let maj_min = fields[2];
@@ -191,7 +189,7 @@ impl LayerStackDetector {
         false
     }
 
-    /// Sniff first 4 KiB superblock signatures without executing external binaries.
+    /// Sniff first 4 KiB superblock signatures without executing external binaries (Δ34).
     pub fn sniff_signatures(path: &Path) -> Option<&'static str> {
         let mut file = match File::open(path) {
             Ok(f) => f,
@@ -203,22 +201,28 @@ impl LayerStackDetector {
             return None;
         }
 
-        // Check LUKS: "LUKS\xba\xbe"
-        if buf.starts_with(b"LUKS\xba\xbe") {
+        // 1. Check LUKS: "LUKS\xba\xbe"
+        if buf.starts_with(b"LUKS\xba\xbe") || buf.starts_with(b"LUKS2\xba\xbe") {
             return Some("LUKS Encrypted Container");
         }
 
-        // Check LVM2 label: "LABELONE" at offset 0 or 512
-        if &buf[0..8] == b"LABELONE" || (buf.len() >= 520 && &buf[512..520] == b"LABELONE") {
-            return Some("LVM2 Physical Volume");
+        // 2. Check LVM2 label: structural validation across sectors 0..3 (offset 0, 512, 1024, 1536) (Δ34)
+        for sector_idx in 0..4 {
+            let offset = sector_idx * 512;
+            if offset + 32 <= buf.len() {
+                let sector_slice = &buf[offset..offset + 512];
+                if &sector_slice[0..8] == b"LABELONE" && &sector_slice[24..32] == b"LVM2 001" {
+                    return Some("LVM2 Physical Volume");
+                }
+            }
         }
 
-        // Check Linux Swap signature at end of 4K page (offset 4086..4096)
+        // 3. Check Linux Swap signature at end of page 0 (offset 4086..4096)
         if &buf[4086..4096] == b"SWAPSPACE2" || &buf[4086..4096] == b"SWAP-SPACE" {
             return Some("Linux Swap Signature");
         }
 
-        // Check MD RAID superblock: 0xa92b4efc LE
+        // 4. Check MD RAID superblock: 0xa92b4efc LE at offset 4096 or offset 0
         if buf.starts_with(&[0xfc, 0x4e, 0x2b, 0xa9]) {
             return Some("Linux Software RAID Superblock");
         }
