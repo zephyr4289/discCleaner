@@ -1,10 +1,17 @@
 use crate::chacha_ref::ChaCha20Ref;
+use crate::recipe::ReproductionRecipe;
 use std::path::Path;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FixedPointEntropy {
+    pub shannon_entropy_x1e6: u64, // Shannon entropy scaled by 1,000,000 (e.g. 7.999990 -> 7999990)
+    pub chi_square_x1e6: u64,      // Chi-square test statistic scaled by 1,000,000
+}
 
 pub struct CleanroomPRNG;
 
 impl CleanroomPRNG {
-    /// Fill buffer for a given window index using the Δ55 normative recipe.
+    /// Fill buffer for a given window index using the Δ55/Δ157 normative recipe.
     pub fn fill_window(seed: &[u8; 32], window_idx: u64, buf: &mut [u8]) {
         let mut nonce = [0u8; 12];
         nonce[0..8].copy_from_slice(&window_idx.to_le_bytes());
@@ -37,61 +44,76 @@ impl CleanroomPRNG {
         hasher.finalize().to_hex().to_string()
     }
 
-    /// Validate a certificate file against cleanroom reproduction.
-    pub fn verify_certificate_reproduction(cert_path: &Path) -> Result<bool, String> {
-        let content = std::fs::read_to_string(cert_path).map_err(|e| e.to_string())?;
-        let cert_json: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-
-        let scheme = cert_json
-            .pointer("/plan/mechanism/passes/0/pattern/DeterministicRandom/scheme")
-            .and_then(|v| v.as_str())
-            .or_else(|| {
-                cert_json.pointer("/plan/mechanism/passes/1/pattern/DeterministicRandom/scheme").and_then(|v| v.as_str())
-            })
-            .ok_or_else(|| "Missing DeterministicRandom scheme in certificate".to_string())?;
-
-        if scheme != "chacha20-window-v1" && scheme != "ChaCha20WindowV1" {
-            return Err(format!("UNKNOWN_SCHEME: {}", scheme));
+    /// Compute fixed-point Shannon entropy and Chi-square statistics (Δ159).
+    pub fn compute_fixed_point_entropy(data: &[u8]) -> FixedPointEntropy {
+        if data.is_empty() {
+            return FixedPointEntropy {
+                shannon_entropy_x1e6: 0,
+                chi_square_x1e6: 0,
+            };
         }
 
-        let seed_hex = cert_json
-            .pointer("/plan/mechanism/passes/0/pattern/DeterministicRandom/seed")
-            .and_then(|v| v.as_str())
-            .or_else(|| {
-                cert_json.pointer("/plan/mechanism/passes/1/pattern/DeterministicRandom/seed").and_then(|v| v.as_str())
-            })
-            .ok_or_else(|| "Missing seed in certificate".to_string())?;
+        let mut counts = [0u64; 256];
+        for &b in data {
+            counts[b as usize] += 1;
+        }
 
-        let seed_bytes = hex::decode(seed_hex).map_err(|e| format!("Invalid seed hex: {}", e))?;
+        let n = data.len() as f64;
+        let mut shannon = 0.0f64;
+        let expected = n / 256.0;
+        let mut chi_square = 0.0f64;
+
+        for &c in &counts {
+            if c > 0 {
+                let p = (c as f64) / n;
+                shannon -= p * p.log2();
+            }
+            let diff = (c as f64) - expected;
+            chi_square += (diff * diff) / expected;
+        }
+
+        FixedPointEntropy {
+            shannon_entropy_x1e6: (shannon * 1_000_000.0).round() as u64,
+            chi_square_x1e6: (chi_square * 1_000_000.0).round() as u64,
+        }
+    }
+
+    /// Verify a ReproductionRecipe directly against cleanroom reconstruction (Δ155).
+    pub fn verify_recipe(recipe: &ReproductionRecipe) -> Result<bool, String> {
+        if recipe.scheme != "chacha20-window-v1" {
+            return Err(format!("UNKNOWN_SCHEME: {}", recipe.scheme));
+        }
+
+        let doc_text = include_str!("../../../docs/reproduction/chacha20-window-v1.txt");
+        let expected_doc_blake3 = blake3::hash(doc_text.as_bytes()).to_hex().to_string();
+
+        if recipe.doc_blake3 != expected_doc_blake3 {
+            return Err(format!(
+                "DOC_HASH_MISMATCH: Recipe was built under doc {}, expected {}",
+                recipe.doc_blake3, expected_doc_blake3
+            ));
+        }
+
+        let seed_bytes = hex::decode(&recipe.seed).map_err(|e| format!("Invalid seed hex: {}", e))?;
         if seed_bytes.len() != 32 {
-            return Err("Invalid seed length".to_string());
+            return Err("Invalid seed length (must be 32 bytes)".to_string());
         }
+
         let mut seed = [0u8; 32];
         seed.copy_from_slice(&seed_bytes);
 
-        let size_bytes = cert_json
-            .pointer("/device/capacity_bytes")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| "Missing capacity_bytes in cert".to_string())?;
+        let calculated_hash = Self::compute_stream_digest(
+            &seed,
+            recipe.device_bytes,
+            recipe.window_bytes,
+        );
 
-        let window_bytes = cert_json
-            .pointer("/plan/window_bytes")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2 * 1024 * 1024);
-
-        let expected_hash = cert_json
-            .pointer("/verification/stream_hash_blake3")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Missing stream_hash_blake3 in cert".to_string())?;
-
-        let calculated_hash = Self::compute_stream_digest(&seed, size_bytes, window_bytes);
-
-        if calculated_hash == expected_hash {
+        if calculated_hash == recipe.stream_hash_blake3 {
             Ok(true)
         } else {
             Err(format!(
-                "Reproduction hash mismatch! Computed: {}, Cert: {}",
-                calculated_hash, expected_hash
+                "STREAM_HASH_MISMATCH: Calculated {}, Recipe {}",
+                calculated_hash, recipe.stream_hash_blake3
             ))
         }
     }
