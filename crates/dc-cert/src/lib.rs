@@ -7,6 +7,7 @@ pub mod project;
 pub mod project2;
 pub mod schema2;
 pub mod signer;
+pub mod zone_attest;
 
 pub use cert::{
     CertVerificationResult, ExecutionDetails, ExecutionPassReport, FailureRecord,
@@ -21,6 +22,7 @@ pub use project::CertificateProjector;
 pub use project2::Cert2Projector;
 pub use schema2::Cert2Document;
 pub use signer::{verify_canonical_signature, OperatorKeyPair};
+pub use zone_attest::{CapacityThreeNumbers, CrossVersionCertVerifier, ZoneAttestationBlock};
 
 #[cfg(test)]
 mod tests {
