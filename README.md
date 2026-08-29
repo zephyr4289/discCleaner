@@ -1,10 +1,10 @@
 # diskCleaner (`dc`)
 
-[![Version](https://img.shields.io/badge/version-v0.3.1-blue.svg)](https://github.com/zephyr4289/diskCleaner)
+[![Version](https://img.shields.io/badge/version-v0.3.1-blue.svg)](https://github.com/zephyr4289/discCleaner)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE)
-[![Architecture](https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64--musl-blueviolet.svg)](https://github.com/zephyr4289/diskCleaner)
-[![Standards](https://img.shields.io/badge/standards-NIST%20SP%20800--88%20%7C%20IEEE%202883--2022-orange.svg)](docs/diskCleaner.md)
-[![Build](https://img.shields.io/badge/build-static%20%7C%20zero--dependency-success.svg)](https://github.com/zephyr4289/diskCleaner)
+[![Architecture](https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64--musl-blueviolet.svg)](https://github.com/zephyr4289/discCleaner)
+[![Standards](https://img.shields.io/badge/standards-NIST%20SP%20800--88%20%7C%20IEEE%202883--2022-orange.svg)](diskCleaner.md)
+[![Build](https://img.shields.io/badge/build-static%20%7C%20zero--dependency-success.svg)](https://github.com/zephyr4289/discCleaner)
 
 **Forensic-grade storage sanitization for Linux — every claim carries its own evidence, verification instructions, and cryptographic proof.**
 
