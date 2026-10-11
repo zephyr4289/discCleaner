@@ -1,10 +1,16 @@
 pub mod approve;
+pub mod bench;
 pub mod bootattest;
 pub mod evidence;
+pub mod execute;
 pub mod fleet;
 pub mod init;
 pub mod key;
+pub mod profiles;
+pub mod purge;
 pub mod stick_install;
+
+pub use profiles::ProfileOption;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use dc_cert::{
@@ -13,16 +19,15 @@ use dc_cert::{
 };
 use dc_core::{
     AuditLogger, AuditOutcome, AuditRecord, BusType, DcError, DeviceIdentity, EngineTuning,
-    FastPathPolicy, FsmOrchestrator, GuardianRefusal, JournalReader, JournalRecord, JournalWriter,
-    KernelIdentity, Pattern, PatternDescriptor, SanitizationPlan, StableIdentity, ToolBuild,
-    VerifyLevel, create_pattern_source,
+    FastPathPolicy, FsmOrchestrator, JournalReader, JournalRecord, JournalWriter, KernelIdentity,
+    Pattern, PatternDescriptor, SanitizationPlan, StableIdentity, ToolBuild, VerifyLevel,
+    create_pattern_source,
 };
-use dc_io::{LbaSpan, SyncEngine, UringEngine, create_engine, request_global_cancel};
+use dc_io::{LbaSpan, create_engine, request_global_cancel};
 // `request_global_cancel` is consumed by the signal handler below and must
 // stay in the named-import list for async-signal-safety auditability.
 use dc_probe::{Guardian, GuardianFlags, InventoryScanner, LayerStackDetector};
 use dc_verify::StreamVerifier;
-use indicatif::{ProgressBar, ProgressStyle};
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -69,6 +74,11 @@ fn signal_was_seen() -> bool {
     SIGNALS_SEEN.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Termination signals observed so far (batch workers journal this).
+pub(crate) fn signals_received_count() -> u32 {
+    SIGNALS_RECEIVED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Deterministic signal-injection hook for test rigs (DC_SIGNAL_AT).
 ///
 /// SECURITY: compiled only for debug builds and explicit fault-injection
@@ -94,7 +104,7 @@ fn cli_signal_injection(_event: &str) {}
 #[command(
     name = "diskcleaner",
     author = "Forensic Systems Engineering Team",
-    version = "0.4.0",
+    version = "0.5.0",
     about = "Military-grade storage sanitization and forensic verification suite",
     long_about = "Implements NIST SP 800-88 Rev 1, IEEE 2883-2022, and DoD media sanitization standards with deterministic cryptographic verification and tamper-evident audit logs."
 )]
@@ -134,13 +144,15 @@ pub enum Commands {
 
     /// Two-officer Ed25519 countersignature approval of a compiled plan (2PI, Δ448)
     Approve(ApproveArgs),
-}
 
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProfileOption {
-    ClearZero,
-    ClearRandom,
-    LegacyDod3,
+    /// List the full sanitization standards profile catalog (procurement reference)
+    Profiles,
+
+    /// Benchmark the wipe engine throughput on a regular file (bake-off evidence)
+    Bench(BenchArgs),
+
+    /// Controller-attested hardware purge (NVMe Sanitize / Format NVM crypto erase)
+    Purge(PurgeArgs),
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -180,9 +192,14 @@ pub struct PlanArgs {
     #[arg(short, long)]
     pub target: PathBuf,
 
-    /// Sanitization profile
-    #[arg(short, long, default_value = "clear-zero")]
+    /// Sanitization profile (see `dc profiles`)
+    #[arg(short, long, default_value = "nist-clear")]
     pub profile: ProfileOption,
+
+    /// Post-wipe verification level to compile into the plan:
+    /// full | none | sample:N (NIST SP 800-88 sampled verification)
+    #[arg(long)]
+    pub verify: Option<String>,
 
     /// Forbid kernel BLKZEROOUT offloading (force observable bus write traffic)
     #[arg(long)]
@@ -199,17 +216,23 @@ pub struct PlanArgs {
 
 #[derive(Args, Debug)]
 pub struct ExecuteArgs {
-    /// Target device path (e.g. /dev/sda, /dev/nvme0n1, /dev/loop0, /dev/mapper/foo)
-    #[arg(short, long)]
-    pub target: PathBuf,
+    /// Target device path (repeat --target / list multiple paths to wipe a
+    /// batch of devices in parallel: --target /dev/sda --target /dev/sdb)
+    #[arg(short, long, required = true, num_args = 1..)]
+    pub target: Vec<PathBuf>,
 
     /// Bind execution to a pre-compiled Sanitization Plan JSON file [Spec Delta Δ49]
     #[arg(long)]
     pub plan: Option<PathBuf>,
 
-    /// Sanitization profile
-    #[arg(short, long, default_value = "clear-zero")]
+    /// Sanitization profile (see `dc profiles` for the full catalog)
+    #[arg(short, long, default_value = "nist-clear")]
     pub profile: ProfileOption,
+
+    /// Post-wipe verification level: full | none | sample:N (NIST SP 800-88
+    /// sampled verification, 1-in-N windows) — cannot override a --plan
+    #[arg(long)]
+    pub verify: Option<String>,
 
     /// I/O Engine selection (auto, uring, sync) [Spec Delta Δ2]
     #[arg(long, value_enum, default_value_t = EngineChoice::Auto)]
@@ -322,6 +345,78 @@ pub struct ResumeArgs {
     /// Output directory for certificate files
     #[arg(short, long, default_value = ".")]
     pub out_dir: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct BenchArgs {
+    /// Benchmark file path (MUST be a regular file, never a block device —
+    /// bench uses the production engines; create one with `truncate -s`)
+    #[arg(short, long)]
+    pub file: PathBuf,
+
+    /// Working set size in MiB
+    #[arg(long, default_value_t = 512)]
+    pub size_mib: u64,
+
+    /// I/O engine to benchmark (auto, uring, sync)
+    #[arg(long, value_enum, default_value_t = EngineChoice::Auto)]
+    pub engine: EngineChoice,
+
+    /// Reference device size in GiB for the per-profile ETA table
+    #[arg(long, default_value_t = 1024)]
+    pub ref_gib: u64,
+
+    /// Wipe window size in MiB (engine tuning)
+    #[arg(long, default_value_t = 2)]
+    pub window_mib: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct PurgeArgs {
+    /// Target NVMe namespace block device (e.g. /dev/nvme0n1)
+    #[arg(short, long)]
+    pub target: PathBuf,
+
+    /// Purge mechanism: auto (ladder with fallback) | sanitize-crypto |
+    /// sanitize-block | format-crypto
+    #[arg(long, default_value = "auto")]
+    pub mechanism: String,
+
+    /// Operator Ed25519 signing key path
+    #[arg(short, long)]
+    pub key: Option<PathBuf>,
+
+    /// Drive serial confirmation for scripted execution
+    #[arg(long)]
+    pub serial_confirm: Option<String>,
+
+    /// Override root / system disk protection
+    #[arg(long)]
+    pub allow_system_disk: bool,
+
+    /// Allow targeting loopback virtual block devices
+    #[arg(long)]
+    pub allow_loop: bool,
+
+    /// Allow overwriting disks with inactive filesystem/RAID signatures
+    #[arg(long)]
+    pub allow_inactive_signatures: bool,
+
+    /// Allow overwriting retired LVM / RAID members [Spec Delta Δ32]
+    #[arg(long)]
+    pub allow_member: bool,
+
+    /// Suppress progress output (for testing/automation)
+    #[arg(long)]
+    pub no_progress: bool,
+
+    /// Output directory for certificate and journal files
+    #[arg(short, long, default_value = ".")]
+    pub out_dir: PathBuf,
+
+    /// Compile the purge ladder and exit WITHOUT touching the device
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]
@@ -472,7 +567,19 @@ pub fn run(cli: Cli) -> Result<(), DcError> {
             Ok(())
         }
         Commands::Execute(args) => {
-            cmd_execute(args, &mut audit)?;
+            execute::cmd_execute(args, &mut audit)?;
+            Ok(())
+        }
+        Commands::Profiles => {
+            print!("{}", profiles::render_catalog());
+            Ok(())
+        }
+        Commands::Bench(args) => {
+            bench::cmd_bench(args)?;
+            Ok(())
+        }
+        Commands::Purge(args) => {
+            purge::cmd_purge(args, &mut audit)?;
             Ok(())
         }
         Commands::Resume(args) => {
@@ -623,8 +730,12 @@ fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcErr
     // Argument validation FIRST — a usage error (bad seed/profile combo)
     // must fail fast BEFORE any device is probed (fail-fast contract).
     let explicit_seed = match args.seed {
-        Some(ref s) => parse_seed_hex(s, args.profile)?,
+        Some(ref s) => profiles::parse_seed_hex(s, args.profile).map_err(DcError::Usage)?,
         None => None,
+    };
+    let verification = match args.verify.as_deref() {
+        Some(spec) => profiles::parse_verify_flag(spec).map_err(DcError::Usage)?,
+        None => args.profile.to_profile().default_verification(),
     };
 
     // Guardian-classified probe (REG-CHECK-NONEXIST): a missing target is a
@@ -636,17 +747,18 @@ fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcErr
         FastPathPolicy::PreferWriteZeroes
     };
 
-    let plan = match args.profile {
-        ProfileOption::ClearZero => {
-            SanitizationPlan::clear_zero(identity.stable.clone(), fast_path)
-        }
-        ProfileOption::ClearRandom => {
-            SanitizationPlan::clear_random(identity.stable.clone(), explicit_seed, fast_path)?
-        }
-        ProfileOption::LegacyDod3 => {
-            SanitizationPlan::legacy_dod3(identity.stable.clone(), explicit_seed, fast_path)?
-        }
-    };
+    let mut plan = SanitizationPlan::from_profile(
+        args.profile.to_profile(),
+        identity.stable.clone(),
+        explicit_seed,
+        fast_path,
+        verification,
+    )?;
+    // If the device is NVMe and the controller char dev is readable, compile
+    // the hardware purge strategy ladder into the plan for operator review.
+    if let Some(ladder) = purge::compile_target_ladder(&identity) {
+        plan.strategy_ladder = Some(ladder);
+    }
 
     let plan_hash = plan.compute_plan_hash()?;
 
@@ -671,15 +783,32 @@ fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcErr
     println!("Plan Hash (BLAKE3):{}", plan_hash);
     println!("Verification:      {}", plan.verification);
 
-    // Mechanism is a single-variant enum today; destructure directly so the
-    // compiler keeps us honest when a second variant ever appears.
-    let dc_core::Mechanism::LogicalOverwrite {
-        passes: plan_passes,
-    } = &plan.mechanism;
-    if !plan_passes.is_empty() {
-        println!("Passes Count:      {}", plan_passes.len());
-        for (i, p) in plan_passes.iter().enumerate() {
-            println!("  Pass {}: {}", i + 1, p.label);
+    match &plan.mechanism {
+        dc_core::Mechanism::LogicalOverwrite {
+            passes: plan_passes,
+        } => {
+            if !plan_passes.is_empty() {
+                println!("Passes Count:      {}", plan_passes.len());
+                for (i, p) in plan_passes.iter().enumerate() {
+                    println!("  Pass {}: {}", i + 1, p.label);
+                }
+            }
+        }
+        dc_core::Mechanism::HardwarePurge { .. } => {
+            println!("Mechanism:         Hardware Purge (controller-attested)");
+        }
+    }
+
+    if let Some(ladder) = &plan.strategy_ladder {
+        println!("\nPurge Strategy Ladder (hardware paths this device attests):");
+        for (i, step) in ladder.steps.iter().enumerate() {
+            println!(
+                "  {:>2}. {:<28} NIST class: {:<6} read-back: {}",
+                i + 1,
+                step.name,
+                step.nist_class,
+                step.readback_expectation
+            );
         }
     }
 
@@ -700,771 +829,6 @@ fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcErr
             argv_hash: "plan".to_string(),
             target_path: Some(identity.dev_path),
             outcome: AuditOutcome::PlanCompiled { plan_hash },
-        });
-    }
-
-    Ok(())
-}
-
-/// Parse and validate the `--seed` hex argument shared by plan/execute.
-fn parse_seed_hex(seed: &str, profile: ProfileOption) -> Result<Option<[u8; 32]>, DcError> {
-    if profile == ProfileOption::ClearZero {
-        return Err(DcError::Usage(
-            "Cannot specify --seed for 'clear-zero' profile (no deterministic random pass)"
-                .to_string(),
-        ));
-    }
-    if seed.len() != 64 {
-        return Err(DcError::Usage(format!(
-            "Seed must be exactly 64 hex characters (32 bytes), got length {}",
-            seed.len()
-        )));
-    }
-    let bytes = hex::decode(seed)
-        .map_err(|e| DcError::Usage(format!("Invalid hex string in --seed: {}", e)))?;
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    Ok(Some(arr))
-}
-
-fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
-    // 0a. Argument validation FIRST (fail-fast before any hardware probing
-    // or destructive risk — a usage error must never be discovered after a
-    // device has been opened, locked, or the operator has typed a token).
-    let explicit_seed = match args.seed {
-        Some(ref s) => parse_seed_hex(s, args.profile)?,
-        None => None,
-    };
-
-    // 0a-bis. Δ178 (regression `REG-CONF-NONTTY`): an unattended (non-TTY)
-    // invocation without `--serial-confirm` must refuse BEFORE any hardware
-    // probing — an irreversible destructive command may never sit blocked
-    // on an interactive prompt nobody can answer. Dry runs are exempt
-    // (they are read-only rehearsals and are routinely run from CI).
-    let stdin_is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
-    if !stdin_is_tty && args.serial_confirm.is_none() && !args.dry_run {
-        return Err(DcError::Guardian(GuardianRefusal {
-            code: "NON_INTERACTIVE_CONFIRM_REQUIRED",
-            detail: "Refusing to run a destructive wipe from a non-interactive session \
-                     without an explicit confirmation token"
-                .to_string(),
-            hint: "Re-run with `--serial-confirm <SERIAL|LOOPNAME>` (see `dc check` output), \
-                   or run from an interactive terminal."
-                .to_string(),
-        }));
-    }
-
-    let identity = InventoryScanner::probe_device_or_refuse(&args.target)?;
-
-    // 0b. Plan-to-Execute Binding Verification (Spec Delta Δ49)
-    if let Some(ref plan_path) = args.plan {
-        let plan_content = std::fs::read_to_string(plan_path)?;
-        let plan_from_file: SanitizationPlan =
-            serde_json::from_str(&plan_content).map_err(|e| DcError::JournalCorrupt {
-                record_index: 0,
-                reason: format!("PLAN_TAMPERED: Invalid JSON: {}", e),
-            })?;
-
-        // Verify plan file hash
-        let computed_hash = plan_from_file.compute_plan_hash()?;
-        let canonical_json = serde_jcs::to_string(&plan_from_file)?;
-        let verify_hash = blake3::hash(canonical_json.as_bytes()).to_hex().to_string();
-        if computed_hash != verify_hash {
-            return Err(DcError::JournalCorrupt {
-                record_index: 0,
-                reason: "PLAN_TAMPERED".to_string(),
-            });
-        }
-
-        // Check identity compatibility
-        if let Err(contradiction) = identity.stable.check_compatibility(&plan_from_file.target) {
-            eprintln!("[ERROR] IDENTITY_DRIFT against plan: {}", contradiction);
-            if let Some(a) = audit {
-                let _ = a.log(&AuditRecord {
-                    timestamp_utc: chrono_now_iso(),
-                    argv_hash: "execute".to_string(),
-                    target_path: Some(identity.dev_path.clone()),
-                    outcome: AuditOutcome::Refusal {
-                        code: "IDENTITY_DRIFT".to_string(),
-                        detail: contradiction.clone(),
-                    },
-                });
-            }
-            return Err(DcError::IdentityDrift {
-                expected: plan_from_file.target,
-                observed: identity.stable,
-            });
-        }
-    }
-
-    let flags = GuardianFlags {
-        allow_system_disk: args.allow_system_disk,
-        serial_confirm: args.serial_confirm.clone(),
-        allow_loop: args.allow_loop,
-        allow_inactive_signatures: args.allow_inactive_signatures,
-        allow_member: args.allow_member,
-    };
-
-    // 1. Guardian Evaluation (Runs BEFORE confirmation prompt - Δ25)
-    if let Err(e) = Guardian::evaluate(&args.target, &identity, &flags) {
-        if let Some(a) = audit
-            && let DcError::Guardian(ref g) = e
-        {
-            let _ = a.log(&AuditRecord {
-                timestamp_utc: chrono_now_iso(),
-                argv_hash: "execute".to_string(),
-                target_path: Some(identity.dev_path.clone()),
-                outcome: AuditOutcome::Refusal {
-                    code: g.code.to_string(),
-                    detail: g.detail.clone(),
-                },
-            });
-        }
-        return Err(e);
-    }
-
-    // 2. FSM and Plan Compilation
-    let fast_path = if args.no_write_zeroes {
-        FastPathPolicy::ForbidWriteZeroes
-    } else {
-        FastPathPolicy::PreferWriteZeroes
-    };
-
-    let plan = if let Some(ref plan_path) = args.plan {
-        let plan_content = std::fs::read_to_string(plan_path)?;
-        serde_json::from_str(&plan_content).map_err(|e| DcError::JournalCorrupt {
-            record_index: 0,
-            reason: format!("PLAN_TAMPERED: Invalid JSON: {}", e),
-        })?
-    } else {
-        match args.profile {
-            ProfileOption::ClearZero => {
-                SanitizationPlan::clear_zero(identity.stable.clone(), fast_path)
-            }
-            ProfileOption::ClearRandom => {
-                SanitizationPlan::clear_random(identity.stable.clone(), explicit_seed, fast_path)?
-            }
-            ProfileOption::LegacyDod3 => {
-                SanitizationPlan::legacy_dod3(identity.stable.clone(), explicit_seed, fast_path)?
-            }
-        }
-    };
-
-    let mut fsm = FsmOrchestrator::new();
-    let plan_hash = fsm.compile_plan(plan.clone())?;
-    fsm.approve_plan()?;
-
-    // 3. DRY-RUN BOUNDARY (REG-DRYRUN-BOUNDARY).
-    //
-    // A dry run exits HERE: after argument validation, Guardian evaluation and
-    // plan compilation — but BEFORE the confirmation prompt, the approval
-    // gate, hardware locking, journal creation, or any device write. The
-    // historical placement (after the confirmation prompt) made `dc execute
-    // --dry-run` hang on the interactive token prompt, which is exactly what
-    // a dry run must never do: it is a rehearsal, and rehearsals do not ask
-    // for irreversible confirmation.
-    if args.dry_run {
-        println!(
-            "================================================================================"
-        );
-        println!("                        DRY RUN — NO WRITES WILL BE PERFORMED");
-        println!(
-            "================================================================================"
-        );
-        println!("Target Device:     {}", identity.dev_path);
-        println!(
-            "Target Model:      {}",
-            identity.stable.model.as_deref().unwrap_or("Unknown")
-        );
-        println!(
-            "Target Serial:     {}",
-            identity.stable.serial.as_deref().unwrap_or("Unknown")
-        );
-        println!(
-            "Target Capacity:   {} GiB",
-            identity.stable.size_bytes / (1024 * 1024 * 1024)
-        );
-        println!("Plan Schema:       {}", plan.plan_schema);
-        println!("Plan Hash (BLAKE3):{}", plan_hash);
-        println!("Verification:      {}", plan.verification);
-        let dc_core::Mechanism::LogicalOverwrite {
-            passes: plan_passes,
-        } = &plan.mechanism;
-        if !plan_passes.is_empty() {
-            println!("Passes Count:      {}", plan_passes.len());
-            for (i, p) in plan_passes.iter().enumerate() {
-                println!("  Pass {}: {}", i + 1, p.label);
-            }
-        }
-        println!("Engine:            {}", args.engine_default_name());
-        println!(
-            "Fast Path:         {}",
-            if plan.fast_path == FastPathPolicy::PreferWriteZeroes {
-                "PreferWriteZeroes"
-            } else {
-                "ForbidWriteZeroes"
-            }
-        );
-        println!(
-            "================================================================================"
-        );
-        println!("Guardian verdict:  CLEAN (target is safe for sanitization)");
-        println!("DRY RUN COMPLETE: nothing was written, no journal was created.");
-        println!(
-            "================================================================================"
-        );
-
-        if let Some(a) = audit {
-            let _ = a.log(&AuditRecord {
-                timestamp_utc: chrono_now_iso(),
-                argv_hash: "execute-dry-run".to_string(),
-                target_path: Some(identity.dev_path),
-                outcome: AuditOutcome::PlanCompiled { plan_hash },
-            });
-        }
-        return Ok(());
-    }
-
-    // 4. Two-officer approval gate (Δ448). When an AuthorizationSet is
-    // supplied its Ed25519 countersignatures MUST verify against THIS
-    // plan's hash before arming is possible.
-    if let Some(ref auth_set_path) = args.auth_set {
-        let auth_json = std::fs::read_to_string(auth_set_path)?;
-        let auth_set: AuthorizationSet = serde_json::from_str(&auth_json).map_err(|e| {
-            DcError::Usage(format!(
-                "Invalid AuthorizationSet JSON '{}': {}",
-                auth_set_path.display(),
-                e
-            ))
-        })?;
-        match auth_set.verify_pre_arm_authorization(&plan_hash, true) {
-            Ok(custody) => {
-                println!(
-                    "[+] Two-person authorization verified (custody: {:?}).",
-                    custody
-                );
-            }
-            Err(reason) => {
-                if let Some(a) = audit {
-                    let _ = a.log(&AuditRecord {
-                        timestamp_utc: chrono_now_iso(),
-                        argv_hash: "execute".to_string(),
-                        target_path: Some(identity.dev_path.clone()),
-                        outcome: AuditOutcome::Refusal {
-                            code: "AUTHORIZATION_INCOMPLETE".to_string(),
-                            detail: format!("2PI gate refused: {}", reason),
-                        },
-                    });
-                }
-                return Err(DcError::Guardian(GuardianRefusal {
-                    code: "AUTHORIZATION_INCOMPLETE",
-                    detail: format!("Two-person authorization gate refused: {}", reason),
-                    hint: "Re-run `dc approve` with two distinct officer keys for this plan."
-                        .to_string(),
-                }));
-            }
-        }
-    }
-
-    // 5. Interactive or Non-Interactive Confirmation Token [Spec Delta Δ5, Δ6, Δ47]
-    let expected_confirm_token = identity
-        .stable
-        .dm_uuid
-        .clone()
-        .or(identity.stable.serial.clone())
-        .unwrap_or_else(|| identity.kernel_name.clone());
-
-    // B-PROMPT boundary (Δ87): a signal arriving while the operator is at
-    // the confirmation prompt must exit cleanly with NO journal created.
-    cli_signal_injection("prompt-wait");
-    if signal_was_seen() {
-        return Err(DcError::Interrupted {
-            completed_through: None,
-        });
-    }
-
-    if let Some(ref provided) = args.serial_confirm {
-        if provided != &expected_confirm_token {
-            if let Some(a) = audit {
-                let _ = a.log(&AuditRecord {
-                    timestamp_utc: chrono_now_iso(),
-                    argv_hash: "execute".to_string(),
-                    target_path: Some(identity.dev_path.clone()),
-                    outcome: AuditOutcome::Refusal {
-                        code: "CONFIRM_MISMATCH".to_string(),
-                        detail: format!(
-                            "Provided token '{}' does not match expected '{}'",
-                            provided, expected_confirm_token
-                        ),
-                    },
-                });
-            }
-            eprintln!(
-                "[ERROR] Confirmation token mismatch: expected '{}', got '{}'",
-                expected_confirm_token, provided
-            );
-            return Err(DcError::Usage("Confirmation token mismatch".to_string()));
-        }
-    } else {
-        println!("\n[WARNING] YOU ARE ABOUT TO PERMANENTLY AND IRREVERSIBLY WIPE:");
-        println!("  Target Device:  {}", identity.dev_path);
-        println!(
-            "  Device Model:   {}",
-            identity.stable.model.as_deref().unwrap_or("Unknown")
-        );
-        println!("  Confirm Token:  {}", expected_confirm_token);
-        println!(
-            "  Capacity:       {} GiB\n",
-            identity.stable.size_bytes / (1024 * 1024 * 1024)
-        );
-        println!(
-            "Type the exact confirmation token '{}' to confirm execution:",
-            expected_confirm_token
-        );
-
-        let mut input = String::new();
-        std::io::stdin()
-            .read_line(&mut input)
-            .map_err(DcError::StdIo)?;
-
-        if input.trim() != expected_confirm_token {
-            if let Some(a) = audit {
-                let _ = a.log(&AuditRecord {
-                    timestamp_utc: chrono_now_iso(),
-                    argv_hash: "execute".to_string(),
-                    target_path: Some(identity.dev_path.clone()),
-                    outcome: AuditOutcome::Refusal {
-                        code: "CONFIRM_MISMATCH".to_string(),
-                        detail: "Interactive token entry mismatch".to_string(),
-                    },
-                });
-            }
-            println!("Confirmation token mismatch. Aborting.");
-            return Err(DcError::OperatorAbort);
-        }
-    }
-
-    // B-PREARM boundary (Δ87): a signal arriving after confirmation but
-    // before arming must exit 3 with NO journal created (nothing has been
-    // promised to the journal chain yet, so there is nothing to resume).
-    cli_signal_injection("pre-arm");
-    if signal_was_seen() {
-        return Err(DcError::Interrupted {
-            completed_through: None,
-        });
-    }
-
-    // 6. Arm and Lock Hardware (with O_EXCL and flock - Δ24)
-    let lock_handle = Guardian::arm_and_lock(&args.target, &identity.stable)?;
-    fsm.arm()?;
-
-    // 7. Initialize Hash-Chained Journal [Spec Delta Δ16]
-    let timestamp_str = chrono_now_iso();
-    let journal_dir = args.journal_dir.as_ref().unwrap_or(&args.out_dir);
-    let journal_filename = format!(
-        "{}-{}.dcj",
-        expected_confirm_token.replace('/', "_"),
-        timestamp_str.replace(':', "-")
-    );
-    let journal_path = journal_dir.join(&journal_filename);
-
-    let engine_name = match args.engine {
-        EngineChoice::Auto => "auto",
-        EngineChoice::Uring => "uring",
-        EngineChoice::Sync => "sync",
-    };
-
-    // 8. Setup Operator Key
-    let keypair = match &args.key {
-        Some(k) => OperatorKeyPair::load_from_file(k)?,
-        None => OperatorKeyPair::generate(),
-    };
-
-    let is_sealed = args.key.is_some();
-    let journal_uuid = format!("dcj-{}", timestamp_str.replace([':', '-', 'T', 'Z'], ""));
-
-    let header_record = JournalRecord::Header {
-        uuid: journal_uuid.clone(),
-        sealed: is_sealed,
-        operator_pubkey: if is_sealed {
-            Some(keypair.public_key_hex())
-        } else {
-            None
-        },
-        plan: plan.clone(),
-        plan_hash: plan_hash.clone(),
-        identity: identity.clone(),
-        tool: ToolBuild::current(),
-        engine: engine_name.to_string(),
-        tuning: EngineTuning {
-            qd: 64,
-            pool_mib: 128,
-            window_bytes: plan.window_bytes,
-            checkpoint_mib: args.checkpoint_mib,
-            checkpoint_ms: args.checkpoint_ms,
-        },
-        argv_hash: "cli-exec".to_string(),
-        started_utc: timestamp_str.clone(),
-    };
-
-    let mut overrides = Vec::new();
-    if args.allow_system_disk {
-        overrides.push("allow-system-disk".to_string());
-    }
-    if args.allow_loop {
-        overrides.push("allow-loop".to_string());
-    }
-    if args.allow_member {
-        overrides.push("allow-member".to_string());
-    }
-    if args.allow_inactive_signatures {
-        overrides.push("allow-inactive-signatures".to_string());
-    }
-
-    let signing_key = if is_sealed {
-        Some(keypair.signing_key.clone())
-    } else {
-        None
-    };
-
-    let mut journal = JournalWriter::create_new(&journal_path, journal_uuid, signing_key)?;
-    journal.append(&header_record)?;
-    journal.append(&JournalRecord::Armed {
-        overrides,
-        locks_held: vec![format!(
-            "{}:{}",
-            identity.kernel.major, identity.kernel.minor
-        )],
-        at: chrono_now_iso(),
-    })?;
-
-    // 9. Engine Execution Loop
-    let span = LbaSpan::new(
-        identity.stable.size_bytes,
-        identity.logical_block_size,
-        plan.window_bytes,
-    );
-
-    let supports_write_zeroes = LayerStackDetector::can_write_zeroes(&identity.kernel_name)
-        && (fast_path == FastPathPolicy::PreferWriteZeroes);
-
-    let mut engine: Box<dyn dc_io::Engine> = match args.engine {
-        EngineChoice::Sync => Box::new(SyncEngine::new(
-            lock_handle.disk_file,
-            plan.window_bytes as usize,
-            supports_write_zeroes,
-        )?),
-        EngineChoice::Uring => Box::new(UringEngine::try_new(
-            lock_handle.disk_file,
-            plan.window_bytes as usize,
-            supports_write_zeroes,
-            64,
-        )?),
-        EngineChoice::Auto => create_engine(
-            lock_handle.disk_file,
-            plan.window_bytes as usize,
-            supports_write_zeroes,
-            64,
-        )?,
-    };
-
-    let passes = match &plan.mechanism {
-        dc_core::Mechanism::LogicalOverwrite { passes } => passes.clone(),
-    };
-
-    let mut exec_passes = Vec::new();
-    let exec_start_time = Instant::now();
-
-    for (pass_idx, pass) in passes.iter().enumerate() {
-        let permit = fsm.begin_pass(pass_idx as u8)?;
-        let pat_source = create_pattern_source(&pass.pattern);
-
-        journal.append(&JournalRecord::BeginPass {
-            pass: pass_idx as u8,
-            pattern: pat_source.descriptor(),
-            window_bytes: plan.window_bytes,
-        })?;
-
-        if !args.no_progress {
-            println!(
-                "\n[>] Executing Pass {}/{}: {}",
-                pass_idx + 1,
-                passes.len(),
-                pass.label
-            );
-        }
-
-        let pb = if !args.no_progress {
-            let p = ProgressBar::new(span.total_windows());
-            p.set_style(
-                ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} windows ({percent}%) | {msg}")
-                    .unwrap()
-                    .progress_chars("=>-"),
-            );
-            Some(p)
-        } else {
-            None
-        };
-
-        let outcome_res = if matches!(pass.pattern, Pattern::Zero) && supports_write_zeroes {
-            engine.zero_pass(&permit, pass_idx as u8, &span, 0, &mut |p| {
-                if let Some(ref bar) = pb {
-                    bar.set_position(p.windows_done);
-                    bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
-                }
-            })
-        } else {
-            engine.write_pass(
-                &permit,
-                pass_idx as u8,
-                pat_source.as_ref(),
-                &span,
-                0,
-                &mut |p| {
-                    if let Some(ref bar) = pb {
-                        bar.set_position(p.windows_done);
-                        bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
-                    }
-                },
-            )
-        };
-
-        let outcome = match outcome_res {
-            Ok(o) => o,
-            Err(DcError::Interrupted { completed_through }) => {
-                // Graceful drain (Δ87): a termination signal stops the engine
-                // at a window boundary; the committed prefix is journaled so
-                // `dc resume` can continue exactly where we stopped.
-                let (through_pass, through_window) = match completed_through {
-                    Some((p, w)) => (Some(p), Some(w)),
-                    None => (Some(pass_idx as u8), None),
-                };
-                let _ = journal.append(&JournalRecord::Interrupted {
-                    at: chrono_now_iso(),
-                    hint: "Graceful drain on termination signal".to_string(),
-                    completed_through_pass: through_pass,
-                    completed_through_window: through_window,
-                    signals_received: Some(
-                        SIGNALS_RECEIVED.load(std::sync::atomic::Ordering::SeqCst),
-                    ),
-                });
-                return Err(DcError::Interrupted { completed_through });
-            }
-            Err(e) => {
-                let (errno, at_lba) = match &e {
-                    DcError::Io { errno, at_lba, .. } => (Some(*errno), *at_lba),
-                    DcError::StdIo(io_err) => (io_err.raw_os_error(), None),
-                    _ => (None, None),
-                };
-                let _ = journal.append(&JournalRecord::Failed {
-                    code: "EIO".to_string(),
-                    errno,
-                    op: Some("write".to_string()),
-                    at_lba,
-                    detail: e.to_string(),
-                });
-                if let Some(a) = audit {
-                    let _ = a.log(&AuditRecord {
-                        timestamp_utc: chrono_now_iso(),
-                        argv_hash: "execute".to_string(),
-                        target_path: Some(args.target.to_string_lossy().to_string()),
-                        outcome: AuditOutcome::Refusal {
-                            code: "EIO".to_string(),
-                            detail: e.to_string(),
-                        },
-                    });
-                }
-                return Err(e);
-            }
-        };
-
-        if let Some(bar) = pb {
-            bar.finish_with_message("Pass Completed");
-        }
-
-        journal.append(&JournalRecord::RangeCommit {
-            pass: pass_idx as u8,
-            first_window: 0,
-            num_windows: outcome.windows_written,
-        })?;
-
-        journal.append(&JournalRecord::EndPass {
-            pass: pass_idx as u8,
-        })?;
-
-        // Honest per-pass throughput in KiB/s (u64), matching the
-        // ExecutionPassReport contract.
-        let elapsed_s = (outcome.duration_ms as f64 / 1000.0).max(0.001);
-        let throughput_kib_s = ((outcome.bytes_written as f64 / 1024.0) / elapsed_s) as u64;
-
-        exec_passes.push(ExecutionPassReport {
-            index: pass_idx as u8,
-            pattern: pat_source.descriptor().name,
-            fast_path_used: outcome.fast_path_used,
-            windows_written: outcome.windows_written,
-            throughput_kib_s,
-        });
-
-        // Flush media cache before moving to next pass or verify
-        let flush_permit = fsm.begin_flush(pass_idx as u8)?;
-        engine.flush(&flush_permit)?;
-        journal.append(&JournalRecord::Flushed {
-            pass: pass_idx as u8,
-        })?;
-    }
-
-    // 10. Verification Phase
-    fsm.begin_verify()?;
-    if !args.no_progress {
-        println!("\n[>] Performing 100% Full LBA Read-Back Verification & Stream Hashing...");
-    }
-
-    let pb_verify = if !args.no_progress {
-        let p = ProgressBar::new(span.total_windows());
-        p.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.green/white}] {pos}/{len} windows ({percent}%) | {msg}")
-                .unwrap()
-                .progress_chars("=>-"),
-        );
-        Some(p)
-    } else {
-        None
-    };
-
-    let last_pass = passes.last().unwrap();
-    let verify_pat_source = create_pattern_source(&last_pass.pattern);
-    let mut verifier = StreamVerifier::new(
-        VerifyLevel::Full,
-        plan.window_bytes,
-        identity.logical_block_size,
-        args.sha256,
-        true,
-    );
-
-    if let Err(e) = engine.read_verify(verify_pat_source.as_ref(), &span, &mut verifier, &mut |p| {
-        if let Some(ref bar) = pb_verify {
-            bar.set_position(p.windows_done);
-            bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
-        }
-    }) {
-        match e {
-            DcError::Interrupted { completed_through } => {
-                let _ = journal.append(&JournalRecord::Interrupted {
-                    at: chrono_now_iso(),
-                    hint: "Graceful drain on termination signal during verification".to_string(),
-                    completed_through_pass: completed_through.map(|(p, _)| p),
-                    completed_through_window: completed_through.map(|(_, w)| w),
-                    signals_received: Some(
-                        SIGNALS_RECEIVED.load(std::sync::atomic::Ordering::SeqCst),
-                    ),
-                });
-                return Err(DcError::Interrupted { completed_through });
-            }
-            e => {
-                let (errno, at_lba) = match &e {
-                    DcError::Io { errno, at_lba, .. } => (Some(*errno), *at_lba),
-                    DcError::StdIo(io_err) => (io_err.raw_os_error(), None),
-                    _ => (None, None),
-                };
-                let _ = journal.append(&JournalRecord::Failed {
-                    code: "EIO".to_string(),
-                    errno,
-                    op: Some("verify-read".to_string()),
-                    at_lba,
-                    detail: e.to_string(),
-                });
-                return Err(e);
-            }
-        }
-    }
-
-    if let Some(bar) = pb_verify {
-        bar.finish_with_message("Verification Complete");
-    }
-
-    let verify_report = verifier.finalize();
-
-    journal.append(&JournalRecord::Verify {
-        level: "Full".to_string(),
-        windows_checked: verify_report.windows_checked,
-        mismatch_count: verify_report.mismatch_count,
-        first_mismatch_lbas: verify_report.first_mismatch_lbas.clone(),
-        stream_hash_blake3: verify_report.stream_hash_blake3.clone(),
-        stream_hash_sha256: verify_report.stream_hash_sha256.clone(),
-        fast_path_used: supports_write_zeroes,
-    })?;
-
-    if verify_report.mismatch_count > 0 {
-        journal.append(&JournalRecord::Failed {
-            code: "VERIFICATION_FAILED".to_string(),
-            errno: None,
-            op: Some("verify".to_string()),
-            at_lba: verify_report.first_mismatch_lbas.first().copied(),
-            detail: format!("Found {} mismatching windows", verify_report.mismatch_count),
-        })?;
-        return Err(DcError::VerificationFailed {
-            mismatches: verify_report.mismatch_count,
-            sample: verify_report.first_mismatch_lbas,
-        });
-    }
-
-    fsm.certify()?;
-
-    // B-VICTORY / Victory-Lap boundary (Δ83): a signal landing AFTER the
-    // media has been fully written and verified completes normally — the
-    // destructive work is done and abandoning the certificate would only
-    // destroy evidence. The flag is deliberately NOT checked past this point.
-    cli_signal_injection("post-verify");
-
-    let finished_time_str = chrono_now_iso();
-    journal.append(&JournalRecord::Completed {
-        at: finished_time_str.clone(),
-        duration_mono_ms: exec_start_time.elapsed().as_millis() as u64,
-    })?;
-
-    // 11. Generate & Sign Sanitization Certificate
-    let mut cert = SanitizationCertificate::new(
-        plan,
-        plan_hash,
-        identity,
-        ExecutionDetails {
-            started_utc: timestamp_str,
-            finished_utc: finished_time_str,
-            duration_mono_ms: exec_start_time.elapsed().as_millis() as u64,
-            interruptions: vec![],
-            failures: vec![],
-            passes: exec_passes,
-        },
-        verify_report,
-        journal.summary(),
-        keypair.public_key_hex(),
-        keypair.key_fingerprint_blake3(),
-    );
-
-    cert.sign(&keypair)?;
-
-    let cert_filename = format!("{}.cert.json", journal_filename.trim_end_matches(".dcj"));
-    let cert_path = args.out_dir.join(&cert_filename);
-    let cert_json = serde_json::to_string_pretty(&cert)?;
-    std::fs::write(&cert_path, cert_json)?;
-
-    if !args.no_progress {
-        println!("\n{}", cert.render_summary());
-        println!("\n[+] Certificate written to: {}", cert_path.display());
-        println!("[+] Journal written to:     {}", journal_path.display());
-    }
-
-    if let Some(a) = audit {
-        let _ = a.log(&AuditRecord {
-            timestamp_utc: chrono_now_iso(),
-            argv_hash: "execute".to_string(),
-            target_path: Some(args.target.to_string_lossy().to_string()),
-            outcome: AuditOutcome::Executed {
-                journal_path: journal_path.to_string_lossy().to_string(),
-                chain_head: journal.current_chain_head(),
-            },
         });
     }
 
@@ -1710,6 +1074,7 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
 
     let passes = match &plan.mechanism {
         dc_core::Mechanism::LogicalOverwrite { passes } => passes.clone(),
+        dc_core::Mechanism::HardwarePurge { .. } => Vec::new(), // no logical passes on resume of purge journal
     };
 
     let mut exec_passes = Vec::new();
@@ -1816,7 +1181,7 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
     let last_pass = passes.last().unwrap();
     let verify_pat_source = create_pattern_source(&last_pass.pattern);
     let mut verifier = StreamVerifier::new(
-        VerifyLevel::Full,
+        plan.verification,
         plan.window_bytes,
         identity.logical_block_size,
         false,
@@ -1826,6 +1191,7 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
     if let Err(e) = engine.read_verify(
         verify_pat_source.as_ref(),
         &span,
+        plan.verification.effective_stride(),
         &mut verifier,
         &mut |_| {},
     ) {
@@ -1863,7 +1229,7 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
     let verify_report = verifier.finalize();
 
     journal.append(&JournalRecord::Verify {
-        level: "Full".to_string(),
+        level: plan.verification.short_tag(),
         windows_checked: verify_report.windows_checked,
         mismatch_count: verify_report.mismatch_count,
         first_mismatch_lbas: verify_report.first_mismatch_lbas.clone(),
@@ -1957,6 +1323,15 @@ fn cmd_verify_standalone(args: VerifyArgs) -> Result<(), DcError> {
 
         let passes = match &plan.mechanism {
             dc_core::Mechanism::LogicalOverwrite { passes } => passes,
+            dc_core::Mechanism::HardwarePurge {
+                selected_mechanism, ..
+            } => {
+                return Err(DcError::Usage(format!(
+                    "journal binds a hardware-purge plan ({}) — resume applies to \
+                     logical overwrite journals; re-run `dc purge` instead",
+                    selected_mechanism
+                )));
+            }
         };
         let last_pass = passes
             .last()
@@ -1964,7 +1339,7 @@ fn cmd_verify_standalone(args: VerifyArgs) -> Result<(), DcError> {
         let pat_source = create_pattern_source(&last_pass.pattern);
 
         let mut verifier = StreamVerifier::new(
-            VerifyLevel::Full,
+            plan.verification,
             plan.window_bytes,
             identity.logical_block_size,
             false,
@@ -1973,7 +1348,13 @@ fn cmd_verify_standalone(args: VerifyArgs) -> Result<(), DcError> {
 
         let mut engine: Box<dyn dc_io::Engine> =
             create_engine(target_file, plan.window_bytes as usize, false, 64)?;
-        engine.read_verify(pat_source.as_ref(), &span, &mut verifier, &mut |_| {})?;
+        engine.read_verify(
+            pat_source.as_ref(),
+            &span,
+            plan.verification.effective_stride(),
+            &mut verifier,
+            &mut |_| {},
+        )?;
 
         let report = verifier.finalize();
         if report.mismatch_count > 0 {
@@ -2166,6 +1547,7 @@ fn cmd_cert_reconstruct(
         .iter()
         .find_map(|r| match r {
             JournalRecord::Verify {
+                level,
                 windows_checked,
                 mismatch_count,
                 first_mismatch_lbas,
@@ -2173,7 +1555,7 @@ fn cmd_cert_reconstruct(
                 stream_hash_sha256,
                 ..
             } => Some(dc_verify::VerificationReport {
-                level: VerifyLevel::Full,
+                level: parse_journal_verify_level(level),
                 windows_checked: *windows_checked,
                 mismatch_count: *mismatch_count,
                 first_mismatch_lbas: first_mismatch_lbas.clone(),
@@ -2600,6 +1982,7 @@ fn cmd_journal_inspect(path: &Path) -> Result<(), DcError> {
             "Passes Planned:     {}",
             match &plan.mechanism {
                 dc_core::Mechanism::LogicalOverwrite { passes } => passes.len(),
+                dc_core::Mechanism::HardwarePurge { .. } => 0,
             }
         );
     }
@@ -2618,6 +2001,12 @@ fn cmd_journal_inspect(path: &Path) -> Result<(), DcError> {
 
     println!("================================================================================");
     Ok(())
+}
+
+/// Parse the journal `Verify.level` string back into a VerifyLevel.
+/// Unknown strings degrade to Full — the historical (and strictest) level.
+fn parse_journal_verify_level(level: &str) -> VerifyLevel {
+    VerifyLevel::from_short_tag(level).unwrap_or(VerifyLevel::Full)
 }
 
 fn chrono_now_iso() -> String {
