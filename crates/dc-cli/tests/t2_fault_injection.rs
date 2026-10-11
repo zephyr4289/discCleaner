@@ -1,6 +1,6 @@
 use assert_cmd::Command;
 use dc_testkit::{
-    ArtifactsDumper, CertOracle, DioProbe, DmDevice, FaultPlan, Janitor, JournalOracle,
+    CertOracle, DioProbe, DmDevice, FaultPlan, Janitor, JournalOracle,
     LoopDevice, SentinelManager, TableLine,
 };
 use std::fs;

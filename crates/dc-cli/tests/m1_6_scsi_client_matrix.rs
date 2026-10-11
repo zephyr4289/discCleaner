@@ -59,14 +59,15 @@ fn run_block_node_enforcement_tests(ledger: &RigLedger) {
 
     // Opening /dev/sg0 character node -> Refused!
     let sg_res = ScsiSession::open_block_node("/dev/sg0", false, false);
-    assert!(sg_res.is_err());
+    let sg_refused = sg_res.is_err();
+    assert!(sg_refused);
     assert_eq!(sg_res.unwrap_err(), "UNCOVERED_DOOR_CHARACTER_NODE_REFUSED");
 
     // Opening /dev/sdb block node -> Accepted!
     let sd_res = ScsiSession::open_block_node("/dev/sdb", false, false);
     assert!(sd_res.is_ok());
 
-    ledger.assert("M1.6-NODE", "NODE-BLOCK-RUNTIME", "true", sg_res.is_err().to_string(), None);
+    ledger.assert("M1.6-NODE", "NODE-BLOCK-RUNTIME", "true", sg_refused.to_string(), None);
 }
 
 fn run_timing_integrity_tests(ledger: &RigLedger) {
@@ -74,12 +75,13 @@ fn run_timing_integrity_tests(ledger: &RigLedger) {
 
     // Instant completion (< 1000ms) on a 90s (90,000ms) mechanism -> Flagged as anomaly!
     let fast_res = TimingIntegrity::check_mechanism_duration("ScsiSanitizeBlockErase", 250, 90_000);
-    assert!(fast_res.is_err());
+    let fast_flagged = fast_res.is_err();
+    assert!(fast_flagged);
     assert_eq!(fast_res.unwrap_err(), "TIMING_ANOMALY_TOO_FAST_MANGLE_SUSPECTED");
 
     // Normal completion (95,000ms) -> Accepted
     let normal_res = TimingIntegrity::check_mechanism_duration("ScsiSanitizeBlockErase", 95_000, 90_000);
     assert!(normal_res.is_ok());
 
-    ledger.assert("M1.6-TIMING", "TIMING-PROD-ANOMALY", "true", fast_res.is_err().to_string(), None);
+    ledger.assert("M1.6-TIMING", "TIMING-PROD-ANOMALY", "true", fast_flagged.to_string(), None);
 }

@@ -247,7 +247,7 @@ impl Guardian {
             Err(e) => {
                 // EBUSY or failure on O_EXCL -> attempt re-classification
                 if let Ok(identity) = InventoryScanner::probe_device(target_path) {
-                    let mut flags = GuardianFlags::default();
+                    let flags = GuardianFlags::default();
                     if let Err(re_err) = Self::evaluate(target_path, &identity, &flags) {
                         return Err(re_err);
                     }
@@ -270,8 +270,8 @@ impl Guardian {
         if meta.file_type().is_block_device() {
             use std::os::unix::fs::MetadataExt;
             let rdev = meta.rdev();
-            let maj = unsafe { libc::major(rdev) };
-            let min = unsafe { libc::minor(rdev) };
+            let maj = libc::major(rdev);
+            let min = libc::minor(rdev);
 
             let sys_dev_dir = PathBuf::from(format!("/sys/dev/block/{}:{}", maj, min));
             let serial = InventoryScanner::read_trimmed_string(&sys_dev_dir.join("device/serial"));
@@ -284,6 +284,8 @@ impl Guardian {
                         wwn: None,
                         size_bytes: 0,
                         bus: expected_stable.bus,
+                        dm_name: None,
+                        dm_uuid: None,
                     },
                 });
             }
@@ -300,7 +302,16 @@ impl Guardian {
             }
         }
 
-        // 4. Lock all child partition nodes with O_EXCL and flock (Δ24)
+        // 4. Lock all child partition nodes with O_EXCL and flock (Δ24).
+        //
+        // FAIL-CLOSED (regression `REG-GUARDIAN-PARTLOCK`): every child
+        // partition that exists MUST be exclusively opened and flocked.
+        // The historical code silently skipped partitions whose O_EXCL open
+        // failed, so a competing process holding ONE partition open would
+        // still let the wipe proceed — the Guardian believed it owned the
+        // whole disk while a foreign fd was still attached to part of it.
+        // Only ENOENT (partition vanished between sysfs read and open) is
+        // tolerated; every other failure refuses to arm.
         let mut partition_files = Vec::new();
         let kernel_name = target_path.file_name().unwrap_or_default().to_string_lossy();
         let sys_block_dir = PathBuf::from(format!("/sys/block/{}", kernel_name));
@@ -309,17 +320,47 @@ impl Guardian {
                 let part_name = entry.file_name().to_string_lossy().to_string();
                 if part_name.starts_with(kernel_name.as_ref()) && part_name != kernel_name.as_ref() {
                     let part_path = format!("/dev/{}", part_name);
-                    if let Ok(pf) = OpenOptions::new()
+                    match OpenOptions::new()
                         .read(true)
                         .write(true)
                         .custom_flags(libc::O_EXCL)
                         .open(&part_path)
                     {
-                        let pfd = pf.as_raw_fd();
-                        unsafe {
-                            let _ = libc::flock(pfd, libc::LOCK_EX | libc::LOCK_NB);
+                        Ok(pf) => {
+                            let pfd = pf.as_raw_fd();
+                            unsafe {
+                                if libc::flock(pfd, libc::LOCK_EX | libc::LOCK_NB) != 0 {
+                                    return Err(DcError::Guardian(GuardianRefusal {
+                                        code: "IN_USE_RACE",
+                                        detail: format!(
+                                            "Partition '{}' is locked by another process.",
+                                            part_path
+                                        ),
+                                        hint: "Ensure no other tool holds a flock on any \
+                                               partition of this disk."
+                                            .to_string(),
+                                    }));
+                                }
+                            }
+                            partition_files.push(pf);
                         }
-                        partition_files.push(pf);
+                        Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {
+                            // The partition node vanished between the sysfs
+                            // scan and the open; nothing to lock.
+                            continue;
+                        }
+                        Err(e) => {
+                            return Err(DcError::Guardian(GuardianRefusal {
+                                code: "IN_USE_RACE",
+                                detail: format!(
+                                    "Exclusive lock (O_EXCL) failed on partition '{}': {}",
+                                    part_path, e
+                                ),
+                                hint: "Another process holds an active open claim on this \
+                                       partition; refusing to arm."
+                                    .to_string(),
+                            }));
+                        }
                     }
                 }
             }
@@ -331,12 +372,41 @@ impl Guardian {
         })
     }
 
-    /// Check if device name matches a partition format (e.g. sda1, sdb2, nvme0n1p1, mmcblk0p1, loop0p1).
+    /// Check if device name matches a partition format
+    /// (e.g. sda1, sdb2, nvme0n1p1, mmcblk0p1, loop0p1).
+    ///
+    /// REGRESSION `REG-PARTITION-NAME` (regression guard): the historical
+    /// implementation tested `name.contains('p')` for nvme/mmcblk/loop
+    /// bases — but "loop" itself contains a 'p', so the WHOLE DISK
+    /// `loop0` was classified as a partition and refused as
+    /// NOT_WHOLE_DISK. Partition suffixes are only valid after a digit:
+    /// `loop0p1` is a partition, `loop0` is a disk.
     pub fn is_partition_name(name: &str) -> bool {
-        if name.starts_with("nvme") || name.starts_with("mmcblk") || name.starts_with("loop") {
-            name.contains('p') && name.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false)
-        } else {
-            name.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false)
+        // p-suffix style: <base-ending-in-a-digit>p<partition-index>
+        // covers nvme0n1p2, mmcblk0p3, loop0p1. The 'p' must follow a digit
+        // and precede only digits, so the 'p' inside "loop"/"nvme"/
+        // "mmcblk" prefixes can never match.
+        if let Some(pos) = name.rfind('p') {
+            let after = &name[pos + 1..];
+            let before = &name[..pos];
+            if !after.is_empty()
+                && after.bytes().all(|b| b.is_ascii_digit())
+                && before.chars().last().is_some_and(|c| c.is_ascii_digit())
+            {
+                return true;
+            }
         }
+
+        // SCSI-style: <letters><partition-index> (sda1, sdb12, vda3).
+        // Only for classic letter-only disk prefixes — nvme0n1 ends in a
+        // digit but is a whole disk.
+        let letters: String = name.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+        let digits = &name[letters.len()..];
+        !digits.is_empty()
+            && digits.bytes().all(|b| b.is_ascii_digit())
+            && (letters.starts_with("sd")
+                || letters.starts_with("hd")
+                || letters.starts_with("vd")
+                || letters.starts_with("xvd"))
     }
 }

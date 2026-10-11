@@ -1,7 +1,8 @@
-use dc_core::{FastPathPolicy, FixedPattern, FsmOrchestrator, LbaSpan, SanitizationPlan, StableIdentity, BusType};
+use dc_core::{FastPathPolicy, FixedPattern, FsmOrchestrator, SanitizationPlan, StableIdentity, BusType};
+use dc_io::Engine as _;
+use dc_io::LbaSpan;
 use dc_io::{CompletionTracker, SyncEngine, WindowGeometry, ZeroPath};
 use dc_testkit::RigLedger;
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use tempfile::NamedTempFile;
 

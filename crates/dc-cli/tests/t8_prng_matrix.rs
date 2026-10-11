@@ -157,7 +157,7 @@ fn run_f4_e2e_reproduction(scratch_dir: &Path) {
     let cert_content = fs::read_to_string(&cert_path).unwrap();
     let mut cert_json: serde_json::Value = serde_json::from_str(&cert_content).unwrap();
 
-    if let Some(s) = cert_json.pointer_mut("/plan/mechanism/passes/0/pattern/DeterministicRandom/seed") {
+    if let Some(s) = cert_json.pointer_mut("/plan/mechanism/passes/0/pattern/seed") {
         *s = serde_json::Value::String("9999999999999999999999999999999999999999999999999999999999999999".to_string());
     }
     fs::write(&tampered_cert_path, serde_json::to_string_pretty(&cert_json).unwrap()).unwrap();
@@ -167,7 +167,7 @@ fn run_f4_e2e_reproduction(scratch_dir: &Path) {
     println!("  [✓] E2E-NEG: Cleanroom detected tampered seed mismatch (oracle teeth confirmed).");
 
     // 5. E2E-SCHEME: Unknown scheme -> Refusal
-    if let Some(s) = cert_json.pointer_mut("/plan/mechanism/passes/0/pattern/DeterministicRandom/scheme") {
+    if let Some(s) = cert_json.pointer_mut("/plan/mechanism/passes/0/pattern/scheme") {
         *s = serde_json::Value::String("chacha20-window-v2".to_string());
     }
     let unknown_cert_path = run_dir.join("unknown_scheme_cert.json");

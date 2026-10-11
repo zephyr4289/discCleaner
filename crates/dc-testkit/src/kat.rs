@@ -22,7 +22,11 @@ impl KnownAnswerTests {
         ];
         let counter = 1u32;
 
-        let expected_hex = "10f1e7e4d13b5915500fdd1fa32071c4c7d1f4c733c068030422aa9ac3e459fa4fa9109b4ac52774054a778c7294e88380d18d5beae199e122ec92ac41da7f3d";
+        // REG-RFC8439-KAT: the true RFC 8439 §2.3.2 serialized block. The
+        // historical string was corrupted from byte 38 onward (it matched
+        // the true vector only through "...0422aa9ac3"); it now matches the
+        // RFC text AND the production chacha20 crate bit-for-bit.
+        let expected_hex = "10f1e7e4d13b5915500fdd1fa32071c4c7d1f4c733c068030422aa9ac3d46c4ed2826446079faa0914c2d705d98b02a2b5129cd1de164eb9cbd083e8a2503c4e";
 
         let chacha = ChaCha20Ref::new(&key, &nonce, counter);
         let block = chacha.block(counter);

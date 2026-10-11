@@ -54,7 +54,7 @@ fn run_config_txn_guard_tests(ledger: &RigLedger) {
     let mut partition_config_byte: u8 = 0b0100_1000; // Original config (User area)
 
     {
-        let mut guard = ConfigTxnGuard::new(&config_permit, &mut partition_config_byte);
+        let guard = ConfigTxnGuard::new(&config_permit, &mut partition_config_byte);
         *guard.current_partition_config = 0b0100_1001; // Switch to boot0
         assert_eq!(*guard.current_partition_config, 0b0100_1001);
         // Do NOT call guard.commit() -> simulates early exit / error / panic!

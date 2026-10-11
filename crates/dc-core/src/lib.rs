@@ -36,7 +36,7 @@ pub use tool::ToolBuild;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
+    
 
     #[test]
     fn test_chacha20_deterministic_prng_golden_vector() {

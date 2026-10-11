@@ -33,7 +33,7 @@ impl Janitor {
         reclaimed
     }
 
-    pub fn sweep_active_swaps(scratch_prefix: &Path) -> Vec<String> {
+    pub fn sweep_active_swaps(_scratch_prefix: &Path) -> Vec<String> {
         let mut reclaimed = Vec::new();
         if let Ok(content) = fs::read_to_string("/proc/swaps") {
             for line in content.lines().skip(1) {

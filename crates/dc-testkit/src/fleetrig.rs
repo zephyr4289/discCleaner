@@ -1,5 +1,5 @@
 use dc_core::fleet::{
-    AssignmentRow, BatchManifest, BatchReconstructor, ChildJournalState, FleetJobOutcome,
+    AssignmentRow, BatchManifest, BatchReconstructor, ChildJournalState,
     FleetReport,
 };
 use serde::{Deserialize, Serialize};

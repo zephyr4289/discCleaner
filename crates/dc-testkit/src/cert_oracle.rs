@@ -22,7 +22,7 @@ impl CertOracle {
     pub fn parse_and_validate(
         path: &Path,
         expected_chain_head: &str,
-        wz_max: u64,
+        _wz_max: u64,
     ) -> Result<CertOracleReport, String> {
         let content = fs::read_to_string(path)
             .map_err(|e| format!("Failed to read certificate {}: {}", path.display(), e))?;
@@ -40,11 +40,14 @@ impl CertOracle {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing signature value".to_string())?;
 
+        // Owned early: `root` is mutated below when the signature field is
+        // stripped, so any borrow into it must not outlive that mutation.
         let pubkey_hex = root
             .get("operator")
             .and_then(|o| o.get("public_key_ed25519"))
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "Missing operator public_key_ed25519".to_string())?;
+            .ok_or_else(|| "Missing operator public_key_ed25519".to_string())?
+            .to_string();
 
         let plan_hash_stored = root
             .get("plan_hash")

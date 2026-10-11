@@ -1,6 +1,6 @@
 use dc_core::fleet::{
     AdvisoryResolution, ArgvConstructor, AssignmentRow, BatchManifest, BatchReconstructor,
-    ChildJournalState, FleetJobOutcome, FleetReport, IdentityResolver, SpawnContext,
+    ChildJournalState, FleetJobOutcome, IdentityResolver, SpawnContext,
 };
 use dc_testkit::RigLedger;
 

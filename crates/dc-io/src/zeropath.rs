@@ -1,3 +1,4 @@
+use crate::BLKZEROOUT_IOCTL;
 use dc_core::FastPathPolicy;
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
@@ -39,13 +40,18 @@ impl ZeroPath {
             #[cfg(target_os = "linux")]
             {
                 let range = [current_offset as u64, len as u64];
-                const BLKZEROOUT: libc::c_ulong = 0x1277;
                 let fd = file.as_raw_fd();
-                let ret = unsafe { libc::ioctl(fd, BLKZEROOUT, range.as_ptr()) };
+                let ret = unsafe { libc::ioctl(fd, BLKZEROOUT_IOCTL, range.as_ptr()) };
                 if ret != 0 {
                     let err = std::io::Error::last_os_error();
                     return Err(format!("BLKZEROOUT failed at offset {}: {}", current_offset, err));
                 }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                // Fail-closed: never report fast-path zeroing as performed on
+                // platforms where the ioctl does not exist.
+                return Err("BLKZEROOUT fast path is Linux-only; refusing to fake completion".to_string());
             }
 
             current_offset += len;

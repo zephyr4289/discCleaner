@@ -19,8 +19,8 @@ impl TestIdentityReader {
         let meta = fs::metadata(dev_path).map_err(|e| e.to_string())?;
         use std::os::unix::fs::MetadataExt;
         let rdev = meta.rdev();
-        let maj = unsafe { libc::major(rdev) };
-        let min = unsafe { libc::minor(rdev) };
+        let maj = libc::major(rdev);
+        let min = libc::minor(rdev);
 
         let sys_dev_dir = PathBuf::from(format!("/sys/dev/block/{}:{}", maj, min));
         let canon = fs::canonicalize(&sys_dev_dir).unwrap_or(sys_dev_dir.clone());

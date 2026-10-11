@@ -1,6 +1,5 @@
 use dc_core::fleet::{
-    AdvisoryResolution, ArgvConstructor, BatchManifest, BatchReconstructor, ChildJournalState,
-    FleetJobOutcome, FleetJobRecord, FleetReport, IdentityResolver, SpawnContext,
+    AdvisoryResolution, ArgvConstructor, BatchManifest, IdentityResolver, SpawnContext,
 };
 use serde::{Deserialize, Serialize};
 

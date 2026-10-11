@@ -48,7 +48,7 @@ impl BridgeMatrixLedger {
             .map(|e| e.entry_hash.clone())
             .unwrap_or_else(|| "0000000000000000000000000000000000000000000000000000000000000000".to_string());
 
-        let mut payload = format!(
+        let payload = format!(
             "{}:{:#06x}:{:#06x}:{}:{}:{}:{:?}:{}:{}",
             sequence, vid, pid, firmware, protocol, command_class, classification, evidence_bundle_hash, prev_entry_hash
         );

@@ -1,9 +1,8 @@
 use assert_cmd::Command;
 use dc_testkit::{
-    Janitor, ProcessGuard, RigLedger, ToolSpawner,
+    Janitor, RigLedger, ToolSpawner,
 };
 use std::collections::BTreeMap;
-use std::path::Path;
 
 #[test]
 fn test_g1_substrate_matrix() {
@@ -52,10 +51,14 @@ fn run_sub_ledger_tests(ledger: &RigLedger) {
 fn run_sub_env_echo_tests(ledger: &RigLedger) {
     println!("\n[>>> SUB-ENV-ECHO: Testing Normative Spawn Environment Table (Δ99, Δ102) <<<]");
 
-    // Set a test DC_ variable in parent environment
-    std::env::set_var("DC_POISON_LEAK_TEST", "should_be_scrubbed");
+    // Set a test DC_ variable in parent environment.
+    // (unsafe: environment mutation is process-global; the test harness is
+    // single-threaded at this point.)
+    unsafe {
+        std::env::set_var("DC_POISON_LEAK_TEST", "should_be_scrubbed");
+    }
 
-    let mut cmd = Command::cargo_bin("dc-victim").unwrap();
+    let cmd = Command::cargo_bin("dc-victim").unwrap();
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Configure via ToolSpawner
@@ -73,8 +76,12 @@ fn run_sub_env_echo_tests(ledger: &RigLedger) {
         .expect("dc-victim --echo-env must output valid JSON");
 
     // 1. Assert DC_* variables are scrubbed (Δ99)
+    // REG-ENV-SCRUB-ASSERT: the expected value is "true" for `!has_dc_var`
+    // — scrubbing working yields has_dc_var == false, so !has_dc_var is
+    // true. (The historical expected value "false" inverted the check and
+    // could only pass when scrubbing FAILED.)
     let has_dc_var = env_map.keys().any(|k| k.starts_with("DC_"));
-    ledger.assert("G1-SPAWN", "SUB-ENV-SCRUB", "false", (!has_dc_var).to_string(), None);
+    ledger.assert("G1-SPAWN", "SUB-ENV-SCRUB", "true", (!has_dc_var).to_string(), None);
 
     // 2. Assert normative pinned environment variables (Δ99)
     let tz_ok = env_map.get("TZ").map(|s| s.as_str()) == Some("UTC");

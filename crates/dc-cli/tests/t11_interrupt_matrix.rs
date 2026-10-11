@@ -51,7 +51,7 @@ fn run_f0_prelude(scratch_dir: &Path) {
 
     let backing = run_dir.join("backing.raw");
     SentinelManager::fill_sentinel(&backing, 64 * 1024 * 1024).unwrap();
-    let loop_dev = LoopDevice::create_and_attach(&backing, 64 * 1024 * 1024, 512).unwrap();
+    let _loop_dev = LoopDevice::create_and_attach(&backing, 64 * 1024 * 1024, 512).unwrap();
 
     // Check census on current test process
     let current_pid = std::process::id();

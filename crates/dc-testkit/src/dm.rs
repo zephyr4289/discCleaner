@@ -1,15 +1,17 @@
-use std::fs::{self, File, OpenOptions};
-use std::os::unix::fs::FileTypeExt;
+use std::fs::{self, File};
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+#[allow(dead_code)] // kept for future dm ioctl rigs
 const DM_DIR: u8 = 0xfd;
 
 const DM_VERSION_CMD: libc::c_ulong = 0xc138fd00;
+#[allow(dead_code)] // kept for future dm ioctl rigs
 const DM_LIST_DEVICES_CMD: libc::c_ulong = 0xc138fd02;
 const DM_DEV_CREATE_CMD: libc::c_ulong = 0xc138fd03;
 const DM_DEV_REMOVE_CMD: libc::c_ulong = 0xc138fd04;
 const DM_DEV_SUSPEND_CMD: libc::c_ulong = 0xc138fd06;
+#[allow(dead_code)] // kept for future dm ioctl rigs
 const DM_DEV_STATUS_CMD: libc::c_ulong = 0xc138fd07;
 const DM_TABLE_LOAD_CMD: libc::c_ulong = 0xc138fd0c;
 const DM_TABLE_STATUS_CMD: libc::c_ulong = 0xc138fd0f;
@@ -115,7 +117,7 @@ impl DmDevice {
                 }
                 let c_dev = std::ffi::CString::new(dev_path.to_string_lossy().as_bytes())
                     .map_err(|e| e.to_string())?;
-                let dev_t = unsafe { libc::makedev(major, minor) };
+                let dev_t = libc::makedev(major, minor);
                 let mknod_ret = unsafe { libc::mknod(c_dev.as_ptr(), libc::S_IFBLK | 0o600, dev_t) };
                 if mknod_ret == 0 {
                     created_node = true;

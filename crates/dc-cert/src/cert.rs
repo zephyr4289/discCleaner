@@ -1,11 +1,8 @@
 use crate::signer::{verify_canonical_signature, OperatorKeyPair};
-use dc_core::{
-    DcError, DeviceIdentity, JournalChainSummary, SanitizationPlan, ToolBuild,
-};
+use dc_core::{DcError, DeviceIdentity, JournalChainSummary, SanitizationPlan, ToolBuild};
 use dc_verify::VerificationReport;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::Path;
 
 pub const VERIFICATION_SCHEME_DOC: &str = r#"scheme: chacha20-window-v1
 cipher: ChaCha20 as specified in RFC 8439 §2.4 — 256-bit key, 96-bit
@@ -74,6 +71,7 @@ pub struct SignatureDetails {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct UnsignedCertificate {
     pub schema: String,
     pub tool: ToolBuild,
@@ -88,6 +86,7 @@ pub struct UnsignedCertificate {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SanitizationCertificate {
     pub schema: String,
     pub tool: ToolBuild,
@@ -344,7 +343,7 @@ impl SanitizationCertificate {
         // Simple strict tokenizer to catch duplicate keys at any object depth
         let mut seen_keys_stack: Vec<HashSet<String>> = Vec::new();
         let mut chars = s.chars().peekable();
-        let mut depth = 0;
+        let mut depth: u32 = 0;
 
         while let Some(&c) = chars.peek() {
             match c {

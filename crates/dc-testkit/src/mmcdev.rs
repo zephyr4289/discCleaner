@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MmcAccessClass {
-    NativeController,
-    ReaderMediated,
-}
+// Production-owned vocabulary: `MmcAccessClass` lives in `dc-mmc` (the
+// production crate) and is re-exported here so existing rig code keeps
+// compiling. Historically this enum lived in the test kit, which produced
+// an inverted dependency (dc-mmc -> dc-testkit) in release builds.
+pub use dc_mmc::MmcAccessClass;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MmcPartitionDisposition {

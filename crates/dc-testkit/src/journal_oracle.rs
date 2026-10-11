@@ -1,6 +1,6 @@
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::Path;
 
 pub struct JournalOracle;
@@ -24,7 +24,7 @@ pub struct JournalOracleReport {
 
 impl JournalOracle {
     /// Independent in-test validator for DCJ1 hash chain, Ed25519 sealed signatures, and FSM Grammar v3.
-    pub fn parse_and_validate(path: &Path, expected_total_windows: u64) -> Result<JournalOracleReport, String> {
+    pub fn parse_and_validate(path: &Path, _expected_total_windows: u64) -> Result<JournalOracleReport, String> {
         let mut file = File::open(path).map_err(|e| format!("Failed to open journal {}: {}", path.display(), e))?;
         let file_len = file.metadata().map_err(|e| e.to_string())?.len();
 
@@ -36,7 +36,12 @@ impl JournalOracle {
             return Err(format!("Invalid journal magic: {:?}", magic));
         }
 
+        // REG-ORACLE-CHAIN-SEED: the writer seeds the chain with
+        // BLAKE3("DCJ1"), NOT with zeros — the historical oracle seeded
+        // with zeros, so record #0 of EVERY journal failed verification.
         let mut prev_hash = [0u8; 32];
+        let seed_hash = blake3::hash(b"DCJ1");
+        prev_hash.copy_from_slice(seed_hash.as_bytes());
         let mut records = Vec::new();
         let mut sequence = Vec::new();
         let mut committed_windows = 0u64;
@@ -138,6 +143,32 @@ impl JournalOracle {
                                 }
                             }
                         }
+
+                        // REG-ORACLE-SEALED-HEADER-SIG: sealedness is only
+                        // known AFTER parsing record 0, but record 0 also
+                        // carries a 64-byte Ed25519 signature. The historical
+                        // loop skipped it (sealed was still false while
+                        // reading), so the next length prefix was read from
+                        // the signature bytes and every sealed journal
+                        // desynchronized. Consume and verify it here.
+                        let mut header_sig = [0u8; 64];
+                        if file.read_exact(&mut header_sig).is_err() {
+                            return Err(
+                                "Torn Ed25519 signature on Header record of sealed journal"
+                                    .to_string(),
+                            );
+                        }
+                        if let Some(ref vk) = verifier_key {
+                            let mut msg = Vec::with_capacity(record_bytes.len() + 32);
+                            msg.extend_from_slice(&record_bytes);
+                            msg.extend_from_slice(&prev_hash);
+                            let sig = Signature::from_bytes(&header_sig);
+                            if vk.verify(&msg, &sig).is_err() {
+                                return Err(
+                                    "Sealed signature check failed on Header record".to_string()
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -196,6 +227,20 @@ impl JournalOracle {
         })
     }
 
+    /// Audit wrapper used by interruption/crash rigs: derives the expected
+    /// total window count from the device geometry and validates the chain.
+    pub fn audit(
+        path: &Path,
+        expected_device_bytes: u64,
+        expected_window_bytes: u64,
+    ) -> Result<JournalOracleReport, String> {
+        if expected_window_bytes == 0 {
+            return Err("expected_window_bytes must be non-zero".to_string());
+        }
+        let expected_total_windows = expected_device_bytes / expected_window_bytes;
+        Self::parse_and_validate(path, expected_total_windows)
+    }
+
     fn validate_grammar_v3(sequence: &[String]) -> Result<(), String> {
         if sequence.is_empty() {
             return Err("Journal is empty".to_string());
@@ -209,20 +254,36 @@ impl JournalOracle {
             let curr = &sequence[i];
             let next = &sequence[i + 1];
 
-            let valid = match curr.as_str() {
-                "header" => next == "armed",
-                "armed" => next == "begin_pass" || next == "resumed" || next == "armed",
-                "begin_pass" => next == "range_commit" || next == "failed" || next == "end_pass" || next == "interrupted" || next == "armed",
-                "range_commit" => next == "range_commit" || next == "failed" || next == "end_pass" || next == "interrupted" || next == "armed",
-                "failed" => next == "armed",
-                "interrupted" => next == "armed",
-                "resumed" => next == "range_commit" || next == "end_pass" || next == "verify" || next == "failed" || next == "begin_pass",
-                "end_pass" => next == "flushed" || next == "begin_pass" || next == "failed" || next == "armed",
-                "flushed" => next == "verify" || next == "begin_pass" || next == "failed" || next == "armed",
-                "verify" => next == "completed" || next == "failed" || next == "armed",
-                "completed" | "aborted" => false,
-                _ => false,
-            };
+            // A termination signal can arrive between ANY two records; the
+            // `interrupted` terminal is legal from every non-terminal state.
+            let interrupted_ok = next == "interrupted";
+
+            let valid = interrupted_ok
+                || match curr.as_str() {
+                    "header" => next == "armed",
+                    "armed" => next == "begin_pass" || next == "resumed" || next == "armed",
+                    "begin_pass" => {
+                        next == "range_commit" || next == "failed" || next == "end_pass" || next == "armed"
+                    }
+                    "range_commit" => {
+                        next == "range_commit" || next == "failed" || next == "end_pass" || next == "armed"
+                    }
+                    "failed" => next == "armed",
+                    "interrupted" => next == "armed",
+                    "resumed" => {
+                        next == "range_commit" || next == "end_pass" || next == "verify"
+                            || next == "failed" || next == "begin_pass"
+                    }
+                    "end_pass" => {
+                        next == "flushed" || next == "begin_pass" || next == "failed" || next == "armed"
+                    }
+                    "flushed" => {
+                        next == "verify" || next == "begin_pass" || next == "failed" || next == "armed"
+                    }
+                    "verify" => next == "completed" || next == "failed" || next == "armed",
+                    "completed" | "aborted" => false,
+                    _ => false,
+                };
 
             if !valid {
                 return Err(format!(

@@ -31,6 +31,12 @@ pub struct Orchestrator {
     state: OrchestratorState,
     total_passes: u8,
     is_confirmed: bool,
+    /// Explicit index of the NEXT pass to execute. The transition
+    /// `Confirmed -> Armed` already emits `ExecutePass { pass: 0 }` (the
+    /// operator-armed first write), so this counter starts at 1. Without
+    /// an explicit counter the `Armed` arm recomputes "next" from the
+    /// state and used to execute pass 0 a second time.
+    next_pass: u8,
 }
 
 impl Orchestrator {
@@ -39,6 +45,7 @@ impl Orchestrator {
             state: OrchestratorState::Initialized,
             total_passes,
             is_confirmed: false,
+            next_pass: 0,
         }
     }
 
@@ -64,18 +71,19 @@ impl Orchestrator {
                 OrchestratorEffect::AcquireLocksAndArm
             }
             OrchestratorState::Confirmed => {
+                // The effect emitted here IS pass 0's execution (armed first
+                // write). Record that pass 0 has been dispatched so the
+                // `Armed`/`ExecutingPass` arm never re-dispatches it.
+                self.next_pass = 1;
                 self.state = OrchestratorState::Armed;
                 OrchestratorEffect::ExecutePass { pass: 0 }
             }
             OrchestratorState::Armed | OrchestratorState::ExecutingPass { .. } => {
-                let current_pass = match self.state {
-                    OrchestratorState::ExecutingPass { pass_index } => pass_index + 1,
-                    _ => 0,
-                };
-
-                if current_pass < self.total_passes {
-                    self.state = OrchestratorState::ExecutingPass { pass_index: current_pass };
-                    OrchestratorEffect::ExecutePass { pass: current_pass }
+                let next = self.next_pass;
+                if next < self.total_passes {
+                    self.next_pass = next + 1;
+                    self.state = OrchestratorState::ExecutingPass { pass_index: next };
+                    OrchestratorEffect::ExecutePass { pass: next }
                 } else {
                     self.state = OrchestratorState::Flushed;
                     OrchestratorEffect::FlushDevice

@@ -3,6 +3,12 @@ name = "dc-cli"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+# Fault-injection hooks (DC_CRASH_AT / DC_SIGNAL_AT) for release-profile
+# test rigs; debug builds enable them automatically via debug_assertions.
+fault-injection = ["dc-core/fault-injection", "dc-io/fault-injection"]
+
 [[bin]]
 name = "diskcleaner"
 path = "src/main.rs"
@@ -31,8 +37,12 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_jcs = { workspace = true }
+blake3 = { workspace = true }
+ed25519-dalek = { workspace = true }
 thiserror = { workspace = true }
 hex = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
 dc-testkit = { workspace = true }

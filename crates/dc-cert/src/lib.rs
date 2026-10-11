@@ -14,7 +14,9 @@ pub use cert::{
     InterruptionRecord, OperatorDetails, SanitizationCertificate, SignatureDetails,
     UnsignedCertificate, VERIFICATION_SCHEME_DOC,
 };
-pub use dualauth::{AuthSignatureEntry, AuthorizationSet, CustodyType};
+pub use dualauth::{
+    AuthSignatureEntry, AuthorizationSet, CustodyType, FLEET_MANIFEST_DOMAIN, PLAN_APPROVAL_DOMAIN,
+};
 pub use keyring::{KeyringEntry, KeyringRegistry};
 pub use keystore::{KeyStoreRegistry, SigningKeySourceKind, SigningSiteId};
 pub use package::{EvidencePackageManifest, PackageArtifact, PackageVerifier};
@@ -29,7 +31,7 @@ mod tests {
     use super::*;
     use dc_core::{
         BusType, DeviceIdentity, FastPathPolicy, JournalChainSummary, KernelIdentity,
-        SanitizationPlan, StableIdentity, ToolBuild, VerifyLevel,
+        SanitizationPlan, StableIdentity, VerifyLevel,
     };
     use dc_verify::VerificationReport;
 

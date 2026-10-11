@@ -1,6 +1,5 @@
 //! Golden PRNG vectors & invariants verifier
 
-use crate::chacha_ref::ChaCha20Ref;
 use crate::cleanroom::CleanroomPRNG;
 
 pub struct GoldenVectors;

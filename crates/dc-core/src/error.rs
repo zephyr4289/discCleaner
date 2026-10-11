@@ -59,8 +59,18 @@ pub enum DcError {
     #[error("I/O OS error: {0}")]
     StdIo(#[from] std::io::Error),
 
+    /// Note: carried as `String` (via the `From` impl below) so that this
+    /// variant stays source-compatible across `getrandom` releases whose
+    /// `Error` type may not implement `std::error::Error` in every feature
+    /// configuration. Display output is preserved for operators.
     #[error("RNG error: {0}")]
-    Rng(#[from] getrandom::Error),
+    Rng(String),
+}
+
+impl From<getrandom::Error> for DcError {
+    fn from(e: getrandom::Error) -> Self {
+        DcError::Rng(e.to_string())
+    }
 }
 
 impl DcError {

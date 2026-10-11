@@ -3,6 +3,12 @@ name = "dc-core"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+# Opt-in fault-injection hooks (DC_CRASH_AT / DC_SIGNAL_AT) for release-profile
+# test rigs. Debug builds enable these hooks automatically via `debug_assertions`.
+fault-injection = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

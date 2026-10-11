@@ -3,6 +3,12 @@ name = "dc-io"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+# Mirrors dc-core's fault-injection hooks (DC_CRASH_AT / DC_SIGNAL_AT) for
+# release-profile test rigs; debug builds enable them via debug_assertions.
+fault-injection = ["dc-core/fault-injection"]
+
 [dependencies]
 dc-core = { workspace = true }
 rustix = { workspace = true }

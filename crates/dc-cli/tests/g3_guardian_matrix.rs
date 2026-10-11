@@ -5,7 +5,6 @@ use dc_probe::{
     Sniffer, StorageSignature,
 };
 use dc_testkit::RigLedger;
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 

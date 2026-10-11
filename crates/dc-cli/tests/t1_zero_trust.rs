@@ -1,9 +1,8 @@
 use assert_cmd::Command;
 use dc_testkit::{
-    ArtifactsDumper, AuditOracle, CertOracle, DioProbe, EnvironmentFingerprint, Janitor,
+    ArtifactsDumper, CertOracle, DioProbe, EnvironmentFingerprint, Janitor,
     JournalOracle, LoopDevice, SentinelManager,
 };
-use predicates::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 

@@ -18,15 +18,22 @@ impl LbaSpan {
         }
     }
 
+    /// Ceiling division of total bytes by window bytes (overflow-safe).
     pub fn total_windows(&self) -> u64 {
         if self.window_bytes == 0 {
             return 0;
         }
-        (self.total_bytes + self.window_bytes - 1) / self.window_bytes
+        // div_ceil avoids the historical `total + window - 1` overflow on
+        // near-u64::MAX sizes (regression REG-LBASPAN-OVERFLOW).
+        self.total_bytes.div_ceil(self.window_bytes)
     }
 
     pub fn window_byte_range(&self, window_index: u64) -> (u64, usize) {
-        let offset = self.start_byte + window_index * self.window_bytes;
+        // `window_index * window_bytes` saturates instead of wrapping.
+        let offset = window_index
+            .checked_mul(self.window_bytes)
+            .and_then(|o| self.start_byte.checked_add(o))
+            .unwrap_or(u64::MAX);
         let remaining = if offset < self.total_bytes {
             self.total_bytes - offset
         } else {

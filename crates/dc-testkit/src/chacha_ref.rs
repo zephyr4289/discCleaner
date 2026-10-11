@@ -26,21 +26,27 @@ impl ChaCha20Ref {
         }
     }
 
+    /// One ChaCha20 quarter round over state slots (a, b, c, d).
+    ///
+    /// Takes INDICES into the 16-word working state rather than four
+    /// `&mut u32` references — the reference form cannot express "four
+    /// distinct slots of the same array" to the borrow checker (E0499),
+    /// which previously left this rig uncompilable.
     #[inline(always)]
-    fn quarter_round(a: &mut u32, b: &mut u32, c: &mut u32, d: &mut u32) {
-        *a = a.wrapping_add(*b);
-        *d = (*d ^ *a).rotate_left(16);
-        *c = c.wrapping_add(*d);
-        *b = (*b ^ *c).rotate_left(12);
-        *a = a.wrapping_add(*b);
-        *d = (*d ^ *a).rotate_left(8);
-        *c = c.wrapping_add(*d);
-        *b = (*b ^ *c).rotate_left(7);
+    fn quarter_round(s: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
+        s[a] = s[a].wrapping_add(s[b]);
+        s[d] = (s[d] ^ s[a]).rotate_left(16);
+        s[c] = s[c].wrapping_add(s[d]);
+        s[b] = (s[b] ^ s[c]).rotate_left(12);
+        s[a] = s[a].wrapping_add(s[b]);
+        s[d] = (s[d] ^ s[a]).rotate_left(8);
+        s[c] = s[c].wrapping_add(s[d]);
+        s[b] = (s[b] ^ s[c]).rotate_left(7);
     }
 
     pub fn block(&self, counter: u32) -> [u8; 64] {
         // RFC 8439 §2.3 State initialization constants "expand 32-byte k"
-        let mut state = [
+        let state = [
             0x61707865, 0x3320646e, 0x79622d32, 0x6b206574,
             self.key[0], self.key[1], self.key[2], self.key[3],
             self.key[4], self.key[5], self.key[6], self.key[7],
@@ -52,16 +58,16 @@ impl ChaCha20Ref {
         // 20 rounds = 10 double rounds
         for _ in 0..10 {
             // Column rounds
-            Self::quarter_round(&mut working[0], &mut working[4], &mut working[8], &mut working[12]);
-            Self::quarter_round(&mut working[1], &mut working[5], &mut working[9], &mut working[13]);
-            Self::quarter_round(&mut working[2], &mut working[6], &mut working[10], &mut working[14]);
-            Self::quarter_round(&mut working[3], &mut working[7], &mut working[11], &mut working[15]);
+            Self::quarter_round(&mut working, 0, 4, 8, 12);
+            Self::quarter_round(&mut working, 1, 5, 9, 13);
+            Self::quarter_round(&mut working, 2, 6, 10, 14);
+            Self::quarter_round(&mut working, 3, 7, 11, 15);
 
             // Diagonal rounds
-            Self::quarter_round(&mut working[0], &mut working[5], &mut working[10], &mut working[15]);
-            Self::quarter_round(&mut working[1], &mut working[6], &mut working[11], &mut working[12]);
-            Self::quarter_round(&mut working[2], &mut working[7], &mut working[8], &mut working[13]);
-            Self::quarter_round(&mut working[3], &mut working[4], &mut working[9], &mut working[14]);
+            Self::quarter_round(&mut working, 0, 5, 10, 15);
+            Self::quarter_round(&mut working, 1, 6, 11, 12);
+            Self::quarter_round(&mut working, 2, 7, 8, 13);
+            Self::quarter_round(&mut working, 3, 4, 9, 14);
         }
 
         let mut out = [0u8; 64];

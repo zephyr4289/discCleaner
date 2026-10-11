@@ -1,6 +1,6 @@
 use assert_cmd::Command;
 use dc_testkit::{
-    DioProbe, DmDevice, Janitor, LoopDevice, RebindChoreographer, SentinelManager, TableLine,
+    DioProbe, DmDevice, Janitor, LoopDevice, SentinelManager, TableLine,
     TestIdentityReader,
 };
 use std::fs;

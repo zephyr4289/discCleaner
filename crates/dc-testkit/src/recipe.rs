@@ -1,5 +1,4 @@
 use dc_core::journal::{JournalReader, JournalRecord};
-use dc_core::Pattern;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -33,13 +32,15 @@ impl RecipeExtractor {
                     device_bytes = identity.stable.size_bytes;
                     window_bytes = plan.window_bytes;
 
-                    // Extract seed from plan passes
+                    // Extract seed from plan passes. The pass `pattern` IS
+                    // the `Pattern` enum itself (no wrapper field), and the
+                    // recipe serializes the seed as hex.
                     match &plan.mechanism {
                         dc_core::Mechanism::LogicalOverwrite { passes } => {
                             for p in passes {
-                                match &p.pattern.pattern {
-                                    Pattern::DeterministicRandom { seed, .. } => {
-                                        seed_opt = Some(seed.clone());
+                                match &p.pattern {
+                                    dc_core::Pattern::DeterministicRandom { seed, .. } => {
+                                        seed_opt = Some(hex::encode(seed));
                                     }
                                     _ => {}
                                 }

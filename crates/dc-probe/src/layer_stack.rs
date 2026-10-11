@@ -1,6 +1,6 @@
 use dc_core::KernelIdentity;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub struct MountEntry {
@@ -56,8 +56,8 @@ impl LayerStackDetector {
                     if let Ok(meta) = fs::metadata(dev) {
                         use std::os::unix::fs::MetadataExt;
                         let rdev = meta.rdev();
-                        let maj = unsafe { libc::major(rdev) };
-                        let min = unsafe { libc::minor(rdev) };
+                        let maj = libc::major(rdev);
+                        let min = libc::minor(rdev);
                         list.push(MountEntry {
                             major: maj,
                             minor: min,

@@ -60,8 +60,13 @@ fn run_f0_prelude() {
 
 fn stage_test_cert() -> (String, OperatorKeyPair, PathBuf) {
     let keypair = OperatorKeyPair::generate();
-    let temp_dir = tempfile::tempdir().unwrap();
-    let cert_path = temp_dir.path().join("base.cert.json");
+    // into_path() detaches the directory from RAII cleanup: the returned
+    // cert path must remain writable AFTER this function returns. The
+    // historical `tempdir()` binding deleted the directory on return, so
+    // every follow-up file-surgery write into `cert_path.parent()` hit
+    // NotFound (REG-STAGE-CERT-LIFETIME).
+    let temp_dir = tempfile::tempdir().unwrap().into_path();
+    let cert_path = temp_dir.join("base.cert.json");
 
     let identity = dc_core::DeviceIdentity {
         stable: dc_core::StableIdentity {

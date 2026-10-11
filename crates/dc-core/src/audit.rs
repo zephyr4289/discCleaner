@@ -2,7 +2,12 @@ use crate::error::DcError;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+
+/// Hard cap on a single audit record's serialized size (defensive bound
+/// against corrupt or hostile length prefixes before any allocation).
+pub const AUDIT_MAX_RECORD_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -38,38 +43,71 @@ impl AuditLogger {
 
         let mut file = OpenOptions::new()
             .read(true)
-            .write(true)
+            .append(true)
             .create(true)
             .open(path)?;
+
+        // Exclusive non-blocking flock: two concurrent `dc` processes must
+        // never interleave records into one audit chain.
+        unsafe {
+            let fd = file.as_raw_fd();
+            if libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) != 0 {
+                return Err(DcError::Usage(
+                    "Failed to acquire exclusive lock on audit log (another instance is active?)"
+                        .to_string(),
+                ));
+            }
+        }
 
         let mut prev_hash = [0u8; 32];
         let file_len = file.metadata()?.len();
 
         if file_len > 0 {
-            // Read through file to find last hash
+            // Read through file to find last hash. The chain seed MUST match
+            // `verify_audit_file` (BLAKE3 of the magic) — see the fix for the
+            // historical zero-seed asymmetry below.
             file.seek(SeekFrom::Start(0))?;
             let mut magic = [0u8; 4];
-            if file.read_exact(&mut magic).is_ok() && &magic == b"DCA1" {
-                loop {
-                    let mut len_buf = [0u8; 4];
-                    if file.read_exact(&mut len_buf).is_err() {
-                        break;
-                    }
-                    let len = u32::from_le_bytes(len_buf) as usize;
-                    let mut rec = vec![0u8; len];
-                    if file.read_exact(&mut rec).is_err() {
-                        break;
-                    }
-                    let mut hash = [0u8; 32];
-                    if file.read_exact(&mut hash).is_err() {
-                        break;
-                    }
-                    prev_hash = hash;
+            if file.read_exact(&mut magic).is_err() || &magic != b"DCA1" {
+                return Err(DcError::Usage(format!(
+                    "Invalid audit log magic in '{}' (expected DCA1); refusing to append",
+                    path.display()
+                )));
+            }
+            let seed_hash = blake3::hash(b"DCA1");
+            prev_hash.copy_from_slice(seed_hash.as_bytes());
+            loop {
+                let rec_start = file.stream_position()?;
+                let mut len_buf = [0u8; 4];
+                if file.read_exact(&mut len_buf).is_err() {
+                    break;
                 }
+                let len = u32::from_le_bytes(len_buf) as u64;
+                if len == 0 || len > AUDIT_MAX_RECORD_BYTES {
+                    return Err(DcError::Usage(format!(
+                        "Corrupt audit record length {} at offset {}",
+                        len, rec_start
+                    )));
+                }
+                let mut rec = vec![0u8; len as usize];
+                if file.read_exact(&mut rec).is_err() {
+                    break;
+                }
+                let mut hash = [0u8; 32];
+                if file.read_exact(&mut hash).is_err() {
+                    break;
+                }
+                prev_hash = hash;
             }
         } else {
             file.write_all(b"DCA1")?;
             file.flush()?;
+            // Seed the chain exactly like the verifier: BLAKE3("DCA1").
+            // (Historically this seeded with zeros while the verifier seeded
+            // with BLAKE3("DCA1"), so the first record of every fresh log
+            // could never verify.)
+            let h = blake3::hash(b"DCA1");
+            prev_hash.copy_from_slice(h.as_bytes());
         }
 
         file.seek(SeekFrom::End(0))?;
@@ -102,6 +140,7 @@ impl AuditLogger {
 
     pub fn verify_audit_file(path: &Path) -> Result<(usize, String), DcError> {
         let mut file = File::open(path)?;
+        let total_file_size = file.metadata()?.len();
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)?;
         if &magic != b"DCA1" {
@@ -114,12 +153,26 @@ impl AuditLogger {
 
         let mut count = 0;
         loop {
+            let rec_start = file.stream_position()?;
             let mut len_buf = [0u8; 4];
             if file.read_exact(&mut len_buf).is_err() {
                 break;
             }
-            let len = u32::from_le_bytes(len_buf) as usize;
-            let mut rec = vec![0u8; len];
+            let len = u32::from_le_bytes(len_buf) as u64;
+            if len == 0 || len > AUDIT_MAX_RECORD_BYTES {
+                return Err(DcError::Usage(format!(
+                    "Corrupt audit record length {} at offset {}",
+                    len, rec_start
+                )));
+            }
+            // Never allocate beyond what the file itself can supply.
+            if rec_start + 4 + len + 32 > total_file_size {
+                return Err(DcError::Usage(format!(
+                    "Truncated audit record at offset {} (declared {} bytes)",
+                    rec_start, len
+                )));
+            }
+            let mut rec = vec![0u8; len as usize];
             file.read_exact(&mut rec)?;
             let mut hash = [0u8; 32];
             file.read_exact(&mut hash)?;
@@ -136,5 +189,10 @@ impl AuditLogger {
         }
 
         Ok((count, hex::encode(prev_hash)))
+    }
+
+    /// Filesystem path of the underlying audit chain.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }

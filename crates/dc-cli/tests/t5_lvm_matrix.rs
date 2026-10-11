@@ -1,7 +1,6 @@
 use assert_cmd::Command;
 use dc_testkit::{
-    CertOracle, DioProbe, Janitor, JournalOracle, LoopDevice, LvmSandbox, SentinelManager,
-    SigCraft, UevFire,
+    DioProbe, Janitor, LoopDevice, LvmSandbox, SentinelManager, UevFire,
 };
 use std::fs;
 use std::path::{Path, PathBuf};

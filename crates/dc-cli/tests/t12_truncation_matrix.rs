@@ -101,8 +101,11 @@ fn run_f1_exhaustive_sweep(scratch_dir: &Path) {
 
     println!("  [+] Sweeping across all {} byte offsets with dc journal inspect...", total_len);
 
-    let mut exit_6_count = 0;
-    let mut exit_0_count = 0;
+    // EXH-NO6: every pure-truncation offset beyond the magic must inspect
+    // cleanly (exit 0); the counter is asserted to have covered every such
+    // offset so the sweep is proven exhaustive.
+    let mut exit_0_count = 0usize;
+    let expected_clean_offsets = (4..=total_len).count();
 
     for o in 0..=total_len {
         let truncated = Truncator::truncate(&raw_journal, o);
@@ -125,7 +128,7 @@ fn run_f1_exhaustive_sweep(scratch_dir: &Path) {
         let _ = fs::remove_file(test_j_path);
     }
 
-    assert_eq!(exit_6_count, 0, "[EXH-NO6 FAIL] Exit 6 fired on pure truncation offset!");
+    assert_eq!(exit_0_count, expected_clean_offsets, "[EXH-NO6 FAIL] sweep did not cover every clean offset");
     println!(
         "  [✓] EXH-NO6: Verified all {} offsets: exactly 0 unexpected corruptions across pure truncation.",
         total_len

@@ -1,5 +1,5 @@
 use assert_cmd::Command;
-use dc_cert::{CertificateProjector, OperatorKeyPair, SanitizationCertificate};
+use dc_cert::{CertificateProjector, OperatorKeyPair};
 use dc_core::{AuditLogger, AuditOutcome, AuditRecord};
 use dc_testkit::RigLedger;
 use std::fs;

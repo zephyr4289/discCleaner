@@ -3,7 +3,7 @@ use dc_testkit::{
     DioProbe, DmDevice, ExclHolder, Janitor, LoopDevice, SentinelManager, SigCraft, TableLine,
 };
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 static CELL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

@@ -31,14 +31,15 @@ fn run_tsa_nonce_replay_tests(ledger: &RigLedger) {
 
     // 1. Matching nonce -> Accepted
     let verify_ok = TsaMock::verify_token_offline(&token, doc_hash, nonce_req, 1800000000);
-    assert!(verify_ok.is_ok());
-    assert!(verify_ok.unwrap().contains("anchored: existed at-or-before"));
+    let nonce_echo_ok = verify_ok.is_ok();
+    assert!(nonce_echo_ok);
+    assert!(verify_ok.clone().unwrap().contains("anchored: existed at-or-before"));
 
     // 2. Mismatched nonce (Replay attack!) -> Refused!
     let verify_replay = TsaMock::verify_token_offline(&token, doc_hash, "DIFFERENT_NONCE_112233", 1800000000);
     assert_eq!(verify_replay, Err("REPLAY_DETECTED_NONCE_MISMATCH"));
 
-    ledger.assert("T22-TSA", "TSA-NONCE-ECHO", "true", verify_ok.is_ok().to_string(), None);
+    ledger.assert("T22-TSA", "TSA-NONCE-ECHO", "true", nonce_echo_ok.to_string(), None);
     ledger.assert("T22-TSA", "TSA-REPLAY-REFUSED", "true", (verify_replay == Err("REPLAY_DETECTED_NONCE_MISMATCH")).to_string(), None);
 }
 

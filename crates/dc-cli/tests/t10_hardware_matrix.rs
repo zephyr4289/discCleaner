@@ -1,7 +1,7 @@
 use assert_cmd::Command;
 use dc_testkit::{
     DioProbe, EnduranceLedger, GenBench, HardwareManifest, Janitor, LoopDevice, ManifestDrive,
-    ScaleOracle, SentinelManager, TestIdentityReader,
+    ScaleOracle, SentinelManager,
 };
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};

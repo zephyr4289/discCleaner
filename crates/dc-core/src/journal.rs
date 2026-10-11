@@ -7,11 +7,14 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 pub const JOURNAL_MAGIC: &[u8; 4] = b"DCJ1";
+
+/// Hard cap on a single journal record's serialized size (defensive bound
+/// against corrupt or hostile length prefixes before any allocation).
+pub const JOURNAL_MAX_RECORD_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct EngineTuning {
@@ -98,7 +101,7 @@ pub enum JournalRecord {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct JournalChainSummary {
     pub path: PathBuf,
     pub chain_head: String,
@@ -171,6 +174,18 @@ impl JournalWriter {
         sealed: bool,
         signing_key: Option<SigningKey>,
     ) -> Result<Self, DcError> {
+        // Fail-closed (Δ39): a sealed journal can only be resumed with the
+        // operator signing key. Resuming without it would append unsigned
+        // records to a chain that auditors expect to be fully signed.
+        if sealed && signing_key.is_none() {
+            return Err(DcError::JournalCorrupt {
+                record_index: record_count,
+                reason: "SEALED_WITHOUT_KEY: This journal is sealed and requires \
+                         the operator Ed25519 signing key to resume"
+                    .to_string(),
+            });
+        }
+
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -223,7 +238,7 @@ impl JournalWriter {
         let mut prev_hash = [0u8; 32];
         prev_hash.copy_from_slice(&hash_bytes);
 
-        let mut writer_file = OpenOptions::new()
+        let writer_file = OpenOptions::new()
             .read(true)
             .append(true)
             .open(path)?;
@@ -269,9 +284,15 @@ impl JournalWriter {
         self.prev_hash = *record_hash.as_bytes();
         self.record_count += 1;
 
-        // Check crash and signal hooks if enabled (Δ87)
-        check_crash_hook(record);
-        check_signal_hook(record);
+        // Check crash and signal hooks if enabled (Δ87).
+        // Fault-injection hooks are compiled ONLY for debug/test rigs and
+        // explicit opt-in; release binaries are structurally incapable of
+        // honoring DC_CRASH_AT / DC_SIGNAL_AT from the environment.
+        #[cfg(any(feature = "fault-injection", debug_assertions))]
+        {
+            check_crash_hook(record);
+            check_signal_hook(record);
+        }
 
         Ok(hex::encode(self.prev_hash))
     }
@@ -368,7 +389,7 @@ impl JournalReader {
                 }
             }
 
-            let len = u32::from_le_bytes(len_buf) as usize;
+            let len = u32::from_le_bytes(len_buf) as u64;
             if len == 0 {
                 return Err(DcError::JournalCorrupt {
                     record_index: record_idx,
@@ -376,13 +397,30 @@ impl JournalReader {
                 });
             }
 
-            // Bounds check against remaining file size (Δ79)
-            if (current_pos + 4 + len as u64 + 32) > total_file_size && !journal_sealed {
+            // Hostile/corrupt length prefixes must never drive large
+            // allocations: bound each record and the total remaining file.
+            if len > JOURNAL_MAX_RECORD_BYTES {
+                return Err(DcError::JournalCorrupt {
+                    record_index: record_idx,
+                    reason: format!(
+                        "RECORD_TOO_LARGE: record length {} exceeds the {} byte safety cap",
+                        len, JOURNAL_MAX_RECORD_BYTES
+                    ),
+                });
+            }
+
+            // Bounds check against remaining file size BEFORE allocating
+            // (Δ79). For sealed journals each record additionally carries a
+            // 64-byte Ed25519 signature, so the required suffix is 4 + len +
+            // 32 + 64. A short tail here is a torn write (crash signature)
+            // and is recoverable: discard it and keep the verified prefix.
+            let record_overhead: u64 = if journal_sealed { 4 + 32 + 64 } else { 4 + 32 };
+            if (current_pos + record_overhead + len) > total_file_size {
                 discarded_tail = total_file_size - last_good_offset;
                 break;
             }
 
-            let mut record_bytes = vec![0u8; len];
+            let mut record_bytes = vec![0u8; len as usize];
             if file.read_exact(&mut record_bytes).is_err() {
                 // Torn record body at EOF
                 discarded_tail = total_file_size - last_good_offset;
@@ -431,27 +469,43 @@ impl JournalReader {
                     journal_uuid = uuid.clone();
                     journal_sealed = sealed;
                     if sealed {
-                        if let Some(pk_hex) = operator_pubkey {
-                            let pk_bytes = hex::decode(pk_hex).map_err(|_| DcError::JournalCorrupt {
+                        // Fail-closed (Δ39): a sealed journal MUST carry the
+                        // operator public key in its header. A missing or
+                        // malformed key makes per-record signature
+                        // verification impossible, so the journal is rejected
+                        // outright instead of being silently downgraded to
+                        // hash-only verification.
+                        let pk_hex = operator_pubkey.as_ref().ok_or_else(|| {
+                            DcError::JournalCorrupt {
                                 record_index: 0,
-                                reason: "Invalid operator_pubkey hex in Header".to_string(),
-                            })?;
-                            let vk = VerifyingKey::from_bytes(
-                                pk_bytes.as_slice().try_into().map_err(|_| DcError::JournalCorrupt {
-                                    record_index: 0,
-                                    reason: "Invalid operator_pubkey length in Header".to_string(),
-                                })?,
-                            ).map_err(|_| DcError::JournalCorrupt {
+                                reason: "SEALED_JOURNAL_MISSING_PUBKEY: sealed journal \
+                                         Header lacks operator_pubkey; signature \
+                                         verification is impossible"
+                                    .to_string(),
+                            }
+                        })?;
+                        let pk_bytes = hex::decode(pk_hex).map_err(|_| DcError::JournalCorrupt {
+                            record_index: 0,
+                            reason: "Invalid operator_pubkey hex in Header".to_string(),
+                        })?;
+                        let vk = VerifyingKey::from_bytes(
+                            pk_bytes.as_slice().try_into().map_err(|_| DcError::JournalCorrupt {
                                 record_index: 0,
-                                reason: "Invalid Ed25519 public key in Header".to_string(),
-                            })?;
-                            op_verifying_key = Some(vk);
-                        }
+                                reason: "Invalid operator_pubkey length in Header".to_string(),
+                            })?,
+                        )
+                        .map_err(|_| DcError::JournalCorrupt {
+                            record_index: 0,
+                            reason: "Invalid Ed25519 public key in Header".to_string(),
+                        })?;
+                        op_verifying_key = Some(vk);
                     }
                 }
             }
 
-            // If sealed journal, verify Ed25519 signature per record (Δ39)
+            // If sealed journal, verify Ed25519 signature per record (Δ39).
+            // op_verifying_key is guaranteed present whenever journal_sealed
+            // (the Header handling above fails closed otherwise).
             if journal_sealed {
                 let mut sig_bytes = [0u8; 64];
                 if file.read_exact(&mut sig_bytes).is_err() {
@@ -461,15 +515,26 @@ impl JournalReader {
                     });
                 }
 
-                if let Some(ref vk) = op_verifying_key {
-                    let mut msg = Vec::with_capacity(record_bytes.len() + 32);
-                    msg.extend_from_slice(&record_bytes);
-                    msg.extend_from_slice(&prev_hash);
-                    let sig = Signature::from_bytes(&sig_bytes);
-                    if vk.verify(&msg, &sig).is_err() {
+                match op_verifying_key {
+                    Some(ref vk) => {
+                        let mut msg = Vec::with_capacity(record_bytes.len() + 32);
+                        msg.extend_from_slice(&record_bytes);
+                        msg.extend_from_slice(&prev_hash);
+                        let sig = Signature::from_bytes(&sig_bytes);
+                        if vk.verify(&msg, &sig).is_err() {
+                            return Err(DcError::JournalCorrupt {
+                                record_index: record_idx,
+                                reason: "Invalid Ed25519 digital signature in sealed journal record"
+                                    .to_string(),
+                            });
+                        }
+                    }
+                    None => {
                         return Err(DcError::JournalCorrupt {
                             record_index: record_idx,
-                            reason: "Invalid Ed25519 digital signature in sealed journal record".to_string(),
+                            reason: "SEALED_JOURNAL_UNVERIFIABLE: operator public key \
+                                     missing or malformed"
+                                .to_string(),
                         });
                     }
                 }
@@ -509,7 +574,12 @@ impl JournalReader {
     }
 }
 
-/// Deterministic crash injection hook (activated by `DC_CRASH_AT=event[:count]`)
+/// Deterministic crash injection hook (activated by `DC_CRASH_AT=event[:count]`).
+///
+/// SECURITY: compiled only for debug builds (`debug_assertions`) or with the
+/// explicit `fault-injection` cargo feature. Release binaries contain no
+/// code path that can raise SIGKILL from an environment variable.
+#[cfg(any(feature = "fault-injection", debug_assertions))]
 pub fn check_crash_hook(record: &JournalRecord) {
     if let Ok(crash_spec) = std::env::var("DC_CRASH_AT") {
         let parts: Vec<&str> = crash_spec.split(':').collect();
@@ -543,6 +613,7 @@ pub fn check_crash_hook(record: &JournalRecord) {
 }
 
 /// Helper to trigger CQE or Verify-read crash hook
+#[cfg(any(feature = "fault-injection", debug_assertions))]
 pub fn check_cqe_or_verify_crash(event_type: &str, count: u64) {
     if let Ok(crash_spec) = std::env::var("DC_CRASH_AT") {
         let parts: Vec<&str> = crash_spec.split(':').collect();
@@ -559,6 +630,7 @@ pub fn check_cqe_or_verify_crash(event_type: &str, count: u64) {
 }
 
 /// Deterministic signal injection hook (activated by `DC_SIGNAL_AT=event[:count]`) (Δ87)
+#[cfg(any(feature = "fault-injection", debug_assertions))]
 pub fn check_signal_hook(record: &JournalRecord) {
     if let Ok(sig_spec) = std::env::var("DC_SIGNAL_AT") {
         let parts: Vec<&str> = sig_spec.split(':').collect();
@@ -588,6 +660,7 @@ pub fn check_signal_hook(record: &JournalRecord) {
 }
 
 /// Helper to trigger CQE or Verify-read signal hook (Δ87)
+#[cfg(any(feature = "fault-injection", debug_assertions))]
 pub fn check_cqe_or_verify_signal(event_type: &str, count: u64) {
     if let Ok(sig_spec) = std::env::var("DC_SIGNAL_AT") {
         let parts: Vec<&str> = sig_spec.split(':').collect();

@@ -4,7 +4,8 @@ use crate::cert::{
 use crate::signer::OperatorKeyPair;
 use dc_core::journal::{JournalReader, JournalRecord};
 use dc_core::DcError;
-use dc_verify::{VerificationReport, VerifyLevel};
+use dc_core::plan::VerifyLevel;
+use dc_verify::VerificationReport;
 use std::path::Path;
 
 pub struct CertificateProjector;
@@ -31,9 +32,12 @@ impl CertificateProjector {
                 JournalRecord::Header { .. } => {
                     header_opt = Some(rec.clone());
                 }
-                JournalRecord::Failed { at_utc, code, errno, op, at_lba, .. } => {
+                JournalRecord::Failed { code, errno, op, at_lba, .. } => {
                     failures.push(FailureRecord {
-                        at_utc: at_utc.clone().unwrap_or_else(|| "2026-08-28T00:00:00Z".to_string()),
+                        // The Failed record carries no wall-clock stamp; the
+                        // journal Header's start time is the closest honest
+                        // bound available (failures happen at-or-after it).
+                        at_utc: header_start_utc(&records).unwrap_or_default(),
                         code: code.clone(),
                         errno: *errno,
                         op: op.clone(),
@@ -69,8 +73,21 @@ impl CertificateProjector {
                     stream_hash_sha256,
                     fast_path_used,
                 } => {
+                    // Only levels that exist in the vocabulary are accepted;
+                    // an unknown verification level is rejected rather than
+                    // silently coerced.
+                    let parsed_level = match level.as_str() {
+                        "Full" => VerifyLevel::Full,
+                        "None" => VerifyLevel::None,
+                        other => {
+                            return Err(DcError::CertInvalid(format!(
+                                "Unknown verification level in journal Verify record: '{}'",
+                                other
+                            )));
+                        }
+                    };
                     verify_opt = Some(VerificationReport {
-                        level: if level == "Full" { VerifyLevel::Full } else { VerifyLevel::Sampled(10) },
+                        level: parsed_level,
                         windows_checked: *windows_checked,
                         mismatch_count: *mismatch_count,
                         first_mismatch_lbas: first_mismatch_lbas.clone(),
@@ -130,4 +147,12 @@ impl CertificateProjector {
         cert.sign(keypair)?;
         Ok(cert)
     }
+}
+
+/// The journal Header record's `started_utc`, when present.
+fn header_start_utc(records: &[JournalRecord]) -> Option<String> {
+    records.iter().find_map(|r| match r {
+        JournalRecord::Header { started_utc, .. } => Some(started_utc.clone()),
+        _ => None,
+    })
 }

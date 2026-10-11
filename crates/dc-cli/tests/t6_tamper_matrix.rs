@@ -2,7 +2,6 @@ use assert_cmd::Command;
 use dc_testkit::{
     DioProbe, Janitor, JournalForge, JournalOracle, LoopDevice, SentinelManager,
 };
-use ed25519_dalek::SigningKey;
 use std::fs;
 use std::path::{Path, PathBuf};
 
