@@ -1,4 +1,4 @@
-use dc_cert::{AuthSignatureEntry, OperatorKeyPair, FLEET_MANIFEST_DOMAIN, PLAN_APPROVAL_DOMAIN};
+use dc_cert::{AuthSignatureEntry, FLEET_MANIFEST_DOMAIN, OperatorKeyPair, PLAN_APPROVAL_DOMAIN};
 use ed25519_dalek::Signer;
 
 pub struct PlanApprover;

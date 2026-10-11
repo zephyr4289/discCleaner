@@ -32,11 +32,13 @@ impl ErrnoClassifier {
             libc::ETIMEDOUT => IoctlTaxonomy::TimeoutAmbiguous { errno },
             libc::EFAULT => IoctlTaxonomy::OurBug {
                 errno,
-                description: "EFAULT: Invalid memory layout in passthrough buffer (internal bug)".to_string(),
+                description: "EFAULT: Invalid memory layout in passthrough buffer (internal bug)"
+                    .to_string(),
             },
             libc::EINVAL => IoctlTaxonomy::OurBug {
                 errno,
-                description: "EINVAL: Invalid parameter in admin CDW construction (internal bug)".to_string(),
+                description: "EINVAL: Invalid parameter in admin CDW construction (internal bug)"
+                    .to_string(),
             },
             _ => IoctlTaxonomy::UnmappedLoud { errno },
         }

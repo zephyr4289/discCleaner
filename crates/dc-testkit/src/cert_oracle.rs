@@ -1,5 +1,5 @@
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use std::fs;
 use std::path::Path;
@@ -97,12 +97,12 @@ impl CertOracle {
             obj.remove("signature");
         }
 
-        let canonical_bytes = serde_jcs::to_vec(&root)
-            .map_err(|e| format!("JCS canonicalization failed: {}", e))?;
+        let canonical_bytes =
+            serde_jcs::to_vec(&root).map_err(|e| format!("JCS canonicalization failed: {}", e))?;
 
         // 2. Validate Ed25519 signature
-        let pubkey_bytes = hex::decode(pubkey_hex)
-            .map_err(|e| format!("Invalid pubkey hex: {}", e))?;
+        let pubkey_bytes =
+            hex::decode(pubkey_hex).map_err(|e| format!("Invalid pubkey hex: {}", e))?;
         if pubkey_bytes.len() != 32 {
             return Err("Public key is not 32 bytes".to_string());
         }
@@ -122,15 +122,17 @@ impl CertOracle {
         let signature = Signature::from_bytes(&sig_arr);
 
         if verifying_key.verify(&canonical_bytes, &signature).is_err() {
-            return Err("Ed25519 signature verification FAILED over canonical JCS bytes".to_string());
+            return Err(
+                "Ed25519 signature verification FAILED over canonical JCS bytes".to_string(),
+            );
         }
 
         // 3. Assert plan hash matches BLAKE3(JCS(plan))
         let plan_obj = root
             .get("plan")
             .ok_or_else(|| "Missing plan in cert".to_string())?;
-        let plan_canonical = serde_jcs::to_vec(plan_obj)
-            .map_err(|e| format!("Plan JCS failed: {}", e))?;
+        let plan_canonical =
+            serde_jcs::to_vec(plan_obj).map_err(|e| format!("Plan JCS failed: {}", e))?;
         let computed_plan_hash = blake3::hash(&plan_canonical).to_hex().to_string();
         if computed_plan_hash != plan_hash_stored {
             return Err(format!(

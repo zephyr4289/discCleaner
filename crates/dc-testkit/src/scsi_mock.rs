@@ -70,7 +70,7 @@ impl ScsiDevMock {
         if self.unit_attention_pending {
             self.unit_attention_pending = false; // Consumed!
             return ScsiSenseVerdict::UnitAttention {
-                asc: 0x29,  // POWER ON, RESET, OR BUS DEVICE RESET OCCURRED / SANITIZE COMPLETED
+                asc: 0x29, // POWER ON, RESET, OR BUS DEVICE RESET OCCURRED / SANITIZE COMPLETED
                 ascq: 0x00,
             };
         }

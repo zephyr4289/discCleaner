@@ -1,9 +1,10 @@
 use crate::cert::{
-    ExecutionDetails, ExecutionPassReport, FailureRecord, InterruptionRecord, SanitizationCertificate,
+    ExecutionDetails, ExecutionPassReport, FailureRecord, InterruptionRecord,
+    SanitizationCertificate,
 };
 use crate::signer::OperatorKeyPair;
-use dc_core::journal::{JournalReader, JournalRecord};
 use dc_core::DcError;
+use dc_core::journal::{JournalReader, JournalRecord};
 use dc_core::plan::VerifyLevel;
 use dc_verify::VerificationReport;
 use std::path::Path;
@@ -32,7 +33,13 @@ impl CertificateProjector {
                 JournalRecord::Header { .. } => {
                     header_opt = Some(rec.clone());
                 }
-                JournalRecord::Failed { code, errno, op, at_lba, .. } => {
+                JournalRecord::Failed {
+                    code,
+                    errno,
+                    op,
+                    at_lba,
+                    ..
+                } => {
                     failures.push(FailureRecord {
                         // The Failed record carries no wall-clock stamp; the
                         // journal Header's start time is the closest honest
@@ -100,7 +107,10 @@ impl CertificateProjector {
                         last_p.windows_written = *windows_checked;
                     }
                 }
-                JournalRecord::Completed { at, duration_mono_ms } => {
+                JournalRecord::Completed {
+                    at,
+                    duration_mono_ms,
+                } => {
                     completed_opt = Some((at.clone(), *duration_mono_ms));
                 }
                 _ => {}
@@ -108,11 +118,17 @@ impl CertificateProjector {
         }
 
         let (plan, plan_hash, identity, started_utc) = match header_opt {
-            Some(JournalRecord::Header { plan, plan_hash, identity, started_utc, .. }) => {
-                (plan, plan_hash, identity, started_utc)
-            }
+            Some(JournalRecord::Header {
+                plan,
+                plan_hash,
+                identity,
+                started_utc,
+                ..
+            }) => (plan, plan_hash, identity, started_utc),
             _ => {
-                return Err(DcError::CertInvalid("Missing Header in journal".to_string()));
+                return Err(DcError::CertInvalid(
+                    "Missing Header in journal".to_string(),
+                ));
             }
         };
 

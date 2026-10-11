@@ -5,11 +5,11 @@ use dc_core::check_cqe_or_verify_crash;
 use dc_core::{DcError, PatternSource, WritePermit, ZeroPattern};
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use crate::{is_global_cancel_requested, BLKZEROOUT_IOCTL};
+use crate::{BLKZEROOUT_IOCTL, is_global_cancel_requested};
 
 pub struct SyncEngine {
     file: File,
@@ -185,16 +185,26 @@ impl Engine for SyncEngine {
                 let ret = unsafe { libc::ioctl(fd, BLKZEROOUT_IOCTL, &range) };
                 if ret != 0 {
                     // BLKZEROOUT failed, fallback to software write_pass
-                    tracing::warn!("BLKZEROOUT failed with errno {}, falling back to buffer write", std::io::Error::last_os_error());
+                    tracing::warn!(
+                        "BLKZEROOUT failed with errno {}, falling back to buffer write",
+                        std::io::Error::last_os_error()
+                    );
                     let zero_pat = ZeroPattern;
                     let remaining_start_window = current_offset / span.window_bytes;
-                    return self.write_pass(permit, pass_index, &zero_pat, span, remaining_start_window, prog);
+                    return self.write_pass(
+                        permit,
+                        pass_index,
+                        &zero_pat,
+                        span,
+                        remaining_start_window,
+                        prog,
+                    );
                 }
 
                 current_offset += this_chunk;
                 total_zeroed += this_chunk;
 
-                let windows_done = (current_offset + span.window_bytes - 1) / span.window_bytes;
+                let windows_done = current_offset.div_ceil(span.window_bytes);
                 #[cfg(any(feature = "fault-injection", debug_assertions))]
                 check_cqe_or_verify_crash("cqe", windows_done);
 

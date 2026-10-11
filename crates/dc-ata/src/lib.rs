@@ -30,7 +30,10 @@ mod unit_tests {
             fsm.process_intake(&status(true, false)),
             Err(AtaFsmOutcome::RefusedPreLocked)
         ));
-        assert!(matches!(fsm.state, AtaSecurityState::Terminal(AtaFsmOutcome::RefusedPreLocked)));
+        assert!(matches!(
+            fsm.state,
+            AtaSecurityState::Terminal(AtaFsmOutcome::RefusedPreLocked)
+        ));
 
         let mut fsm2 = AtaSecurityFsm::new();
         assert!(matches!(
@@ -60,14 +63,23 @@ mod unit_tests {
         assert!(!life.voided);
         life.void();
         assert!(life.voided);
-        assert!(life.plaintext_password.is_none(), "voiding must remove the plaintext");
+        assert!(
+            life.plaintext_password.is_none(),
+            "voiding must remove the plaintext"
+        );
         assert!(!life.password_hash.is_empty(), "audit hash survives");
     }
 
     #[test]
     fn freeze_evaluator_gates_on_override() {
-        assert!(FreezeEvaluator::evaluate(true, false).is_err(), "frozen without override refused");
-        assert!(FreezeEvaluator::evaluate(true, true).is_ok(), "explicit override proceeds");
+        assert!(
+            FreezeEvaluator::evaluate(true, false).is_err(),
+            "frozen without override refused"
+        );
+        assert!(
+            FreezeEvaluator::evaluate(true, true).is_ok(),
+            "explicit override proceeds"
+        );
         assert!(FreezeEvaluator::evaluate(false, false).is_ok());
     }
 

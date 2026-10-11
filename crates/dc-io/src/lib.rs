@@ -12,7 +12,7 @@ pub use sync_engine::SyncEngine;
 pub use tracker::{CompletionTracker, RangeCommitSpec};
 pub use traits::{Engine, EngineCaps, EngineProgress, LbaSpan, PassOutcome, VerifySink};
 pub use uring_engine::UringEngine;
-pub use zeropath::{ZeroPath, DEFAULT_CHUNK_BYTES};
+pub use zeropath::{DEFAULT_CHUNK_BYTES, ZeroPath};
 
 use dc_core::DcError;
 use std::fs::File;
@@ -67,9 +67,11 @@ pub fn create_engine(
     // dup'd fd shares the same open file description — and therefore the
     // same O_EXCL / flock ownership the Guardian acquired — so the fallback
     // engine keeps every lock the caller holds.
-    let fallback_file = file
-        .try_clone()
-        .map_err(|e| DcError::Io { op: "engine-fd-dup", errno: e.raw_os_error().unwrap_or(5), at_lba: None })?;
+    let fallback_file = file.try_clone().map_err(|e| DcError::Io {
+        op: "engine-fd-dup",
+        errno: e.raw_os_error().unwrap_or(5),
+        at_lba: None,
+    })?;
 
     match UringEngine::try_new(file, window_bytes, supports_write_zeroes, qd) {
         Ok(uring) => Ok(Box::new(uring)),
@@ -90,7 +92,9 @@ pub fn create_engine(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dc_core::{BusType, FastPathPolicy, FixedPattern, FsmOrchestrator, SanitizationPlan, StableIdentity};
+    use dc_core::{
+        BusType, FastPathPolicy, FixedPattern, FsmOrchestrator, SanitizationPlan, StableIdentity,
+    };
     use std::io::{Read, Seek, SeekFrom};
     use tempfile::NamedTempFile;
 

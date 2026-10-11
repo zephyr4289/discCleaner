@@ -75,7 +75,10 @@ fn run_f1_refusal_cells(scratch_dir: &Path) {
         SigCraft::craft_lvm2_label(&loop_dev.dev_path).unwrap();
 
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-        cmd.arg("check").arg("--target").arg(&loop_dev.dev_path).arg("--allow-loop");
+        cmd.arg("check")
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
+            .arg("--allow-loop");
         cmd.assert().code(2);
         println!("  [✓] R-LVM-SNIFF: Refused LVM2 physical volume signature.");
     }
@@ -88,7 +91,10 @@ fn run_f1_refusal_cells(scratch_dir: &Path) {
         SigCraft::craft_swap_signature(&loop_dev.dev_path).unwrap();
 
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-        cmd.arg("check").arg("--target").arg(&loop_dev.dev_path).arg("--allow-loop");
+        cmd.arg("check")
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
+            .arg("--allow-loop");
         cmd.assert().code(2);
         println!("  [✓] R-SWAP-SNIFF: Refused inactive SWAP signature.");
     }
@@ -101,12 +107,20 @@ fn run_f1_refusal_cells(scratch_dir: &Path) {
         SigCraft::craft_luks_magic(&loop_dev.dev_path).unwrap();
 
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-        cmd.arg("check").arg("--target").arg(&loop_dev.dev_path).arg("--allow-loop");
+        cmd.arg("check")
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
+            .arg("--allow-loop");
         cmd.assert().code(2);
 
         // With --allow-inactive-signatures, it must PASS
         let mut cmd_pass = Command::cargo_bin("diskcleaner").unwrap();
-        cmd_pass.arg("check").arg("--target").arg(&loop_dev.dev_path).arg("--allow-loop").arg("--allow-inactive-signatures");
+        cmd_pass
+            .arg("check")
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
+            .arg("--allow-loop")
+            .arg("--allow-inactive-signatures");
         cmd_pass.assert().code(0);
         println!("  [✓] R-LUKS: Refused LUKS container by default; permitted with explicit flag.");
     }
@@ -139,7 +153,8 @@ fn run_f2_near_miss_cells(scratch_dir: &Path) {
 
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
         cmd.arg("check")
-            .arg("--target").arg(&loop_dev.dev_path)
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
             .arg("--allow-loop")
             .arg("--allow-inactive-signatures");
         cmd.assert().code(0);
@@ -150,13 +165,18 @@ fn run_f2_near_miss_cells(scratch_dir: &Path) {
         let _ = fs::create_dir_all(&out_dir);
 
         let mut exec_cmd = Command::cargo_bin("diskcleaner").unwrap();
-        exec_cmd.arg("execute")
-            .arg("--target").arg(&loop_dev.dev_path)
-            .arg("--profile").arg("clear-zero")
-            .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+        exec_cmd
+            .arg("execute")
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
+            .arg("--profile")
+            .arg("clear-zero")
+            .arg("--serial-confirm")
+            .arg(format!("loop{}", loop_dev.minor))
             .arg("--allow-loop")
             .arg("--allow-inactive-signatures")
-            .arg("--out-dir").arg(&out_dir)
+            .arg("--out-dir")
+            .arg(&out_dir)
             .arg("--no-progress");
         exec_cmd.assert().code(0);
         println!("  [✓] NM-UNMOUNTED-FS-EXEC: Full wipe execution completed cleanly.");
@@ -182,7 +202,10 @@ fn run_f2_near_miss_cells(scratch_dir: &Path) {
         dm_dev.swap_table(&linear_table).unwrap();
 
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-        cmd.arg("check").arg("--target").arg(&dm_dev.dev_path).arg("--allow-loop");
+        cmd.arg("check")
+            .arg("--target")
+            .arg(&dm_dev.dev_path)
+            .arg("--allow-loop");
         cmd.assert().code(0);
         println!("  [✓] NM-DM: Clean device-mapper linear target classified as safe.");
     }
@@ -210,7 +233,8 @@ fn run_f3_precedence_probes(scratch_dir: &Path) {
         assert!(
             stderr_str.contains("LVM_PV"),
             "[F3-DETERMINISM] Repetition {} failed precedence order: stderr: {}",
-            i, stderr_str
+            i,
+            stderr_str
         );
     }
     println!("  [✓] F3 PASSED: Precedence order (LVM_PV > LOOP) 100% deterministic across 5 runs.");
@@ -231,10 +255,16 @@ fn run_f4_flag_isolation(scratch_dir: &Path) {
 
     // Passing --allow-loop MUST NOT suppress LVM_PV refusal!
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-    cmd.arg("check").arg("--target").arg(&loop_dev.dev_path).arg("--allow-loop");
+    cmd.arg("check")
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--allow-loop");
     let output = cmd.assert().code(2).get_output().stderr.clone();
     let stderr = String::from_utf8_lossy(&output);
-    assert!(stderr.contains("LVM_PV"), "[F4-ISOLATION] --allow-loop accidentally suppressed LVM_PV!");
+    assert!(
+        stderr.contains("LVM_PV"),
+        "[F4-ISOLATION] --allow-loop accidentally suppressed LVM_PV!"
+    );
     println!("  [✓] F4 PASSED: --allow-loop does not suppress unrelated danger refusals.");
 }
 
@@ -256,11 +286,15 @@ fn run_f5_lock_family(scratch_dir: &Path) {
 
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
     cmd.arg("execute")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--profile").arg("clear-zero")
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--profile")
+        .arg("clear-zero")
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
 
     cmd.assert().code(2);

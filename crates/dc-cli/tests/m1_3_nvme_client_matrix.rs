@@ -33,7 +33,7 @@ impl NvmeAdminTransport for MockFaultyTransport {
             // Get Log Page 0x81 (Sanitize Status)
             let mut log = vec![0u8; 512];
             log[0..2].copy_from_slice(&65535u16.to_le_bytes()); // SPROG = 100%
-            log[2..4].copy_from_slice(&1u16.to_le_bytes());     // SSTAT = Completed
+            log[2..4].copy_from_slice(&1u16.to_le_bytes()); // SSTAT = Completed
             return Ok(log);
         }
 
@@ -54,7 +54,10 @@ fn test_m1_3_nvme_client_matrix() {
     // 3. PURGE-FALLBACK-LADDER: Planned Mechanism Fallback Ladder (Δ269, Δ270)
     run_fallback_ladder_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[M1.3-FAIL] NVMe Client matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[M1.3-FAIL] NVMe Client matrix contains failing assertions!"
+    );
     println!("\n[=== MILESTONE M1.3 NVME PURGE CLIENT MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -82,7 +85,13 @@ fn run_permit_typestate_tests(ledger: &RigLedger) {
     assert_eq!(permit.target_device, "/dev/nvme0n1");
     assert_eq!(permit.target_serial, "S6B0NJ0W123456X");
 
-    ledger.assert("M1.3-PERMIT", "PURGE-PERMIT-TYPESTATE", "/dev/nvme0n1", permit.target_device, None);
+    ledger.assert(
+        "M1.3-PERMIT",
+        "PURGE-PERMIT-TYPESTATE",
+        "/dev/nvme0n1",
+        permit.target_device,
+        None,
+    );
 }
 
 fn run_fallback_ladder_tests(ledger: &RigLedger) {
@@ -99,9 +108,15 @@ fn run_fallback_ladder_tests(ledger: &RigLedger) {
         .unwrap();
 
     // Must have fallen back to Block Erase and completed successfully!
-    assert_eq!(summary.executed_mechanism, PurgeMechanism::SanitizeBlockErase);
+    assert_eq!(
+        summary.executed_mechanism,
+        PurgeMechanism::SanitizeBlockErase
+    );
     assert_eq!(summary.fallbacks.len(), 1);
-    assert_eq!(summary.fallbacks[0].from, PurgeMechanism::SanitizeCryptoErase);
+    assert_eq!(
+        summary.fallbacks[0].from,
+        PurgeMechanism::SanitizeCryptoErase
+    );
     assert_eq!(summary.fallbacks[0].to, PurgeMechanism::SanitizeBlockErase);
     assert!(summary.status.is_completed);
 

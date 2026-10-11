@@ -1,0 +1,67 @@
+CHACHA20-WINDOW-V1 — CANONICAL REPRODUCTION CONTRACT
+=====================================================
+
+status:  normative
+scope:   DeterministicRandom pass reproduction for diskcleaner
+audience: cleanroom re-verification rigs and independent auditors
+
+PURPOSE
+-------
+Any sanitization executed with a `DeterministicRandom` pass under the
+`chacha20-window-v1` scheme must be bit-for-bit reproducible by a third
+party holding only: (a) the 32-byte seed from the plan, (b) the device
+geometry, and (c) this document. No access to the original tool binary,
+hardware, or secrets beyond the committed seed is required or permitted.
+
+SCHEME DEFINITION
+-----------------
+cipher: ChaCha20 as specified in RFC 8439 §2.4 — 256-bit key, 96-bit
+        nonce occupying state words 13–15, 32-bit block counter
+        occupying state word 12, state serialized little-endian
+        per RFC 8439 §2.3.
+window: W bytes (from plan.window_bytes, default 2097152)
+key:    the 32-byte `seed` from the plan, used verbatim — no hashing,
+        derivation, or transformation of any kind — committed at t0
+        via plan_hash.
+nonce:  12 bytes: nonce[0..8] = window_index as u64 little-endian,
+        nonce[8..12] = 0x00000000
+blocks: keystream generated starting at block counter 0, advanced by
+        1 per 64-byte block, across the full window W. The final
+        window of the device may be shorter than W: its keystream is
+        the corresponding prefix of the full window's keystream,
+        truncated at the required length. The cipher is never re-keyed
+        and the counter is never reset within a window.
+data:   keystream XOR zero-buffer == keystream (the bytes written to
+        media are the keystream itself)
+
+REPRODUCTION PROCEDURE
+----------------------
+1. Obtain the seed (64 hex characters) and device geometry
+   (device_bytes D, window_bytes W) from the journal Header or the
+   reproduction recipe (`dc-recipe/1`).
+2. For each window index w = 0 .. ceil(D/W) - 1:
+   a. Build the nonce as defined above.
+   b. Generate the ChaCha20 keystream for window w starting at block
+      counter 0.
+   c. The written bytes for window w are the first
+      min(W, D - w*W) keystream bytes.
+3. Concatenate all windows in order and BLAKE3-hash the byte stream;
+   the digest must equal `stream_hash_blake3` from the journal Verify
+   record.
+
+KNOWN-ANSWER TEST VECTOR (RFC 8439 §2.3.2)
+-------------------------------------------
+For implementers validating their ChaCha20 core: the RFC 8439 §2.3.2
+block function test uses key
+00:01:02:..:1f, nonce 00:00:00:09:00:00:00:4a:00:00:00:00, counter 1,
+and produces the serialized state beginning
+10 f1 e7 e4 d1 3b 59 15 50 0f dd 1f a3 20 71 c4 ...
+Reference implementations must reproduce this vector before being
+trusted for reproduction.
+
+EVIDENCE CHAINING
+-----------------
+The BLAKE3 hash of THIS document (doc_blake3) is embedded in every
+reproduction recipe, binding the recipe to this exact contract text.
+A recipe generated under a different revision of this document can
+never verify against a cleanroom built from this one.

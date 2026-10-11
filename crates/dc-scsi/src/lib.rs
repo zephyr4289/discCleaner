@@ -28,9 +28,17 @@ mod unit_tests {
     #[test]
     fn timing_integrity_flags_impossible_durations() {
         // Instant completion of a 90-second mechanism = mangled evidence.
-        assert!(TimingIntegrity::check_mechanism_duration("ScsiSanitizeBlockErase", 250, 90_000).is_err());
+        assert!(
+            TimingIntegrity::check_mechanism_duration("ScsiSanitizeBlockErase", 250, 90_000)
+                .is_err()
+        );
         // Plausible durations pass.
-        assert!(TimingIntegrity::check_mechanism_duration("ScsiSanitizeBlockErase", 95_000, 90_000).is_ok());
+        assert!(TimingIntegrity::check_mechanism_duration(
+            "ScsiSanitizeBlockErase",
+            95_000,
+            90_000
+        )
+        .is_ok());
     }
 
     #[test]

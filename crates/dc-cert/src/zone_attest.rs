@@ -37,7 +37,10 @@ pub struct CrossVersionCertVerifier;
 
 impl CrossVersionCertVerifier {
     /// Strict schema addition & cross-version refusal law (Δ510).
-    pub fn verify_cert_json(cert_json: &str, tool_version: &str) -> Result<&'static str, &'static str> {
+    pub fn verify_cert_json(
+        cert_json: &str,
+        tool_version: &str,
+    ) -> Result<&'static str, &'static str> {
         let has_zone_attestation = cert_json.contains("zone_attestation");
 
         if tool_version.starts_with("v0.2.") {

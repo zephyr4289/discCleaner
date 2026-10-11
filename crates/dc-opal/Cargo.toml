@@ -1,6 +1,6 @@
 [package]
 name = "dc-opal"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2021"
 description = "Native Linux TCG Opal SSC client, PSID revert, and key-grade memory hygiene for diskcleaner"
 
@@ -14,3 +14,6 @@ thiserror = { workspace = true }
 blake3 = { workspace = true }
 hex = { workspace = true }
 libc = { workspace = true }
+
+[lints]
+workspace = true

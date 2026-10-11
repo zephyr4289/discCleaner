@@ -1,5 +1,5 @@
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use dc_core::DcError;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
@@ -71,7 +71,9 @@ impl OperatorKeyPair {
         let bytes = hex::decode(content.trim())
             .map_err(|e| DcError::CertSigning(format!("Invalid keyfile hex: {}", e)))?;
         if bytes.len() != 32 {
-            return Err(DcError::CertSigning("Keyfile must be 32 bytes hex".to_string()));
+            return Err(DcError::CertSigning(
+                "Keyfile must be 32 bytes hex".to_string(),
+            ));
         }
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&bytes);
@@ -88,7 +90,9 @@ impl OperatorKeyPair {
     }
 
     pub fn key_fingerprint_blake3(&self) -> String {
-        blake3::hash(&self.verifying_key.to_bytes()).to_hex().to_string()
+        blake3::hash(&self.verifying_key.to_bytes())
+            .to_hex()
+            .to_string()
     }
 
     pub fn sign_canonical_bytes(&self, bytes: &[u8]) -> String {
@@ -105,7 +109,9 @@ pub fn verify_canonical_signature(
     let pubkey_bytes = hex::decode(public_key_hex)
         .map_err(|e| DcError::CertSigning(format!("Invalid public key hex: {}", e)))?;
     if pubkey_bytes.len() != 32 {
-        return Err(DcError::CertSigning("Public key must be 32 bytes".to_string()));
+        return Err(DcError::CertSigning(
+            "Public key must be 32 bytes".to_string(),
+        ));
     }
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&pubkey_bytes);
@@ -116,7 +122,9 @@ pub fn verify_canonical_signature(
         .decode(signature_base64)
         .map_err(|e| DcError::CertSigning(format!("Invalid signature base64: {}", e)))?;
     if sig_bytes.len() != 64 {
-        return Err(DcError::CertSigning("Signature must be 64 bytes".to_string()));
+        return Err(DcError::CertSigning(
+            "Signature must be 64 bytes".to_string(),
+        ));
     }
     let mut sig_arr = [0u8; 64];
     sig_arr.copy_from_slice(&sig_bytes);

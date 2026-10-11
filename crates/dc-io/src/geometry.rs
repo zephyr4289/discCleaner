@@ -13,7 +13,7 @@ impl WindowGeometry {
             return Err(format!("Invalid block size: {}", block_size));
         }
 
-        if window_bytes == 0 || window_bytes % (block_size as u64) != 0 {
+        if window_bytes == 0 || !window_bytes.is_multiple_of(block_size as u64) {
             return Err(format!(
                 "Window size {} is not a multiple of block size {}",
                 window_bytes, block_size

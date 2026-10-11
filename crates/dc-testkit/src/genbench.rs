@@ -31,7 +31,9 @@ impl GenBench {
         let elapsed_secs = start.elapsed().as_secs_f64();
         let single_core_gib_s = (total_bytes as f64 / (1024.0 * 1024.0 * 1024.0)) / elapsed_secs;
 
-        let num_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let num_cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
         let effective_threads = (num_cpus.saturating_sub(1)).max(1);
         let estimated_host_capacity_gib_s = single_core_gib_s * effective_threads as f64;
 

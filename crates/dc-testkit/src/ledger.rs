@@ -23,6 +23,12 @@ pub struct RigLedger {
     records: Mutex<Vec<AssertionRecord>>,
 }
 
+impl Default for RigLedger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RigLedger {
     pub fn new() -> Self {
         Self {

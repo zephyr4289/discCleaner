@@ -16,7 +16,10 @@ fn test_t21_boot_matrix() {
     // 4. BOOT-PROVENANCE-BLOCK: Environment Provenance Embedding (Δ406)
     run_provenance_block_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[T21-FAIL] Boot Environment matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[T21-FAIL] Boot Environment matrix contains failing assertions!"
+    );
     println!("\n[=== PHASE T21 BOOT ENVIRONMENT RIG MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -29,12 +32,26 @@ fn run_evidence_sink_tests(ledger: &RigLedger) {
     assert_eq!(probe_res, Ok("EVIDENCE_SINK_PROBED_AND_VERIFIED"));
 
     // 2. Volatile RAM sink disclosure
-    boot_lab.sink_mode = EvidenceSinkMode::VolatileRam { copy_out_rendered: false };
+    boot_lab.sink_mode = EvidenceSinkMode::VolatileRam {
+        copy_out_rendered: false,
+    };
     let ram_res = boot_lab.probe_evidence_sink();
     assert_eq!(ram_res, Ok("VOLATILE_RAM_SINK_DISCLOSED"));
 
-    ledger.assert("T21-SINK", "BOOT-SINK-PROBE", "Ok(\"EVIDENCE_SINK_PROBED_AND_VERIFIED\")", format!("{:?}", probe_res), None);
-    ledger.assert("T21-SINK", "BOOT-SINK-RAM-DISCLOSE", "Ok(\"VOLATILE_RAM_SINK_DISCLOSED\")", format!("{:?}", ram_res), None);
+    ledger.assert(
+        "T21-SINK",
+        "BOOT-SINK-PROBE",
+        "Ok(\"EVIDENCE_SINK_PROBED_AND_VERIFIED\")",
+        format!("{:?}", probe_res),
+        None,
+    );
+    ledger.assert(
+        "T21-SINK",
+        "BOOT-SINK-RAM-DISCLOSE",
+        "Ok(\"VOLATILE_RAM_SINK_DISCLOSED\")",
+        format!("{:?}", ram_res),
+        None,
+    );
 }
 
 fn run_boot_and_sink_protection_tests(ledger: &RigLedger) {
@@ -44,18 +61,36 @@ fn run_boot_and_sink_protection_tests(ledger: &RigLedger) {
 
     // 1. Target is boot medium -> Refused!
     let boot_target_res = boot_lab.validate_target_safety("BOOT_STICK_SN01", "/dev/sdb");
-    assert_eq!(boot_target_res, Err("REFUSAL_BOOT_MEDIUM_TARGET_NEVER_OVERRIDABLE"));
+    assert_eq!(
+        boot_target_res,
+        Err("REFUSAL_BOOT_MEDIUM_TARGET_NEVER_OVERRIDABLE")
+    );
 
     // 2. Target is evidence sink -> Refused!
     let sink_target_res = boot_lab.validate_target_safety("TARGET_DRIVE_SN02", "/dev/sdc1");
-    assert_eq!(sink_target_res, Err("REFUSAL_EVIDENCE_SINK_TARGET_NEVER_OVERRIDABLE"));
+    assert_eq!(
+        sink_target_res,
+        Err("REFUSAL_EVIDENCE_SINK_TARGET_NEVER_OVERRIDABLE")
+    );
 
     // 3. Target is an ordinary drive -> Accepted!
     let safe_target_res = boot_lab.validate_target_safety("TARGET_DRIVE_SN03", "/dev/sda");
     assert!(safe_target_res.is_ok());
 
-    ledger.assert("T21-PROTECT", "BOOT-PROTECT-MEDIUM", "Err(\"REFUSAL_BOOT_MEDIUM_TARGET_NEVER_OVERRIDABLE\")", format!("{:?}", boot_target_res), None);
-    ledger.assert("T21-PROTECT", "BOOT-PROTECT-SINK", "Err(\"REFUSAL_EVIDENCE_SINK_TARGET_NEVER_OVERRIDABLE\")", format!("{:?}", sink_target_res), None);
+    ledger.assert(
+        "T21-PROTECT",
+        "BOOT-PROTECT-MEDIUM",
+        "Err(\"REFUSAL_BOOT_MEDIUM_TARGET_NEVER_OVERRIDABLE\")",
+        format!("{:?}", boot_target_res),
+        None,
+    );
+    ledger.assert(
+        "T21-PROTECT",
+        "BOOT-PROTECT-SINK",
+        "Err(\"REFUSAL_EVIDENCE_SINK_TARGET_NEVER_OVERRIDABLE\")",
+        format!("{:?}", sink_target_res),
+        None,
+    );
 }
 
 fn run_freeze_gate_tests(ledger: &RigLedger) {
@@ -64,15 +99,33 @@ fn run_freeze_gate_tests(ledger: &RigLedger) {
     // 1. Boot environment (owns_the_box == true) -> S3 unfreeze permitted
     let boot_lab_baremetal = BootLabMock::new("BOOT_STICK_SN01", "/dev/sdb", "/dev/sdc1", true);
     let allowed_dance = boot_lab_baremetal.execute_s3_unfreeze_dance();
-    assert_eq!(allowed_dance, Ok("S3_UNFREEZE_DANCE_COMPLETED_UNFROZEN_ASSERTED"));
+    assert_eq!(
+        allowed_dance,
+        Ok("S3_UNFREEZE_DANCE_COMPLETED_UNFROZEN_ASSERTED")
+    );
 
     // 2. Installed Host OS (owns_the_box == false) -> Refused!
     let boot_lab_host = BootLabMock::new("BOOT_STICK_SN01", "/dev/sdb", "/dev/sdc1", false);
     let refused_dance = boot_lab_host.execute_s3_unfreeze_dance();
-    assert_eq!(refused_dance, Err("S3_UNFREEZE_DANCE_REFUSED_INSTALLED_HOST_OS_PROTECTED"));
+    assert_eq!(
+        refused_dance,
+        Err("S3_UNFREEZE_DANCE_REFUSED_INSTALLED_HOST_OS_PROTECTED")
+    );
 
-    ledger.assert("T21-FREEZE", "BOOT-FREEZE-ALLOWED", "Ok(\"S3_UNFREEZE_DANCE_COMPLETED_UNFROZEN_ASSERTED\")", format!("{:?}", allowed_dance), None);
-    ledger.assert("T21-FREEZE", "BOOT-FREEZE-REFUSED", "Err(\"S3_UNFREEZE_DANCE_REFUSED_INSTALLED_HOST_OS_PROTECTED\")", format!("{:?}", refused_dance), None);
+    ledger.assert(
+        "T21-FREEZE",
+        "BOOT-FREEZE-ALLOWED",
+        "Ok(\"S3_UNFREEZE_DANCE_COMPLETED_UNFROZEN_ASSERTED\")",
+        format!("{:?}", allowed_dance),
+        None,
+    );
+    ledger.assert(
+        "T21-FREEZE",
+        "BOOT-FREEZE-REFUSED",
+        "Err(\"S3_UNFREEZE_DANCE_REFUSED_INSTALLED_HOST_OS_PROTECTED\")",
+        format!("{:?}", refused_dance),
+        None,
+    );
 }
 
 fn run_provenance_block_tests(ledger: &RigLedger) {
@@ -85,5 +138,11 @@ fn run_provenance_block_tests(ledger: &RigLedger) {
     assert_eq!(prov.boot_medium_serial, "BOOT_STICK_SN01");
     assert!(prov.owns_the_box);
 
-    ledger.assert("T21-PROV", "BOOT-PROVENANCE-BLOCK", "true", prov.owns_the_box.to_string(), None);
+    ledger.assert(
+        "T21-PROV",
+        "BOOT-PROVENANCE-BLOCK",
+        "true",
+        prov.owns_the_box.to_string(),
+        None,
+    );
 }

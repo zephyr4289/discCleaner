@@ -1,0 +1,76 @@
+# discCleaner — Architecture
+
+discCleaner is a military-grade storage sanitization suite implementing
+NIST SP 800-88 Rev 1, IEEE 2883-2022, and DoD media sanitization standards
+with deterministic cryptographic verification and tamper-evident audit
+trails.
+
+## The layer law
+
+```
+            ┌──────────────────────────────────────────────┐
+ operator → │ dc-cli (surface: prompts, exit codes, gates) │
+            └──────────────┬───────────────────────────────┘
+                           │ depends on
+     ┌─────────────┬───────┴──────┬──────────────┐
+     ▼             ▼              ▼              ▼
+  dc-probe       dc-io         dc-cert        dc-nvme/ata/
+  (Guardian:     (engines,     (certs, 2PI,   scsi/mmc/opal
+   is it safe?)   permits)       keyrings)     (hardware purge)
+     │             │              │              │
+     └──────┬──────┴──────┬───────┴──────┬───────┘
+            ▼             ▼              ▼
+         dc-core ──── dc-verify ──── dc-hw
+     (plans/journals/  (read-back      (protocol codecs,
+      FSM/identity)     verification)   pure functions)
+            │
+            ▼
+      dc-testkit  ← integration suites import this; PRODUCTION CRATES NEVER
+                    IMPORT IT (layering law, enforced by REG-MMC-LAYERING)
+```
+
+**Dependency direction is a security property.** Trust flows down: the CLI
+gates everything; the Guardian decides; engines only write with a
+permit minted by the FSM in dc-core; codecs are pure; the testkit is the
+adversary and stays out of release binaries.
+
+## The evidence chain
+
+1. `dc plan` compiles a typed `SanitizationPlan` and hashes its JCS form.
+2. Two officers countersign the plan hash (`dc approve`).
+3. `dc execute` re-runs the Guardian, checks the approval set, arms
+   (O_EXCL + flock on the disk **and every partition**), opens a
+   hash-chained journal.
+4. Every window write is checkpointed; verification reads back 100% of LBAs
+   and streams BLAKE3 over what the media actually contains.
+5. The certificate embeds plan hash, journal chain head, stream hash, and
+   an Ed25519 signature over the canonical form.
+6. A third party holding only the seed and geometry can re-derive the
+   stream digest from `docs/reproduction/chacha20-window-v1.txt` — the
+   cleanroom reproduction contract (A2 Moat).
+
+## Execution model
+
+- **Windows**: the device is covered in fixed windows (default 2 MiB);
+  every write, checkpoint, and verify artifact is window-addressed.
+- **FSM typestate**: destructive writes require a `WritePermit`; states
+  cannot be skipped.
+- **Crash safety**: the journal is fsynced per record; torn tails are
+  recoverable; zero-tails are corruption.
+- **Signals**: SIGINT/SIGTERM set a global cancel; engines drain at the
+  next window boundary and journal an `Interrupted` record; `dc resume`
+  continues from the frontier. Post-verification signals complete under
+  the victory-lap rule.
+
+## Where to look
+
+| I want to... | Start in |
+|---|---|
+| understand safety gates | `crates/dc-probe/src/guardian.rs` |
+| trace evidence | `crates/dc-core/src/journal.rs`, `audit.rs` |
+| verify a wipe | `crates/dc-verify/src/verifier.rs` |
+| add a protocol | `crates/dc-hw/src/*_codec.rs` + its client crate |
+| run tests | `python3 tests/run_tests.py` (lit-style) |
+
+See `docs/SECURITY.md` for the threat model and
+`docs/TESTING.md` for the test architecture.

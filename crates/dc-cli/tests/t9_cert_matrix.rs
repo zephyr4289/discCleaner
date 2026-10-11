@@ -1,8 +1,6 @@
 use assert_cmd::Command;
 use dc_cert::OperatorKeyPair;
-use dc_testkit::{
-    CertForge, DioProbe, Janitor, KnownAnswerTests, LoopDevice, SentinelManager,
-};
+use dc_testkit::{CertForge, DioProbe, Janitor, KnownAnswerTests, LoopDevice, SentinelManager};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -22,7 +20,9 @@ fn test_t9_certificate_verification_matrix() {
     run_f5_schema_hygiene();
 
     if !is_root() {
-        eprintln!("[SKIP] T9 E2E live wipe cell requires root privileges (EUID 0). Pure certificate cells passed.");
+        eprintln!(
+            "[SKIP] T9 E2E live wipe cell requires root privileges (EUID 0). Pure certificate cells passed."
+        );
         return;
     }
 
@@ -40,20 +40,20 @@ fn test_t9_certificate_verification_matrix() {
 
     Janitor::sweep_all(&scratch_dir);
 
-    println!("\n[=== T9 CERTIFICATE VERIFICATION & ANTI-FORGERY SUITE PASSED ALL MATRIX CELLS ===]\n");
+    println!(
+        "\n[=== T9 CERTIFICATE VERIFICATION & ANTI-FORGERY SUITE PASSED ALL MATRIX CELLS ===]\n"
+    );
 }
 
 fn run_f0_prelude() {
     println!("\n[>>> F0 PRELUDE: Testing RFC 8032, RFC 8785 & BLAKE3 Known Answer Tests <<<]");
 
-    KnownAnswerTests::verify_rfc8032_ed25519_kat()
-        .expect("[F0-ED25519] RFC 8032 KAT failed!");
+    KnownAnswerTests::verify_rfc8032_ed25519_kat().expect("[F0-ED25519] RFC 8032 KAT failed!");
 
     KnownAnswerTests::verify_rfc8785_jcs_examples()
         .expect("[F0-JCS] RFC 8785 JCS canonicalization failed!");
 
-    KnownAnswerTests::verify_blake3_kat()
-        .expect("[F0-BLAKE3] BLAKE3 KAT failed!");
+    KnownAnswerTests::verify_blake3_kat().expect("[F0-BLAKE3] BLAKE3 KAT failed!");
 
     println!("  [✓] F0 PASSED: RFC 8032 Ed25519, RFC 8785 JCS, and BLAKE3 KATs verified.");
 }
@@ -65,7 +65,7 @@ fn stage_test_cert() -> (String, OperatorKeyPair, PathBuf) {
     // historical `tempdir()` binding deleted the directory on return, so
     // every follow-up file-surgery write into `cert_path.parent()` hit
     // NotFound (REG-STAGE-CERT-LIFETIME).
-    let temp_dir = tempfile::tempdir().unwrap().into_path();
+    let temp_dir = tempfile::tempdir().unwrap().keep();
     let cert_path = temp_dir.join("base.cert.json");
 
     let identity = dc_core::DeviceIdentity {
@@ -78,14 +78,20 @@ fn stage_test_cert() -> (String, OperatorKeyPair, PathBuf) {
             dm_name: None,
             dm_uuid: None,
         },
-        kernel: dc_core::KernelIdentity { major: 259, minor: 0 },
+        kernel: dc_core::KernelIdentity {
+            major: 259,
+            minor: 0,
+        },
         kernel_name: "nvme0n1".to_string(),
         dev_path: "/dev/nvme0n1".to_string(),
         logical_block_size: 512,
         physical_block_size: 4096,
     };
 
-    let plan = dc_core::SanitizationPlan::clear_zero(identity.stable.clone(), dc_core::FastPathPolicy::PreferWriteZeroes);
+    let plan = dc_core::SanitizationPlan::clear_zero(
+        identity.stable.clone(),
+        dc_core::FastPathPolicy::PreferWriteZeroes,
+    );
     let plan_hash = plan.compute_plan_hash().unwrap();
 
     let mut cert = dc_cert::SanitizationCertificate::new(
@@ -111,13 +117,15 @@ fn stage_test_cert() -> (String, OperatorKeyPair, PathBuf) {
             windows_checked: 32,
             mismatch_count: 0,
             first_mismatch_lbas: vec![],
-            stream_hash_blake3: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            stream_hash_blake3: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                .to_string(),
             stream_hash_sha256: None,
             entropy: None,
         },
         dc_core::JournalChainSummary {
             path: PathBuf::from("/tmp/test.dcj"),
-            chain_head: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            chain_head: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
             record_count: 4,
             discarded_tail_bytes: 0,
             uuid: "test-uuid-t9".to_string(),
@@ -147,7 +155,9 @@ fn run_f1_canonical_semantics() {
     let mut cmd_reorder = Command::cargo_bin("diskcleaner").unwrap();
     cmd_reorder.arg("cert").arg("verify").arg(&reordered_path);
     cmd_reorder.assert().code(0);
-    println!("  [✓] E-REORDER: Key-reordered JSON validly verified (signature protects canonical form).");
+    println!(
+        "  [✓] E-REORDER: Key-reordered JSON validly verified (signature protects canonical form)."
+    );
 
     // 2. F-VALUE: Changing serial number MUST FAIL (Exit 10)
     let tampered_val = json_str.replacen("SN-TEST-999", "SN-FORGED-666", 1);
@@ -186,34 +196,50 @@ fn run_f2_authenticity_and_anchors() {
     cmd_unanchored.arg("cert").arg("verify").arg(&attack_path);
     let out = cmd_unanchored.assert().code(0).get_output().stdout.clone();
     let stdout = String::from_utf8_lossy(&out);
-    assert!(stdout.contains("INTEGRITY-ONLY"), "[F-REKEY-UNANCHORED] Missing integrity-only label!");
+    assert!(
+        stdout.contains("INTEGRITY-ONLY"),
+        "[F-REKEY-UNANCHORED] Missing integrity-only label!"
+    );
     println!("  [✓] F-REKEY-UNANCHORED: Forged cert without anchor labeled as INTEGRITY-ONLY.");
 
     // 2. F-REKEY-ANCHORED: Attack key re-sign with operator fingerprint -> MUST REFUSE (Exit 10)
     let mut cmd_anchored = Command::cargo_bin("diskcleaner").unwrap();
-    cmd_anchored.arg("cert").arg("verify")
+    cmd_anchored
+        .arg("cert")
+        .arg("verify")
         .arg(&attack_path)
-        .arg("--fingerprint").arg(op_key.key_fingerprint_blake3());
+        .arg("--fingerprint")
+        .arg(op_key.key_fingerprint_blake3());
     cmd_anchored.assert().code(10);
-    println!("  [✓] F-REKEY-ANCHORED: Forged cert refused against operator fingerprint with exit code 10.");
+    println!(
+        "  [✓] F-REKEY-ANCHORED: Forged cert refused against operator fingerprint with exit code 10."
+    );
 
     // 3. ANCHOR-REQUIRED: Unanchored valid cert with --require-anchor -> MUST REFUSE (Exit 10)
     let mut cmd_req = Command::cargo_bin("diskcleaner").unwrap();
-    cmd_req.arg("cert").arg("verify")
+    cmd_req
+        .arg("cert")
+        .arg("verify")
         .arg(&cert_path)
         .arg("--require-anchor");
     cmd_req.assert().code(10);
     println!("  [✓] ANCHOR-REQUIRED: Unanchored cert refused when --require-anchor is passed.");
 
     // 4. F-FINGERPRINT-SWAP: Swapped fingerprint with stale value -> MUST REFUSE (Exit 10)
-    let fake_fp_cert = CertForge::swap_fingerprint(&json_str, "0000000000000000000000000000000000000000000000000000000000000000").unwrap();
+    let fake_fp_cert = CertForge::swap_fingerprint(
+        &json_str,
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
     let fp_path = temp_dir.join("fake_fp.cert.json");
     fs::write(&fp_path, fake_fp_cert).unwrap();
 
     let mut cmd_fp = Command::cargo_bin("diskcleaner").unwrap();
     cmd_fp.arg("cert").arg("verify").arg(&fp_path);
     cmd_fp.assert().code(10);
-    println!("  [✓] F-FINGERPRINT-SWAP: Stale fingerprint caught by coherence check with exit code 10.");
+    println!(
+        "  [✓] F-FINGERPRINT-SWAP: Stale fingerprint caught by coherence check with exit code 10."
+    );
 }
 
 fn run_f3_parser_adversarial() {
@@ -286,13 +312,19 @@ fn run_t9_e2e_live_cycle(scratch_dir: &Path) {
     let _ = fs::create_dir_all(&out_dir);
 
     let mut exec_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    exec_cmd.arg("execute")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--profile").arg("clear-zero")
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
-        .arg("--key").arg(&key_path)
+    exec_cmd
+        .arg("execute")
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--profile")
+        .arg("clear-zero")
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
+        .arg("--key")
+        .arg(&key_path)
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
     exec_cmd.assert().code(0);
 
@@ -309,9 +341,12 @@ fn run_t9_e2e_live_cycle(scratch_dir: &Path) {
 
     // 2. Reconcile verify with journal
     let mut verify_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    verify_cmd.arg("cert").arg("verify")
+    verify_cmd
+        .arg("cert")
+        .arg("verify")
         .arg(&cert_path)
-        .arg("--journal").arg(&journal_path);
+        .arg("--journal")
+        .arg(&journal_path);
     verify_cmd.assert().code(0);
     println!("  [✓] dc cert verify reconciled cleanly against live journal file.");
 }

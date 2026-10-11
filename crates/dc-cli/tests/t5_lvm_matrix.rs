@@ -1,7 +1,5 @@
 use assert_cmd::Command;
-use dc_testkit::{
-    DioProbe, Janitor, LoopDevice, LvmSandbox, SentinelManager, UevFire,
-};
+use dc_testkit::{DioProbe, Janitor, LoopDevice, LvmSandbox, SentinelManager, UevFire};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -83,7 +81,10 @@ fn run_t5_prelude(scratch_dir: &Path, lvm: &LvmSandbox) {
 
     // Host udev must not auto-activate the foreign system_id VG
     let holder_check = dc_probe::LayerStackDetector::has_holders(&loop_name);
-    assert!(!holder_check, "[PRELUDE] Host auto-activated foreign test VG!");
+    assert!(
+        !holder_check,
+        "[PRELUDE] Host auto-activated foreign test VG!"
+    );
 
     lvm.vgremove(&vg_name).unwrap();
     println!("  [✓] T5 PRELUDE PASSED: LVM sandbox and uevent fencing verified.");
@@ -109,10 +110,17 @@ fn run_active_lvm_cells(scratch_dir: &Path, lvm: &LvmSandbox) {
         lvm.vgchange_ay(&vg_name).unwrap();
 
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-        cmd.arg("check").arg("--target").arg(&loop_dev.dev_path).arg("--allow-loop");
+        cmd.arg("check")
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
+            .arg("--allow-loop");
         let output = cmd.assert().code(2).get_output().stderr.clone();
         let stderr = String::from_utf8_lossy(&output);
-        assert!(stderr.contains("HAS_HOLDERS"), "[A-PV-DISK] Expected HAS_HOLDERS, got: {}", stderr);
+        assert!(
+            stderr.contains("HAS_HOLDERS"),
+            "[A-PV-DISK] Expected HAS_HOLDERS, got: {}",
+            stderr
+        );
 
         lvm.vgremove(&vg_name).unwrap();
         println!("  [✓] A-PV-DISK: Active LVM LV detected via HAS_HOLDERS.");
@@ -140,10 +148,17 @@ fn run_active_lvm_cells(scratch_dir: &Path, lvm: &LvmSandbox) {
         lvm.vgchange_ay(&vg_name).unwrap();
 
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-        cmd.arg("check").arg("--target").arg(&loop_a.dev_path).arg("--allow-loop");
+        cmd.arg("check")
+            .arg("--target")
+            .arg(&loop_a.dev_path)
+            .arg("--allow-loop");
         let output = cmd.assert().code(2).get_output().stderr.clone();
         let stderr = String::from_utf8_lossy(&output);
-        assert!(stderr.contains("HAS_HOLDERS"), "[A-SPAN] Expected HAS_HOLDERS, got: {}", stderr);
+        assert!(
+            stderr.contains("HAS_HOLDERS"),
+            "[A-SPAN] Expected HAS_HOLDERS, got: {}",
+            stderr
+        );
 
         lvm.vgremove(&vg_name).unwrap();
         println!("  [✓] A-SPAN: Spanning multi-disk LV refused with HAS_HOLDERS.");
@@ -167,15 +182,24 @@ fn run_advisory_lvm_cells(scratch_dir: &Path, lvm: &LvmSandbox) {
 
         // Check without --allow-member -> MUST REFUSE with LVM_PV
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-        cmd.arg("check").arg("--target").arg(&loop_dev.dev_path).arg("--allow-loop");
+        cmd.arg("check")
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
+            .arg("--allow-loop");
         let output = cmd.assert().code(2).get_output().stderr.clone();
         let stderr = String::from_utf8_lossy(&output);
-        assert!(stderr.contains("LVM_PV"), "[I-PLAIN] Expected LVM_PV, got: {}", stderr);
+        assert!(
+            stderr.contains("LVM_PV"),
+            "[I-PLAIN] Expected LVM_PV, got: {}",
+            stderr
+        );
 
         // Check WITH --allow-member -> MUST PASS
         let mut cmd_pass = Command::cargo_bin("diskcleaner").unwrap();
-        cmd_pass.arg("check")
-            .arg("--target").arg(&loop_dev.dev_path)
+        cmd_pass
+            .arg("check")
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
             .arg("--allow-loop")
             .arg("--allow-member");
         cmd_pass.assert().code(0);
@@ -208,23 +232,36 @@ fn run_advisory_lvm_cells(scratch_dir: &Path, lvm: &LvmSandbox) {
 
         // Full wipe of loop_a with --allow-member
         let mut exec_cmd = Command::cargo_bin("diskcleaner").unwrap();
-        exec_cmd.arg("execute")
-            .arg("--target").arg(&loop_a.dev_path)
-            .arg("--profile").arg("clear-zero")
-            .arg("--serial-confirm").arg(format!("loop{}", loop_a.minor))
+        exec_cmd
+            .arg("execute")
+            .arg("--target")
+            .arg(&loop_a.dev_path)
+            .arg("--profile")
+            .arg("clear-zero")
+            .arg("--serial-confirm")
+            .arg(format!("loop{}", loop_a.minor))
             .arg("--allow-loop")
             .arg("--allow-member")
-            .arg("--out-dir").arg(&out_dir)
+            .arg("--out-dir")
+            .arg(&out_dir)
             .arg("--no-progress");
         exec_cmd.assert().code(0);
 
         // Loop A wiped -> sentinel oracle passes
-        let media_res = SentinelManager::verify_zero_media_oracle(&backing_a, 64 * 1024 * 1024).unwrap();
-        assert!(media_res.all_zeros, "[I-SPAN] Loop A media not fully zeroed!");
+        let media_res =
+            SentinelManager::verify_zero_media_oracle(&backing_a, 64 * 1024 * 1024).unwrap();
+        assert!(
+            media_res.all_zeros,
+            "[I-SPAN] Loop A media not fully zeroed!"
+        );
 
         // Loop B must remain untouched and still refuse LVM_PV
         let mut check_b = Command::cargo_bin("diskcleaner").unwrap();
-        check_b.arg("check").arg("--target").arg(&loop_b.dev_path).arg("--allow-loop");
+        check_b
+            .arg("check")
+            .arg("--target")
+            .arg(&loop_b.dev_path)
+            .arg("--allow-loop");
         check_b.assert().code(2);
 
         println!("  [✓] I-SPAN: Surgical wipe of member disk completed; partner member intact.");
@@ -242,15 +279,20 @@ fn run_near_miss_cells(scratch_dir: &Path) {
     let loop_dev = LoopDevice::create_and_attach(&backing, 64 * 1024 * 1024, 512).unwrap();
 
     // Write corrupted label with LABELONE but bad type
-    let mut file = fs::OpenOptions::new().write(true).open(&loop_dev.dev_path).unwrap();
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .open(&loop_dev.dev_path)
+        .unwrap();
     use std::io::{Seek, SeekFrom, Write};
     file.seek(SeekFrom::Start(512)).unwrap();
-    file.write_all(b"LABELONE_FAKE_DATA_NOT_LVM_HEADER").unwrap();
+    file.write_all(b"LABELONE_FAKE_DATA_NOT_LVM_HEADER")
+        .unwrap();
     drop(file);
 
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
     cmd.arg("check")
-        .arg("--target").arg(&loop_dev.dev_path)
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
         .arg("--allow-loop")
         .arg("--allow-inactive-signatures");
     cmd.assert().code(0);
@@ -276,7 +318,8 @@ fn run_flag_isolation_cells(scratch_dir: &Path, lvm: &LvmSandbox) {
 
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
     cmd.arg("check")
-        .arg("--target").arg(&loop_dev.dev_path)
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
         .arg("--allow-loop")
         .arg("--allow-member"); // Must NOT suppress HAS_HOLDERS!
     let output = cmd.assert().code(2).get_output().stderr.clone();

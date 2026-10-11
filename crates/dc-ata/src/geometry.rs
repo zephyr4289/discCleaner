@@ -24,7 +24,10 @@ pub struct GeometryTransaction {
 impl GeometryTransaction {
     pub fn begin(current: u64, native: u64, dco: u64) -> Self {
         Self {
-            id: format!("geom-tx-{}", blake3::hash(&current.to_le_bytes()).to_hex()[0..8].to_string()),
+            id: format!(
+                "geom-tx-{}",
+                &blake3::hash(&current.to_le_bytes()).to_hex()[0..8]
+            ),
             stages: Vec::new(),
             current_capacity: current,
             native_capacity: native,

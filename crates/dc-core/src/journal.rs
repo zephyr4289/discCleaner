@@ -186,10 +186,7 @@ impl JournalWriter {
             });
         }
 
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)?;
+        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
 
         // Exclusive non-blocking flock on journal file (Δ43)
         unsafe {
@@ -238,10 +235,7 @@ impl JournalWriter {
         let mut prev_hash = [0u8; 32];
         prev_hash.copy_from_slice(&hash_bytes);
 
-        let writer_file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .open(path)?;
+        let writer_file = OpenOptions::new().read(true).append(true).open(path)?;
 
         Ok(Self {
             file: writer_file,
@@ -487,25 +481,27 @@ impl JournalReader {
                         // verification impossible, so the journal is rejected
                         // outright instead of being silently downgraded to
                         // hash-only verification.
-                        let pk_hex = operator_pubkey.as_ref().ok_or_else(|| {
-                            DcError::JournalCorrupt {
-                                record_index: 0,
-                                reason: "SEALED_JOURNAL_MISSING_PUBKEY: sealed journal \
+                        let pk_hex =
+                            operator_pubkey
+                                .as_ref()
+                                .ok_or_else(|| DcError::JournalCorrupt {
+                                    record_index: 0,
+                                    reason: "SEALED_JOURNAL_MISSING_PUBKEY: sealed journal \
                                          Header lacks operator_pubkey; signature \
                                          verification is impossible"
-                                    .to_string(),
-                            }
-                        })?;
-                        let pk_bytes = hex::decode(pk_hex).map_err(|_| DcError::JournalCorrupt {
-                            record_index: 0,
-                            reason: "Invalid operator_pubkey hex in Header".to_string(),
-                        })?;
-                        let vk = VerifyingKey::from_bytes(
-                            pk_bytes.as_slice().try_into().map_err(|_| DcError::JournalCorrupt {
+                                        .to_string(),
+                                })?;
+                        let pk_bytes =
+                            hex::decode(pk_hex).map_err(|_| DcError::JournalCorrupt {
+                                record_index: 0,
+                                reason: "Invalid operator_pubkey hex in Header".to_string(),
+                            })?;
+                        let vk = VerifyingKey::from_bytes(pk_bytes.as_slice().try_into().map_err(
+                            |_| DcError::JournalCorrupt {
                                 record_index: 0,
                                 reason: "Invalid operator_pubkey length in Header".to_string(),
-                            })?,
-                        )
+                            },
+                        )?)
                         .map_err(|_| DcError::JournalCorrupt {
                             record_index: 0,
                             reason: "Invalid Ed25519 public key in Header".to_string(),
@@ -536,8 +532,9 @@ impl JournalReader {
                         if vk.verify(&msg, &sig).is_err() {
                             return Err(DcError::JournalCorrupt {
                                 record_index: record_idx,
-                                reason: "Invalid Ed25519 digital signature in sealed journal record"
-                                    .to_string(),
+                                reason:
+                                    "Invalid Ed25519 digital signature in sealed journal record"
+                                        .to_string(),
                             });
                         }
                     }
@@ -616,7 +613,10 @@ pub fn check_crash_hook(record: &JournalRecord) {
         };
 
         if should_kill {
-            eprintln!("[CRASH_HOOK] Intentionally raising SIGKILL on event: {}", crash_spec);
+            eprintln!(
+                "[CRASH_HOOK] Intentionally raising SIGKILL on event: {}",
+                crash_spec
+            );
             unsafe {
                 libc::raise(libc::SIGKILL);
             }
@@ -633,7 +633,10 @@ pub fn check_cqe_or_verify_crash(event_type: &str, count: u64) {
         let target_count: u64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
 
         if target_event == event_type && count == target_count {
-            eprintln!("[CRASH_HOOK] Intentionally raising SIGKILL on {}:{}", event_type, count);
+            eprintln!(
+                "[CRASH_HOOK] Intentionally raising SIGKILL on {}:{}",
+                event_type, count
+            );
             unsafe {
                 libc::raise(libc::SIGKILL);
             }
@@ -663,7 +666,10 @@ pub fn check_signal_hook(record: &JournalRecord) {
         };
 
         if should_signal {
-            eprintln!("[SIGNAL_HOOK] Intentionally raising SIGINT on event: {}", sig_spec);
+            eprintln!(
+                "[SIGNAL_HOOK] Intentionally raising SIGINT on event: {}",
+                sig_spec
+            );
             unsafe {
                 libc::kill(libc::getpid(), libc::SIGINT);
             }
@@ -680,7 +686,10 @@ pub fn check_cqe_or_verify_signal(event_type: &str, count: u64) {
         let target_count: u64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
 
         if target_event == event_type && count == target_count {
-            eprintln!("[SIGNAL_HOOK] Intentionally raising SIGINT on {}:{}", event_type, count);
+            eprintln!(
+                "[SIGNAL_HOOK] Intentionally raising SIGINT on {}:{}",
+                event_type, count
+            );
             unsafe {
                 libc::kill(libc::getpid(), libc::SIGINT);
             }

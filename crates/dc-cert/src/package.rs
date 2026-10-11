@@ -25,7 +25,11 @@ impl PackageVerifier {
     pub fn verify_manifest_completeness(
         manifest: &EvidencePackageManifest,
     ) -> Result<&'static str, &'static str> {
-        let known_paths: Vec<&str> = manifest.artifacts.iter().map(|a| a.rel_path.as_str()).collect();
+        let known_paths: Vec<&str> = manifest
+            .artifacts
+            .iter()
+            .map(|a| a.rel_path.as_str())
+            .collect();
 
         for art in &manifest.artifacts {
             for ref_path in &art.references {

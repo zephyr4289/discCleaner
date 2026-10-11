@@ -20,7 +20,10 @@ fn test_m2_1_fleet_core_matrix() {
     // 4. NO-REASSIGN: Refusal Immortality Law (Δ396)
     run_no_reassignment_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[M2.1-FAIL] Fleet Core matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[M2.1-FAIL] Fleet Core matrix contains failing assertions!"
+    );
     println!("\n[=== MILESTONE M2.1 FLEET ORCHESTRATION CORE MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -49,11 +52,19 @@ fn run_prepare_commit_tests(ledger: &RigLedger) {
     assert!(!frozen_hash.is_empty());
     assert_eq!(frozen_hash.len(), 64);
 
-    ledger.assert("M2.1-PREPARE", "PREPARE-COMMIT-IMMUTABLE", "64", frozen_hash.len().to_string(), None);
+    ledger.assert(
+        "M2.1-PREPARE",
+        "PREPARE-COMMIT-IMMUTABLE",
+        "64",
+        frozen_hash.len().to_string(),
+        None,
+    );
 }
 
 fn run_resolution_and_toctou_tests(ledger: &RigLedger) {
-    println!("\n[>>> RESOLVE-ADVISORY-TOCTOU: Testing Advisory Resolution & TOCTOU (Δ390, Δ392) <<<]");
+    println!(
+        "\n[>>> RESOLVE-ADVISORY-TOCTOU: Testing Advisory Resolution & TOCTOU (Δ390, Δ392) <<<]"
+    );
 
     let live_devices = vec![
         ("/dev/sda".to_string(), "SED_SERIAL_ALPHA".to_string()),
@@ -80,9 +91,27 @@ fn run_resolution_and_toctou_tests(ledger: &RigLedger) {
     let ambig_res = IdentityResolver::resolve_identity("SED_SERIAL_CLONE", &live_devices);
     assert!(matches!(ambig_res, AdvisoryResolution::Ambiguous(_)));
 
-    ledger.assert("M2.1-RESOLVE", "RESOLVE-UNIQUE", "true", matches!(unique_res, AdvisoryResolution::Unique { .. }).to_string(), None);
-    ledger.assert("M2.1-RESOLVE", "RESOLVE-ABSENT", "true", matches!(absent_res, AdvisoryResolution::Absent).to_string(), None);
-    ledger.assert("M2.1-RESOLVE", "RESOLVE-AMBIG", "true", matches!(ambig_res, AdvisoryResolution::Ambiguous(_)).to_string(), None);
+    ledger.assert(
+        "M2.1-RESOLVE",
+        "RESOLVE-UNIQUE",
+        "true",
+        matches!(unique_res, AdvisoryResolution::Unique { .. }).to_string(),
+        None,
+    );
+    ledger.assert(
+        "M2.1-RESOLVE",
+        "RESOLVE-ABSENT",
+        "true",
+        matches!(absent_res, AdvisoryResolution::Absent).to_string(),
+        None,
+    );
+    ledger.assert(
+        "M2.1-RESOLVE",
+        "RESOLVE-AMBIG",
+        "true",
+        matches!(ambig_res, AdvisoryResolution::Ambiguous(_)).to_string(),
+        None,
+    );
 }
 
 fn run_argv_seam_tests(ledger: &RigLedger) {
@@ -107,7 +136,13 @@ fn run_argv_seam_tests(ledger: &RigLedger) {
     let crept_hash = ArgvConstructor::compute_argv_hash(&modified_argv);
     assert_ne!(hash_1, crept_hash, "Argv seam must catch flag creep!");
 
-    ledger.assert("M2.1-SEAM", "ARGV-SEAM-HASH", "true", (hash_1 == hash_2).to_string(), None);
+    ledger.assert(
+        "M2.1-SEAM",
+        "ARGV-SEAM-HASH",
+        "true",
+        (hash_1 == hash_2).to_string(),
+        None,
+    );
 }
 
 fn run_no_reassignment_tests(ledger: &RigLedger) {
@@ -115,24 +150,20 @@ fn run_no_reassignment_tests(ledger: &RigLedger) {
 
     let manifest = BatchManifest::new(
         "BATCH_REFUSAL_TEST",
-        vec![
-            AssignmentRow {
-                slot_id: 0,
-                expected_serial: "REFUSED_SERIAL_001".to_string(),
-                plan_profile: "clear-zero".to_string(),
-                scan_attestation: "SCAN_REFUSED".to_string(),
-            },
-        ],
+        vec![AssignmentRow {
+            slot_id: 0,
+            expected_serial: "REFUSED_SERIAL_001".to_string(),
+            plan_profile: "clear-zero".to_string(),
+            scan_attestation: "SCAN_REFUSED".to_string(),
+        }],
     );
 
-    let child_journals = vec![
-        ChildJournalState {
-            slot_id: 0,
-            serial: "REFUSED_SERIAL_001".to_string(),
-            terminal_state: Some("GUARDIAN_REFUSED".to_string()),
-            cert_hash: None,
-        },
-    ];
+    let child_journals = vec![ChildJournalState {
+        slot_id: 0,
+        serial: "REFUSED_SERIAL_001".to_string(),
+        terminal_state: Some("GUARDIAN_REFUSED".to_string()),
+        cert_hash: None,
+    }];
 
     let report = BatchReconstructor::reconstruct_from_evidence(&manifest, &child_journals);
 
@@ -140,5 +171,11 @@ fn run_no_reassignment_tests(ledger: &RigLedger) {
     assert_eq!(report.records[0].outcome, FleetJobOutcome::GuardianRefused);
     assert_eq!(report.derive_aggregate_exit_code(), 2);
 
-    ledger.assert("M2.1-REASSIGN", "NO-REASSIGN-TERMINAL", "2", report.derive_aggregate_exit_code().to_string(), None);
+    ledger.assert(
+        "M2.1-REASSIGN",
+        "NO-REASSIGN-TERMINAL",
+        "2",
+        report.derive_aggregate_exit_code().to_string(),
+        None,
+    );
 }

@@ -10,13 +10,13 @@ pub struct ChaCha20Ref {
 impl ChaCha20Ref {
     pub fn new(key: &[u8; 32], nonce: &[u8; 12], counter: u32) -> Self {
         let mut key_words = [0u32; 8];
-        for (i, chunk) in key.chunks_exact(4).enumerate() {
-            key_words[i] = u32::from_le_bytes(chunk.try_into().unwrap());
+        for (i, w) in key_words.iter_mut().enumerate() {
+            *w = u32::from_le_bytes(key[i * 4..i * 4 + 4].try_into().unwrap());
         }
 
         let mut nonce_words = [0u32; 3];
-        for (i, chunk) in nonce.chunks_exact(4).enumerate() {
-            nonce_words[i] = u32::from_le_bytes(chunk.try_into().unwrap());
+        for (i, w) in nonce_words.iter_mut().enumerate() {
+            *w = u32::from_le_bytes(nonce[i * 4..i * 4 + 4].try_into().unwrap());
         }
 
         Self {
@@ -47,10 +47,22 @@ impl ChaCha20Ref {
     pub fn block(&self, counter: u32) -> [u8; 64] {
         // RFC 8439 §2.3 State initialization constants "expand 32-byte k"
         let state = [
-            0x61707865, 0x3320646e, 0x79622d32, 0x6b206574,
-            self.key[0], self.key[1], self.key[2], self.key[3],
-            self.key[4], self.key[5], self.key[6], self.key[7],
-            counter, self.nonce[0], self.nonce[1], self.nonce[2],
+            0x61707865,
+            0x3320646e,
+            0x79622d32,
+            0x6b206574,
+            self.key[0],
+            self.key[1],
+            self.key[2],
+            self.key[3],
+            self.key[4],
+            self.key[5],
+            self.key[6],
+            self.key[7],
+            counter,
+            self.nonce[0],
+            self.nonce[1],
+            self.nonce[2],
         ];
 
         let mut working = state;

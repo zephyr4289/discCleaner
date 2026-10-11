@@ -12,13 +12,29 @@ pub const AUDIT_MAX_RECORD_BYTES: u64 = 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuditOutcome {
-    Refusal { code: String, detail: String },
-    PlanCompiled { plan_hash: String },
-    Armed { journal_path: String },
-    Executed { journal_path: String, chain_head: String },
-    Resumed { journal_path: String },
-    VerifyOnly { passed: bool },
-    Error { detail: String },
+    Refusal {
+        code: String,
+        detail: String,
+    },
+    PlanCompiled {
+        plan_hash: String,
+    },
+    Armed {
+        journal_path: String,
+    },
+    Executed {
+        journal_path: String,
+        chain_head: String,
+    },
+    Resumed {
+        journal_path: String,
+    },
+    VerifyOnly {
+        passed: bool,
+    },
+    Error {
+        detail: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -144,7 +160,9 @@ impl AuditLogger {
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)?;
         if &magic != b"DCA1" {
-            return Err(DcError::Usage("Invalid audit log magic (expected DCA1)".to_string()));
+            return Err(DcError::Usage(
+                "Invalid audit log magic (expected DCA1)".to_string(),
+            ));
         }
 
         let mut prev_hash = [0u8; 32];
@@ -182,7 +200,10 @@ impl AuditLogger {
             hasher.update(&prev_hash);
             let expected = hasher.finalize();
             if hash != *expected.as_bytes() {
-                return Err(DcError::Usage(format!("Audit chain mismatch at record {}", count)));
+                return Err(DcError::Usage(format!(
+                    "Audit chain mismatch at record {}",
+                    count
+                )));
             }
             prev_hash = hash;
             count += 1;

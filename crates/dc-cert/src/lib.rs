@@ -23,7 +23,7 @@ pub use package::{EvidencePackageManifest, PackageArtifact, PackageVerifier};
 pub use project::CertificateProjector;
 pub use project2::Cert2Projector;
 pub use schema2::Cert2Document;
-pub use signer::{verify_canonical_signature, OperatorKeyPair};
+pub use signer::{OperatorKeyPair, verify_canonical_signature};
 pub use zone_attest::{CapacityThreeNumbers, CrossVersionCertVerifier, ZoneAttestationBlock};
 
 #[cfg(test)]
@@ -49,14 +49,20 @@ mod tests {
                 dm_name: None,
                 dm_uuid: None,
             },
-            kernel: KernelIdentity { major: 259, minor: 0 },
+            kernel: KernelIdentity {
+                major: 259,
+                minor: 0,
+            },
             kernel_name: "nvme0n1".to_string(),
             dev_path: "/dev/nvme0n1".to_string(),
             logical_block_size: 512,
             physical_block_size: 4096,
         };
 
-        let plan = SanitizationPlan::clear_zero(identity.stable.clone(), FastPathPolicy::PreferWriteZeroes);
+        let plan = SanitizationPlan::clear_zero(
+            identity.stable.clone(),
+            FastPathPolicy::PreferWriteZeroes,
+        );
         let plan_hash = plan.compute_plan_hash().unwrap();
 
         let mut cert = SanitizationCertificate::new(
@@ -82,7 +88,8 @@ mod tests {
                 windows_checked: 5000,
                 mismatch_count: 0,
                 first_mismatch_lbas: vec![],
-                stream_hash_blake3: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+                stream_hash_blake3:
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
                 stream_hash_sha256: None,
                 entropy: None,
             },
@@ -104,7 +111,10 @@ mod tests {
 
         // Tamper with a field
         cert.verification.mismatch_count = 1;
-        assert!(!cert.verify_signature().unwrap(), "Signature verification must fail on tampered cert");
+        assert!(
+            !cert.verify_signature().unwrap(),
+            "Signature verification must fail on tampered cert"
+        );
     }
 }
 
@@ -189,13 +199,19 @@ mod unit_tests {
         // One signature: incomplete.
         let mut one = AuthorizationSet::new(plan_hash());
         one.add_signature(sig_of(&a, false));
-        assert_eq!(one.verify_pre_arm_authorization(plan_hash(), true), Err("AUTHORIZATION_INCOMPLETE"));
+        assert_eq!(
+            one.verify_pre_arm_authorization(plan_hash(), true),
+            Err("AUTHORIZATION_INCOMPLETE")
+        );
 
         // Same key twice (even with different hardware flags): NOT 2PI.
         let mut twice = AuthorizationSet::new(plan_hash());
         twice.add_signature(sig_of(&a, false));
         twice.add_signature(sig_of(&a, true));
-        assert_eq!(twice.verify_pre_arm_authorization(plan_hash(), true), Err("AUTHORIZATION_INCOMPLETE"));
+        assert_eq!(
+            twice.verify_pre_arm_authorization(plan_hash(), true),
+            Err("AUTHORIZATION_INCOMPLETE")
+        );
 
         // Two distinct keys pass.
         let mut two = AuthorizationSet::new(plan_hash());
@@ -234,7 +250,9 @@ mod unit_tests {
         let mut set = AuthorizationSet::new(plan_hash());
         // Valid signatures but a WRONG fingerprint for officer A.
         set.add_signature(AuthSignatureEntry {
-            key_fingerprint: blake3::hash(b"not-the-real-fingerprint").to_hex().to_string(),
+            key_fingerprint: blake3::hash(b"not-the-real-fingerprint")
+                .to_hex()
+                .to_string(),
             public_key_hex: a.public_key_hex(),
             signature_hex: hex::encode(a.signing_key.sign(&msg).to_bytes()),
             is_hardware_token: false,
@@ -245,7 +263,10 @@ mod unit_tests {
             signature_hex: hex::encode(b.signing_key.sign(&msg).to_bytes()),
             is_hardware_token: false,
         });
-        assert_eq!(set.verify_pre_arm_authorization(plan_hash(), true), Err("KEY_FINGERPRINT_MISMATCH"));
+        assert_eq!(
+            set.verify_pre_arm_authorization(plan_hash(), true),
+            Err("KEY_FINGERPRINT_MISMATCH")
+        );
     }
 
     // ---------------- keyring: temporal semantics ----------------
@@ -263,7 +284,10 @@ mod unit_tests {
             superseded_at_utc: None,
             revoked_at_utc: None,
         });
-        assert_eq!(reg.evaluate_signature_at_time("K1", 150).unwrap(), "VALID_AT_TIME");
+        assert_eq!(
+            reg.evaluate_signature_at_time("K1", 150).unwrap(),
+            "VALID_AT_TIME"
+        );
 
         reg.rotate_key_bilateral(
             "K1",
@@ -279,14 +303,23 @@ mod unit_tests {
         )
         .unwrap();
 
-        assert_eq!(reg.evaluate_signature_at_time("K1", 199).unwrap(), "VALID_AT_TIME");
+        assert_eq!(
+            reg.evaluate_signature_at_time("K1", 199).unwrap(),
+            "VALID_AT_TIME"
+        );
         assert_eq!(
             reg.evaluate_signature_at_time("K1", 200).unwrap(),
             "SUSPECT_SUPERSEDED_KEY",
             "at-or-after rotation T the old key is suspect"
         );
-        assert!(reg.evaluate_signature_at_time("K1", 50).is_err(), "before activation is an error");
-        assert_eq!(reg.evaluate_signature_at_time("K2", 250).unwrap(), "VALID_AT_TIME");
+        assert!(
+            reg.evaluate_signature_at_time("K1", 50).is_err(),
+            "before activation is an error"
+        );
+        assert_eq!(
+            reg.evaluate_signature_at_time("K2", 250).unwrap(),
+            "VALID_AT_TIME"
+        );
     }
 
     #[test]
@@ -301,8 +334,14 @@ mod unit_tests {
             revoked_at_utc: None,
         });
         reg.revoke_key("K", 500).unwrap();
-        assert_eq!(reg.evaluate_signature_at_time("K", 499).unwrap(), "VALID_AT_TIME");
-        assert_eq!(reg.evaluate_signature_at_time("K", 500).unwrap(), "SUSPECT_REVOKED_KEY");
+        assert_eq!(
+            reg.evaluate_signature_at_time("K", 499).unwrap(),
+            "VALID_AT_TIME"
+        );
+        assert_eq!(
+            reg.evaluate_signature_at_time("K", 500).unwrap(),
+            "SUSPECT_REVOKED_KEY"
+        );
         assert!(reg.evaluate_signature_at_time("UNKNOWN", 100).is_err());
     }
 

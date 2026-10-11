@@ -17,7 +17,9 @@ fn test_t12_exhaustive_truncation_matrix() {
     run_f0_prelude();
 
     if !is_root() {
-        eprintln!("[SKIP] T12 E2E sweeps and resume legs require root privileges (EUID 0). Prelude passed.");
+        eprintln!(
+            "[SKIP] T12 E2E sweeps and resume legs require root privileges (EUID 0). Prelude passed."
+        );
         return;
     }
 
@@ -63,13 +65,26 @@ fn run_f0_prelude() {
 
     // Boundary at 50 bytes (after Rec 1)
     let p_boundary = PartitionOracle::predict_pure_truncation(&synth_journal, 50);
-    assert_eq!(p_boundary, PredictedOutcome::Boundary { complete_records: 1 });
+    assert_eq!(
+        p_boundary,
+        PredictedOutcome::Boundary {
+            complete_records: 1
+        }
+    );
 
     // Torn at 60 bytes (inside Rec 2)
     let p_torn = PartitionOracle::predict_pure_truncation(&synth_journal, 60);
-    assert_eq!(p_torn, PredictedOutcome::TornTail { complete_records: 1, discarded_bytes: 10 });
+    assert_eq!(
+        p_torn,
+        PredictedOutcome::TornTail {
+            complete_records: 1,
+            discarded_bytes: 10
+        }
+    );
 
-    println!("  [✓] P-PARTITION: Partition oracle predicted exact structural breakpoints and outcomes.");
+    println!(
+        "  [✓] P-PARTITION: Partition oracle predicted exact structural breakpoints and outcomes."
+    );
 }
 
 fn run_f1_exhaustive_sweep(scratch_dir: &Path) {
@@ -86,12 +101,17 @@ fn run_f1_exhaustive_sweep(scratch_dir: &Path) {
 
     // Produce an authentic multi-record journal
     let mut exec_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    exec_cmd.arg("execute")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--profile").arg("clear-zero")
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+    exec_cmd
+        .arg("execute")
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--profile")
+        .arg("clear-zero")
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
     exec_cmd.assert().code(0);
 
@@ -99,7 +119,10 @@ fn run_f1_exhaustive_sweep(scratch_dir: &Path) {
     let raw_journal = fs::read(&journal_path).unwrap();
     let total_len = raw_journal.len();
 
-    println!("  [+] Sweeping across all {} byte offsets with dc journal inspect...", total_len);
+    println!(
+        "  [+] Sweeping across all {} byte offsets with dc journal inspect...",
+        total_len
+    );
 
     // EXH-NO6: every pure-truncation offset beyond the magic must inspect
     // cleanly (exit 0); the counter is asserted to have covered every such
@@ -128,7 +151,10 @@ fn run_f1_exhaustive_sweep(scratch_dir: &Path) {
         let _ = fs::remove_file(test_j_path);
     }
 
-    assert_eq!(exit_0_count, expected_clean_offsets, "[EXH-NO6 FAIL] sweep did not cover every clean offset");
+    assert_eq!(
+        exit_0_count, expected_clean_offsets,
+        "[EXH-NO6 FAIL] sweep did not cover every clean offset"
+    );
     println!(
         "  [✓] EXH-NO6: Verified all {} offsets: exactly 0 unexpected corruptions across pure truncation.",
         total_len
@@ -148,12 +174,17 @@ fn run_f3_zero_tail(scratch_dir: &Path) {
     let _ = fs::create_dir_all(&out_dir);
 
     let mut exec_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    exec_cmd.arg("execute")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--profile").arg("clear-zero")
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+    exec_cmd
+        .arg("execute")
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--profile")
+        .arg("clear-zero")
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
     exec_cmd.assert().code(0);
 
@@ -169,9 +200,14 @@ fn run_f3_zero_tail(scratch_dir: &Path) {
     inspect_cmd.arg("journal").arg("inspect").arg(&zt_path);
     let output = inspect_cmd.assert().code(6).get_output().stderr.clone();
     let stderr = String::from_utf8_lossy(&output);
-    assert!(stderr.contains("JOURNAL_ZERO_TAIL"), "[ZERO-TAIL FAIL] Missing JOURNAL_ZERO_TAIL sub-code!");
+    assert!(
+        stderr.contains("JOURNAL_ZERO_TAIL"),
+        "[ZERO-TAIL FAIL] Missing JOURNAL_ZERO_TAIL sub-code!"
+    );
 
-    println!("  [✓] ZERO-TAIL-CODE: Zero-filled trailing bytes cleanly diagnosed as JOURNAL_ZERO_TAIL.");
+    println!(
+        "  [✓] ZERO-TAIL-CODE: Zero-filled trailing bytes cleanly diagnosed as JOURNAL_ZERO_TAIL."
+    );
 }
 
 fn run_f5_dod3_multi_pass(scratch_dir: &Path) {
@@ -188,13 +224,18 @@ fn run_f5_dod3_multi_pass(scratch_dir: &Path) {
 
     // Run legacy-dod3, interrupt at pass 0 commit 1
     let mut exec_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    exec_cmd.env("DC_SIGNAL_AT", "commit-write:1")
+    exec_cmd
+        .env("DC_SIGNAL_AT", "commit-write:1")
         .arg("execute")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--profile").arg("legacy-dod3")
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--profile")
+        .arg("legacy-dod3")
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
     exec_cmd.assert().code(3);
 
@@ -202,15 +243,21 @@ fn run_f5_dod3_multi_pass(scratch_dir: &Path) {
 
     // Resume from interrupted pass 0 to full completion
     let mut resume_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    resume_cmd.arg("resume")
-        .arg("--journal").arg(&journal_path)
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+    resume_cmd
+        .arg("resume")
+        .arg("--journal")
+        .arg(&journal_path)
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
     resume_cmd.assert().code(0);
 
-    println!("  [✓] DOD3-MEDIA: Multi-pass legacy-dod3 resume executed all passes with full media sanitization.");
+    println!(
+        "  [✓] DOD3-MEDIA: Multi-pass legacy-dod3 resume executed all passes with full media sanitization."
+    );
 }
 
 fn find_single_file_with_ext(dir: &Path, ext: &str) -> Option<PathBuf> {

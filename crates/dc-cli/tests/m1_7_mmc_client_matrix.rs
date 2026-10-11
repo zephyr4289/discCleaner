@@ -1,6 +1,4 @@
-use dc_mmc::{
-    ConfigTransactionPermit, ConfigTxnGuard, MmcPurgeClient, TwoAxisConfirmation,
-};
+use dc_mmc::{ConfigTransactionPermit, ConfigTxnGuard, MmcPurgeClient, TwoAxisConfirmation};
 use dc_nvme::PurgePermit;
 use dc_scsi::UfsSessionDiscriminator;
 use dc_testkit::{MmcAccessClass, RigLedger};
@@ -21,12 +19,17 @@ fn test_m1_7_mmc_client_matrix() {
     // 4. PROV-PROVENANCE: Proof-Substrate Vocabulary Transparency (Δ347)
     run_provenance_vocabulary_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[M1.7-FAIL] eMMC/UFS Client matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[M1.7-FAIL] eMMC/UFS Client matrix contains failing assertions!"
+    );
     println!("\n[=== MILESTONE M1.7 EMMC PURGE CLIENT MATRIX PASSED ALL CELLS ===]\n");
 }
 
 fn run_two_axis_confirmation_tests(ledger: &RigLedger) {
-    println!("\n[>>> CONF2-TWO-AXIS: Testing Two-Axis Confirmation & Scope Reconciliation (Δ348) <<<]");
+    println!(
+        "\n[>>> CONF2-TWO-AXIS: Testing Two-Axis Confirmation & Scope Reconciliation (Δ348) <<<]"
+    );
 
     let confirmation = TwoAxisConfirmation::new(
         "CID_0x1501004441344742",
@@ -35,18 +38,30 @@ fn run_two_axis_confirmation_tests(ledger: &RigLedger) {
 
     // 1. Matching executed scope -> Ok
     let matching_executed = vec!["user".to_string(), "boot0".to_string(), "boot1".to_string()];
-    assert!(confirmation.reconcile_executed_scope(&matching_executed).is_ok());
+    assert!(
+        confirmation
+            .reconcile_executed_scope(&matching_executed)
+            .is_ok()
+    );
 
     // 2. Mismatched executed scope (e.g. boot1 skipped) -> Error
     let drifted_executed = vec!["user".to_string(), "boot0".to_string()];
     let drift_res = confirmation.reconcile_executed_scope(&drifted_executed);
     assert!(drift_res.is_err());
 
-    ledger.assert("M1.7-CONF", "CONF2-TWO-AXIS", "true", drift_res.is_err().to_string(), None);
+    ledger.assert(
+        "M1.7-CONF",
+        "CONF2-TWO-AXIS",
+        "true",
+        drift_res.is_err().to_string(),
+        None,
+    );
 }
 
 fn run_config_txn_guard_tests(ledger: &RigLedger) {
-    println!("\n[>>> CFGTXN-DROP-RESTORE: Testing RAII ConfigTxnGuard Destructor Restore (Δ349) <<<]");
+    println!(
+        "\n[>>> CFGTXN-DROP-RESTORE: Testing RAII ConfigTxnGuard Destructor Restore (Δ349) <<<]"
+    );
 
     let permit = PurgePermit::mint("/dev/mmcblk0", "CID_0x1501004441344742", 1724890000);
     let config_permit = ConfigTransactionPermit::derive(&permit);
@@ -65,7 +80,13 @@ fn run_config_txn_guard_tests(ledger: &RigLedger) {
         partition_config_byte, 0b0100_1000,
         "ConfigTxnGuard must restore original PARTITION_CONFIG on Drop!"
     );
-    ledger.assert("M1.7-GUARD", "CFGTXN-DROP-RESTORE", "72", partition_config_byte.to_string(), None);
+    ledger.assert(
+        "M1.7-GUARD",
+        "CFGTXN-DROP-RESTORE",
+        "72",
+        partition_config_byte.to_string(),
+        None,
+    );
 }
 
 fn run_session_discriminator_tests(ledger: &RigLedger) {
@@ -82,8 +103,20 @@ fn run_session_discriminator_tests(ledger: &RigLedger) {
     let inv_res = UfsSessionDiscriminator::evaluate_link_event(&initial_lus, &changed_lus);
     assert_eq!(inv_res, Err("SESSION_INVALIDATED_LU_CHANGED"));
 
-    ledger.assert("M1.7-SESSN", "SESSN-RECOVERY", "Ok(\"LINK_RECOVERY_PROCEED\")", format!("{:?}", rec_res), None);
-    ledger.assert("M1.7-SESSN", "SESSN-REPLACEMENT", "Err(\"SESSION_INVALIDATED_LU_CHANGED\")", format!("{:?}", inv_res), None);
+    ledger.assert(
+        "M1.7-SESSN",
+        "SESSN-RECOVERY",
+        "Ok(\"LINK_RECOVERY_PROCEED\")",
+        format!("{:?}", rec_res),
+        None,
+    );
+    ledger.assert(
+        "M1.7-SESSN",
+        "SESSN-REPLACEMENT",
+        "Err(\"SESSION_INVALIDATED_LU_CHANGED\")",
+        format!("{:?}", inv_res),
+        None,
+    );
 }
 
 fn run_provenance_vocabulary_tests(ledger: &RigLedger) {
@@ -102,5 +135,11 @@ fn run_provenance_vocabulary_tests(ledger: &RigLedger) {
         .unwrap();
 
     assert_eq!(summary.proof_substrate, "MockTranscribed");
-    ledger.assert("M1.7-PROV", "PROV-VOCAB-MOCK", "MockTranscribed", summary.proof_substrate, None);
+    ledger.assert(
+        "M1.7-PROV",
+        "PROV-VOCAB-MOCK",
+        "MockTranscribed",
+        summary.proof_substrate,
+        None,
+    );
 }

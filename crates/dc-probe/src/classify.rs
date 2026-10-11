@@ -27,13 +27,20 @@ pub struct BlockTree {
     pub nodes: BTreeMap<String, DeviceNode>,
 }
 
-pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags) -> Result<(), GuardianRefusal> {
+pub fn classify_pure(
+    target_name: &str,
+    tree: &BlockTree,
+    flags: &GuardianFlags,
+) -> Result<(), GuardianRefusal> {
     let node = match tree.nodes.get(target_name) {
         Some(n) => n,
         None => {
             return Err(GuardianRefusal {
                 code: "DEVICE_NOT_FOUND",
-                detail: format!("Target device '{}' not found in block device tree.", target_name),
+                detail: format!(
+                    "Target device '{}' not found in block device tree.",
+                    target_name
+                ),
                 hint: "Ensure the device exists and is visible in /sys/block/.".to_string(),
             });
         }
@@ -43,7 +50,10 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
     if node.size_bytes < 1024 * 1024 {
         return Err(GuardianRefusal {
             code: "SIZE_ANOMALY",
-            detail: format!("Device size is suspiciously small: {} bytes", node.size_bytes),
+            detail: format!(
+                "Device size is suspiciously small: {} bytes",
+                node.size_bytes
+            ),
             hint: "Device must be at least 1 MiB in capacity.".to_string(),
         });
     }
@@ -52,8 +62,12 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
     if node.is_partition {
         return Err(GuardianRefusal {
             code: "NOT_WHOLE_DISK",
-            detail: format!("Target '{}' is a partition, not a whole disk block device.", node.name),
-            hint: "Target the parent drive instead (e.g. /dev/sda instead of /dev/sda1).".to_string(),
+            detail: format!(
+                "Target '{}' is a partition, not a whole disk block device.",
+                node.name
+            ),
+            hint: "Target the parent drive instead (e.g. /dev/sda instead of /dev/sda1)."
+                .to_string(),
         });
     }
 
@@ -61,8 +75,12 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
     if node.is_ram_backed {
         return Err(GuardianRefusal {
             code: "RAM_BACKED",
-            detail: format!("Device '{}' is a RAM-backed volatile block device.", node.name),
-            hint: "RAM devices disappear upon reboot and cannot be sanitized as physical media.".to_string(),
+            detail: format!(
+                "Device '{}' is a RAM-backed volatile block device.",
+                node.name
+            ),
+            hint: "RAM devices disappear upon reboot and cannot be sanitized as physical media."
+                .to_string(),
         });
     }
 
@@ -70,8 +88,12 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
     if node.is_zoned {
         return Err(GuardianRefusal {
             code: "ZONED",
-            detail: format!("Device '{}' is a host-managed/aware zoned device (SMR).", node.name),
-            hint: "Zoned storage wiping requires a sequential zone-reset engine (Phase 3).".to_string(),
+            detail: format!(
+                "Device '{}' is a host-managed/aware zoned device (SMR).",
+                node.name
+            ),
+            hint: "Zoned storage wiping requires a sequential zone-reset engine (Phase 3)."
+                .to_string(),
         });
     }
 
@@ -79,7 +101,10 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
     if node.is_read_only {
         return Err(GuardianRefusal {
             code: "READ_ONLY",
-            detail: format!("Device '{}' is marked read-only by hardware switch or kernel.", node.name),
+            detail: format!(
+                "Device '{}' is marked read-only by hardware switch or kernel.",
+                node.name
+            ),
             hint: "Disable hardware write-protect switch or run 'blockdev --setrw'.".to_string(),
         });
     }
@@ -88,14 +113,25 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
     if node.name.contains('c') && node.name.starts_with("nvme") && node.name.contains('n') {
         return Err(GuardianRefusal {
             code: "MULTIPATH_PATH",
-            detail: format!("Target '{}' appears to be an NVMe controller multipath sub-handle.", node.name),
+            detail: format!(
+                "Target '{}' appears to be an NVMe controller multipath sub-handle.",
+                node.name
+            ),
             hint: "Target the base namespace instead (e.g. /dev/nvme0n1).".to_string(),
         });
     }
 
     // 7. SYSTEM_DISK & 8. MOUNTED
     if !node.mounts.is_empty() {
-        let is_system = node.mounts.iter().any(|m| m == "/" || m == "/boot" || m == "/boot/efi" || m == "/home" || m == "/usr" || m == "/var" || m == "/etc");
+        let is_system = node.mounts.iter().any(|m| {
+            m == "/"
+                || m == "/boot"
+                || m == "/boot/efi"
+                || m == "/home"
+                || m == "/usr"
+                || m == "/var"
+                || m == "/etc"
+        });
         if is_system {
             if !flags.allow_system_disk {
                 return Err(GuardianRefusal {
@@ -107,7 +143,10 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
         } else {
             return Err(GuardianRefusal {
                 code: "MOUNTED",
-                detail: format!("Target '{}' (or one of its partitions) is currently mounted on {:?}", node.name, node.mounts),
+                detail: format!(
+                    "Target '{}' (or one of its partitions) is currently mounted on {:?}",
+                    node.name, node.mounts
+                ),
                 hint: "Unmount all partitions on this device before proceeding.".to_string(),
             });
         }
@@ -117,7 +156,10 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
     if node.swap_active {
         return Err(GuardianRefusal {
             code: "SWAP_ACTIVE",
-            detail: format!("Target '{}' (or one of its partitions) is an active Linux swap area.", node.name),
+            detail: format!(
+                "Target '{}' (or one of its partitions) is an active Linux swap area.",
+                node.name
+            ),
             hint: "Run 'swapoff' on the active partition before proceeding.".to_string(),
         });
     }
@@ -126,7 +168,10 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
     if node.active_lvm {
         return Err(GuardianRefusal {
             code: "LVM_ACTIVE",
-            detail: format!("Target '{}' is an active LVM Physical Volume with active Logical Volumes.", node.name),
+            detail: format!(
+                "Target '{}' is an active LVM Physical Volume with active Logical Volumes.",
+                node.name
+            ),
             hint: "Deactivate active LVM volume groups ('vgchange -an') before wiping.".to_string(),
         });
     }
@@ -135,7 +180,10 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
     if node.active_md {
         return Err(GuardianRefusal {
             code: "MD_ACTIVE",
-            detail: format!("Target '{}' is an active member of a Linux MD software RAID array.", node.name),
+            detail: format!(
+                "Target '{}' is an active member of a Linux MD software RAID array.",
+                node.name
+            ),
             hint: "Stop the MD RAID array ('mdadm --stop') before proceeding.".to_string(),
         });
     }
@@ -144,8 +192,12 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
     if node.active_crypt {
         return Err(GuardianRefusal {
             code: "CRYPT_ACTIVE",
-            detail: format!("Target '{}' is backing an active mapped LUKS device.", node.name),
-            hint: "Close the active dm-crypt mapping ('cryptsetup close') before wiping.".to_string(),
+            detail: format!(
+                "Target '{}' is backing an active mapped LUKS device.",
+                node.name
+            ),
+            hint: "Close the active dm-crypt mapping ('cryptsetup close') before wiping."
+                .to_string(),
         });
     }
 
@@ -159,7 +211,8 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
                 "Target '{}' is transitively held by live upper layer ({}: {}) via stack path: {:?}",
                 node.name, first.terminal_class, first.terminal_detail, first.hops
             ),
-            hint: "Unmount or deactivate the upper-layer filesystem/device before wiping.".to_string(),
+            hint: "Unmount or deactivate the upper-layer filesystem/device before wiping."
+                .to_string(),
         });
     }
 
@@ -167,7 +220,10 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
     if !node.holders.is_empty() {
         return Err(GuardianRefusal {
             code: "HOLDERS_PRESENT",
-            detail: format!("Target '{}' has active kernel device holders: {:?}", node.name, node.holders),
+            detail: format!(
+                "Target '{}' has active kernel device holders: {:?}",
+                node.name, node.holders
+            ),
             hint: "Deactivate upper-layer kernel devices before wiping.".to_string(),
         });
     }
@@ -182,21 +238,28 @@ pub fn classify_pure(target_name: &str, tree: &BlockTree, flags: &GuardianFlags)
     }
 
     // 15. INACTIVE_SIGNATURES
-    if let Some(ref sig) = node.inactive_sig {
-        if !flags.allow_inactive_signatures {
-            return Err(GuardianRefusal {
-                code: "INACTIVE_SIGNATURES",
-                detail: format!("Target '{}' contains inactive/dormant storage signature: {}", node.name, sig),
-                hint: "Pass '--allow-inactive-signatures' to overwrite recognized dormant signatures.".to_string(),
-            });
-        }
+    if let Some(ref sig) = node.inactive_sig
+        && !flags.allow_inactive_signatures
+    {
+        return Err(GuardianRefusal {
+            code: "INACTIVE_SIGNATURES",
+            detail: format!(
+                "Target '{}' contains inactive/dormant storage signature: {}",
+                node.name, sig
+            ),
+            hint: "Pass '--allow-inactive-signatures' to overwrite recognized dormant signatures."
+                .to_string(),
+        });
     }
 
     // 16. RETIRED_MEMBER
     if node.is_member && !flags.allow_member {
         return Err(GuardianRefusal {
             code: "RETIRED_MEMBER",
-            detail: format!("Target '{}' was previously part of an LVM Volume Group or MD RAID array.", node.name),
+            detail: format!(
+                "Target '{}' was previously part of an LVM Volume Group or MD RAID array.",
+                node.name
+            ),
             hint: "Pass '--allow-member' to allow wiping retired array members.".to_string(),
         });
     }

@@ -4,10 +4,10 @@ use std::path::Path;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReproductionRecipe {
-    pub schema: String,               // "dc-recipe/1"
-    pub scheme: String,               // "chacha20-window-v1"
-    pub doc_blake3: String,           // BLAKE3 of docs/reproduction/chacha20-window-v1.txt
-    pub seed: String,                 // 64 hex chars (32 bytes)
+    pub schema: String,     // "dc-recipe/1"
+    pub scheme: String,     // "chacha20-window-v1"
+    pub doc_blake3: String, // BLAKE3 of docs/reproduction/chacha20-window-v1.txt
+    pub seed: String,       // 64 hex chars (32 bytes)
     pub window_bytes: u64,
     pub device_bytes: u64,
     pub stream_hash_blake3: String,
@@ -38,25 +38,28 @@ impl RecipeExtractor {
                     match &plan.mechanism {
                         dc_core::Mechanism::LogicalOverwrite { passes } => {
                             for p in passes {
-                                match &p.pattern {
-                                    dc_core::Pattern::DeterministicRandom { seed, .. } => {
-                                        seed_opt = Some(hex::encode(seed));
-                                    }
-                                    _ => {}
+                                if let dc_core::Pattern::DeterministicRandom { seed, .. } =
+                                    &p.pattern
+                                {
+                                    seed_opt = Some(hex::encode(seed));
                                 }
                             }
                         }
                     }
                 }
-                JournalRecord::Verify { stream_hash_blake3, .. } => {
+                JournalRecord::Verify {
+                    stream_hash_blake3, ..
+                } => {
                     stream_hash_opt = Some(stream_hash_blake3.clone());
                 }
                 _ => {}
             }
         }
 
-        let seed = seed_opt.ok_or_else(|| "No DeterministicRandom pass found in journal plan".to_string())?;
-        let stream_hash_blake3 = stream_hash_opt.ok_or_else(|| "No Verify record found in journal".to_string())?;
+        let seed = seed_opt
+            .ok_or_else(|| "No DeterministicRandom pass found in journal plan".to_string())?;
+        let stream_hash_blake3 =
+            stream_hash_opt.ok_or_else(|| "No Verify record found in journal".to_string())?;
 
         // Canonical doc hash (fixed BLAKE3 of chacha20-window-v1.txt)
         let doc_text = include_str!("../../../docs/reproduction/chacha20-window-v1.txt");

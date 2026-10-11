@@ -84,9 +84,10 @@ impl<'a> NvmePurgeClient<'a> {
     /// - Sanitize paths require Log 0x81 SSTAT=Completed.
     /// - Format NVM requires the blocking admin command to return success
     ///   (non-IMMED format semantics).
-    /// `LogicalOverwrite` is REJECTED outright: it is a multi-gigabyte
-    /// engine-driven write that no admin-passthrough client can perform, and
-    /// fabricating its completion would certify an erase that never happened.
+    /// - `LogicalOverwrite` is REJECTED outright: it is a multi-gigabyte
+    ///   engine-driven write that no admin-passthrough client can perform,
+    ///   and fabricating its completion would certify an erase that never
+    ///   happened.
     pub fn execute_purge_ladder(
         &mut self,
         permit: &PurgePermit,
@@ -217,7 +218,7 @@ impl<'a> NvmePurgeClient<'a> {
     /// `/dev/nvme0n1`-style whole-namespace devices map to their trailing
     /// `n<N>` component; the controller device itself falls back to NSID 1
     /// with the derivation recorded in the returned value's provenance.
-    pub(crate) fn nsid_of_target(target_device: &str) -> u32 {
+    pub fn nsid_of_target(target_device: &str) -> u32 {
         Self::derive_target_nsid(target_device)
     }
 

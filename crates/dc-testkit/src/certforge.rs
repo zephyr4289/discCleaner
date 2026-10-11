@@ -17,7 +17,11 @@ impl CertForge {
                 if i > 0 {
                     out.push_str(",\n");
                 }
-                out.push_str(&format!("  \"{}\": {}", k, serde_json::to_string(&map[*k]).unwrap()));
+                out.push_str(&format!(
+                    "  \"{}\": {}",
+                    k,
+                    serde_json::to_string(&map[*k]).unwrap()
+                ));
             }
             out.push_str("\n}");
             Ok(out)

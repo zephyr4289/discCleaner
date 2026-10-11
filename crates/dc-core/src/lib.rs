@@ -14,18 +14,25 @@ pub use audit::{AuditLogger, AuditOutcome, AuditRecord};
 pub use error::{DcError, GuardianRefusal};
 pub use fleet::{
     AdvisoryResolution, ArgvConstructor, AssignmentRow, BatchManifest, BatchReconstructor,
-    ChildJournalState, FleetJobOutcome, FleetJobRecord, FleetReport, IdentityResolver, SpawnContext,
+    ChildJournalState, FleetJobOutcome, FleetJobRecord, FleetReport, IdentityResolver,
+    SpawnContext,
 };
 pub use fsm::{FsmOrchestrator, FsmState, WritePermit};
 pub use identity::{BusType, DeviceIdentity, KernelIdentity, StableIdentity};
 pub use journal::{
+    EngineTuning, JOURNAL_MAGIC, JournalChainSummary, JournalReader, JournalRecord, JournalWriter,
+};
+// Fault-injection hooks are re-exported ONLY where they exist: debug builds
+// and explicit fault-injection feature requests. Release binaries compiled
+// without the feature have no such symbols at all.
+#[cfg(any(feature = "fault-injection", debug_assertions))]
+pub use journal::{
     check_cqe_or_verify_crash, check_cqe_or_verify_signal, check_crash_hook, check_signal_hook,
-    EngineTuning, JournalChainSummary, JournalReader, JournalRecord, JournalWriter, JOURNAL_MAGIC,
 };
 pub use orchestrator::{Orchestrator, OrchestratorEffect, OrchestratorState};
 pub use pattern::{
-    create_pattern_source, ChaCha20Pattern, FixedPattern, Pattern, PatternDescriptor,
-    PatternSource, PrngScheme, ZeroPattern,
+    ChaCha20Pattern, FixedPattern, Pattern, PatternDescriptor, PatternSource, PrngScheme,
+    ZeroPattern, create_pattern_source,
 };
 pub use plan::{FastPathPolicy, Mechanism, Pass, SanitizationPlan, VerifyLevel};
 pub use strategy::{
@@ -36,7 +43,6 @@ pub use tool::ToolBuild;
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_chacha20_deterministic_prng_golden_vector() {
@@ -51,7 +57,10 @@ mod tests {
         pattern.fill(0, &mut buf_w0_b);
         pattern.fill(1, &mut buf_w1);
 
-        assert_eq!(buf_w0_a, buf_w0_b, "Identical (seed, window) must be identical");
+        assert_eq!(
+            buf_w0_a, buf_w0_b,
+            "Identical (seed, window) must be identical"
+        );
         assert_ne!(buf_w0_a, buf_w1, "Different window indices must differ");
 
         let hex_prefix = hex::encode(&buf_w0_a[..16]);
@@ -79,7 +88,10 @@ mod unit_tests {
             plan_hash: "unit-plan-hash".to_string(),
             identity: DeviceIdentity {
                 stable: test_identity(),
-                kernel: KernelIdentity { major: 259, minor: 0 },
+                kernel: KernelIdentity {
+                    major: 259,
+                    minor: 0,
+                },
                 kernel_name: "nvme0n1".to_string(),
                 dev_path: "/dev/nvme0n1".to_string(),
                 logical_block_size: 512,
@@ -99,7 +111,10 @@ mod unit_tests {
         }
     }
 
-    fn write_simple_journal(dir: &TempDir, records: &[JournalRecord]) -> (std::path::PathBuf, JournalWriter) {
+    fn write_simple_journal(
+        dir: &TempDir,
+        records: &[JournalRecord],
+    ) -> (std::path::PathBuf, JournalWriter) {
         // Record 0 is ALWAYS a Header (DCJ1 format invariant).
         let path = dir.path().join(format!("j-{}.dcj", std::process::id()));
         let mut w = JournalWriter::create_new(&path, "unit-uuid".to_string(), None).unwrap();
@@ -118,7 +133,7 @@ mod unit_tests {
             locks_held: vec!["259:0".to_string()],
             at: "2026-01-01T00:00:00Z".to_string(),
         };
-        let (path, writer) = write_simple_journal(&dir, &[armed.clone()]);
+        let (path, writer) = write_simple_journal(&dir, std::slice::from_ref(&armed));
         let head_after_writes = writer.current_chain_head();
         assert_eq!(writer.record_count(), 2, "Header + Armed");
 
@@ -155,7 +170,11 @@ mod unit_tests {
         let mut h = blake3::Hasher::new();
         h.update(rec_bytes);
         h.update(blake3::hash(b"DCJ1").as_bytes());
-        assert_eq!(h.finalize().as_bytes(), stored_hash, "chain must seed from BLAKE3(DCJ1)");
+        assert_eq!(
+            h.finalize().as_bytes(),
+            stored_hash,
+            "chain must seed from BLAKE3(DCJ1)"
+        );
     }
 
     #[test]
@@ -164,8 +183,16 @@ mod unit_tests {
         let (path, _) = write_simple_journal(
             &dir,
             &[
-                JournalRecord::Armed { overrides: vec![], locks_held: vec![], at: "t0".to_string() },
-                JournalRecord::BeginPass { pass: 0, pattern: pattern_desc(), window_bytes: 2 * 1024 * 1024 },
+                JournalRecord::Armed {
+                    overrides: vec![],
+                    locks_held: vec![],
+                    at: "t0".to_string(),
+                },
+                JournalRecord::BeginPass {
+                    pass: 0,
+                    pattern: pattern_desc(),
+                    window_bytes: 2 * 1024 * 1024,
+                },
             ],
         );
 
@@ -185,7 +212,11 @@ mod unit_tests {
         let dir = TempDir::new().unwrap();
         let (path, _) = write_simple_journal(
             &dir,
-            &[JournalRecord::Armed { overrides: vec![], locks_held: vec![], at: "t0".to_string() }],
+            &[JournalRecord::Armed {
+                overrides: vec![],
+                locks_held: vec![],
+                at: "t0".to_string(),
+            }],
         );
         let mut raw = fs::read(&path).unwrap();
         // Simulate a crash mid-write: append a partial next record (torn).
@@ -221,7 +252,11 @@ mod unit_tests {
         fs::write(&p, &raw).unwrap();
         let err = JournalReader::read_and_verify_chain(&p).unwrap_err();
         let msg = format!("{:?}", err);
-        assert!(msg.contains("RECORD_TOO_LARGE") || msg.contains("JournalCorrupt"), "got: {}", msg);
+        assert!(
+            msg.contains("RECORD_TOO_LARGE") || msg.contains("JournalCorrupt"),
+            "got: {}",
+            msg
+        );
     }
 
     #[test]
@@ -243,7 +278,8 @@ mod unit_tests {
         }
         let path = dir.path().join("sealed.dcj");
         let mut w =
-            JournalWriter::create_new(&path, "sealed-uuid".to_string(), Some(keypair.clone())).unwrap();
+            JournalWriter::create_new(&path, "sealed-uuid".to_string(), Some(keypair.clone()))
+                .unwrap();
         w.append(&sealed_header).unwrap();
         w.append(&JournalRecord::Armed {
             overrides: vec![],
@@ -271,12 +307,17 @@ mod unit_tests {
         let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
         let path = dir.path().join("sealed2.dcj");
         let mut w = JournalWriter::create_new(&path, "u".to_string(), Some(key.clone())).unwrap();
-        w.append(&JournalRecord::Armed { overrides: vec![], locks_held: vec![], at: "t0".to_string() })
-            .unwrap();
+        w.append(&JournalRecord::Armed {
+            overrides: vec![],
+            locks_held: vec![],
+            at: "t0".to_string(),
+        })
+        .unwrap();
         let head = w.current_chain_head();
 
         // Resume of a sealed journal without the signing key must refuse.
-        let res = JournalWriter::open_for_resume(&path, &head, 1, None, "u".to_string(), true, None);
+        let res =
+            JournalWriter::open_for_resume(&path, &head, 1, None, "u".to_string(), true, None);
         assert!(res.is_err(), "sealed resume without key must fail closed");
     }
 
@@ -343,7 +384,9 @@ mod unit_tests {
             timestamp_utc: "2026-01-01T00:00:00Z".to_string(),
             argv_hash: tag.to_string(),
             target_path: None,
-            outcome: AuditOutcome::PlanCompiled { plan_hash: tag.to_string() },
+            outcome: AuditOutcome::PlanCompiled {
+                plan_hash: tag.to_string(),
+            },
         }
     }
 
@@ -461,22 +504,36 @@ mod unit_tests {
     fn plan_hash_is_deterministic_and_schema_tagged() {
         let a = SanitizationPlan::clear_zero(test_identity(), FastPathPolicy::PreferWriteZeroes);
         let b = SanitizationPlan::clear_zero(test_identity(), FastPathPolicy::PreferWriteZeroes);
-        assert_eq!(a.compute_plan_hash().unwrap(), b.compute_plan_hash().unwrap());
+        assert_eq!(
+            a.compute_plan_hash().unwrap(),
+            b.compute_plan_hash().unwrap()
+        );
         assert_eq!(a.plan_schema, "dc-plan/1");
 
         // A mutated plan must hash differently.
         let mut c = a.clone();
         c.window_bytes *= 2;
-        assert_ne!(a.compute_plan_hash().unwrap(), c.compute_plan_hash().unwrap());
+        assert_ne!(
+            a.compute_plan_hash().unwrap(),
+            c.compute_plan_hash().unwrap()
+        );
     }
 
     #[test]
     fn plan_seed_pinning_is_reproducible() {
         let seed = Some([0x42u8; 32]);
-        let a = SanitizationPlan::clear_random(test_identity(), seed, FastPathPolicy::ForbidWriteZeroes)
-            .unwrap();
-        let b = SanitizationPlan::clear_random(test_identity(), seed, FastPathPolicy::ForbidWriteZeroes)
-            .unwrap();
+        let a = SanitizationPlan::clear_random(
+            test_identity(),
+            seed,
+            FastPathPolicy::ForbidWriteZeroes,
+        )
+        .unwrap();
+        let b = SanitizationPlan::clear_random(
+            test_identity(),
+            seed,
+            FastPathPolicy::ForbidWriteZeroes,
+        )
+        .unwrap();
         assert_eq!(a, b, "pinned seed must make plans bit-identical");
     }
 

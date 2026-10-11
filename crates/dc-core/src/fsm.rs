@@ -96,9 +96,7 @@ impl FsmOrchestrator {
                 self.state = FsmState::Armed;
                 Ok(())
             }
-            _ => Err(DcError::Usage(
-                "Cannot arm: plan not approved".to_string(),
-            )),
+            _ => Err(DcError::Usage("Cannot arm: plan not approved".to_string())),
         }
     }
 
@@ -147,9 +145,7 @@ impl FsmOrchestrator {
                 self.state = FsmState::Certified;
                 Ok(())
             }
-            _ => Err(DcError::Usage(
-                "Cannot certify: not verified".to_string(),
-            )),
+            _ => Err(DcError::Usage("Cannot certify: not verified".to_string())),
         }
     }
 
@@ -163,5 +159,11 @@ impl FsmOrchestrator {
 
     pub fn abort(&mut self) {
         self.state = FsmState::Aborted;
+    }
+}
+
+impl Default for FsmOrchestrator {
+    fn default() -> Self {
+        Self::new()
     }
 }

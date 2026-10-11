@@ -34,11 +34,7 @@ impl LbaSpan {
             .checked_mul(self.window_bytes)
             .and_then(|o| self.start_byte.checked_add(o))
             .unwrap_or(u64::MAX);
-        let remaining = if offset < self.total_bytes {
-            self.total_bytes - offset
-        } else {
-            0
-        };
+        let remaining = self.total_bytes.saturating_sub(offset);
         let len = (remaining.min(self.window_bytes)) as usize;
         (offset, len)
     }

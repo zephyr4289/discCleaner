@@ -67,8 +67,7 @@ impl AuthSignatureEntry {
         // 2. The signature must be a valid Ed25519 signature by that key over
         //    the domain-separated approval message.
         let vk = parse_verifying_key(&self.public_key_hex)?;
-        let sig_bytes = hex::decode(&self.signature_hex)
-            .map_err(|_| "SIGNATURE_MALFORMED_HEX")?;
+        let sig_bytes = hex::decode(&self.signature_hex).map_err(|_| "SIGNATURE_MALFORMED_HEX")?;
         if sig_bytes.len() != 64 {
             return Err("SIGNATURE_WRONG_LENGTH");
         }
@@ -77,8 +76,7 @@ impl AuthSignatureEntry {
         let sig = Signature::from_bytes(&arr);
 
         let msg = Self::approval_message(domain, bound_hash);
-        vk.verify(&msg, &sig)
-            .map_err(|_| "SIGNATURE_INVALID")
+        vk.verify(&msg, &sig).map_err(|_| "SIGNATURE_INVALID")
     }
 }
 
@@ -176,7 +174,10 @@ fn parse_verifying_key(hex_key: &str) -> Result<VerifyingKey, &'static str> {
     if bytes.len() != 32 {
         return Err("PUBLIC_KEY_WRONG_LENGTH");
     }
-    let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| "PUBLIC_KEY_WRONG_LENGTH")?;
+    let arr: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "PUBLIC_KEY_WRONG_LENGTH")?;
     VerifyingKey::from_bytes(&arr).map_err(|_| "PUBLIC_KEY_INVALID")
 }
 

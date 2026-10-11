@@ -1,6 +1,6 @@
 # diskCleaner (`dc`)
 
-[![Version](https://img.shields.io/badge/version-v0.3.1-blue.svg)](https://github.com/zephyr4289/discCleaner)
+[![Version](https://img.shields.io/badge/version-v0.4.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64--musl-blueviolet.svg)](https://github.com/zephyr4289/discCleaner)
 [![Standards](https://img.shields.io/badge/standards-NIST%20SP%20800--88%20%7C%20IEEE%202883--2022-orange.svg)](diskCleaner.md)
@@ -11,10 +11,12 @@
 `dc` is a self-contained, statically linked, zero-dependency storage sanitization suite engineered for NVMe, SATA, SAS/SCSI, USB-bridged (SAT), eMMC/UFS, TCG Opal self-encrypting (SED), and Host-Managed SMR/ZNS storage. It executes **NIST SP 800-88 Rev 1** Clear and Purge operations, issuing cryptographically signed, third-party-verifiable evidence packages that survive crashes, power loss, and adversarial cross-examination.
 
 ```
-Version       : v0.3.1 (Complete Product Release)
+Version       : v0.4.0 (Hardened Release: security audit + LLVM-style test pyramid)
 Target Triples: x86_64-unknown-linux-musl · aarch64-unknown-linux-musl
 Runtime Deps  : Zero external binaries, zero dynamic libraries
 Crates        : 15 modular workspace crates (22,600+ Rust LOC)
+Tests         : 80 unit tests + 50 integration suites + 20 pinned regression guards
+Test Driver   : python3 tests/run_tests.py (lit-style discovery, parallel, PASS/FAIL/UNSUPPORTED)
 Verification  : Ed25519 + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3 Archival Embedding
 ```
 
@@ -298,6 +300,22 @@ graph TD
 ---
 
 ## Engineering Discipline & Testkit
+
+> **v0.4.0 testing pyramid (LLVM-inspired):**
+> - **80 in-crate unit tests** pin per-function contracts (bit layouts, chain seeds, FSM permits)
+> - **50 integration suites** exercise behavior through public APIs and the real binaries
+> - **20 `REG-*` regression guards** pin every defect fixed by the security audit
+>   (`crates/dc-cli/tests/r900_regression_guards.rs` — each identifier matches the
+>   comment at its fix site, so `grep REG-` walks the full historical defect list)
+> - **Independent oracles** (JournalOracle, CertOracle, ChaCha20Ref) re-implement formats
+>   from the spec, not from production code — agreement means evidence
+> - **lit-style runner**: `python3 tests/run_tests.py` discovers and runs everything
+>   in parallel with PASS/FAIL/UNSUPPORTED/TIMEOUT reporting
+>
+> Full architecture in [docs/TESTING.md](docs/TESTING.md); threat model in
+> [docs/SECURITY.md](docs/SECURITY.md); layer diagram in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Engineering Discipline (original)
 
 The system is tested against an exhaustive verification lattice:
 * **23 Red-Team Test Rigs (T1–T23):** Covering fault injection, crash recovery, Guardian trees, PRNG cleanroom, Opal SEDs, USB bridges, and Zoned SMR.

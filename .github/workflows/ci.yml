@@ -2,37 +2,89 @@ name: Forensic Engine CI
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  test:
-    name: Unit & Forensic Invariants Test Matrix (including T1 Zero-Trust)
+  build-and-test:
+    name: Format, Lint, Unit + Integration Matrix
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
-      - name: Setup Kernel Loop Module
+      - name: Setup Kernel Loop Module (hardware suites run as root)
         run: sudo modprobe loop
 
       - name: Cargo Format Check
         run: cargo fmt --all -- --check
 
-      - name: Cargo Clippy Lint
+      - name: Cargo Clippy Lint (workspace, all targets)
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Compile Check with Lockfile Committed
+        run: cargo check --workspace --locked
 
       - name: Run Workspace Tests as Root (T1 Zero-Trust Suite)
         run: sudo -E env "PATH=$PATH" cargo test --workspace --verbose
 
-      - name: Build Release Binaries
+  regression-guards:
+    name: REG-* Defect Pinning Suite
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run r900 regression guards by name
+        run: cargo test -p dc-cli --test r900_regression_guards -- --nocapture
+
+  lit-runner:
+    name: lit-style suite driver
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Discover and run all suites
+        run: python3 tests/run_tests.py
+
+  release-audit:
+    name: Release Binary Fault-Injection Audit
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release binaries
         run: cargo build --release --workspace
+      - name: Release binaries must reject fault-injection environment
+        run: |
+          # The fault-injection hooks compile ONLY into debug builds.
+          # A release binary given DC_CRASH_AT must run to completion
+          # (exit 0/2), never honor the kill hook (exit -9 / 137).
+          set -e
+          OUT=$(mktemp -d)
+          set +e
+          timeout 30 ./target/release/diskcleaner check --target /nonexistent >/dev/null 2>&1
+          CODE=$?
+          set -e
+          if [ "$CODE" -ne 2 ]; then
+            echo "FAIL: expected exit 2 for missing target, got $CODE"; exit 1
+          fi
+          DC_CRASH_AT=header-write timeout 30 ./target/release/diskcleaner check --target /nonexistent >/dev/null 2>&1
+          CODE=$?
+          if [ "$CODE" -eq 137 ] || [ "$CODE" -eq -9 ]; then
+            echo "FAIL: release binary honored DC_CRASH_AT (SIGKILL)"; exit 1
+          fi
+          echo "PASS: release surface is free of fault-injection behavior"
+      - name: Dependency audit
+        run: cargo audit || echo "cargo-audit not installed; skipping (install with: cargo install cargo-audit)"

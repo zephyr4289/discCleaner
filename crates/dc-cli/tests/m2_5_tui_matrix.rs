@@ -17,7 +17,10 @@ fn test_m2_5_tui_matrix() {
     // 4. RECONCILE-FRAME-CERT: Completion Frame Fact Reconciliation (Δ460)
     run_frame_reconciliation_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[M2.5-FAIL] TUI Dashboard matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[M2.5-FAIL] TUI Dashboard matrix contains failing assertions!"
+    );
     println!("\n[=== MILESTONE M2.5 TUI DASHBOARD MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -41,11 +44,29 @@ fn run_phase_true_write_tests(ledger: &RigLedger) {
     let frame = TuiRenderer::render(&state, 10);
 
     // Assert NO stream hash and NO entropy line in write phase!
-    assert!(frame.stream_hash_line.is_none(), "Stream hash MUST NOT render in write phase!");
-    assert!(frame.verify_entropy_line.is_none(), "Entropy line MUST NOT render in write phase!");
-    assert!(frame.rate_line.as_ref().unwrap().contains("~3500000 KiB/s (indicative)"));
+    assert!(
+        frame.stream_hash_line.is_none(),
+        "Stream hash MUST NOT render in write phase!"
+    );
+    assert!(
+        frame.verify_entropy_line.is_none(),
+        "Entropy line MUST NOT render in write phase!"
+    );
+    assert!(
+        frame
+            .rate_line
+            .as_ref()
+            .unwrap()
+            .contains("~3500000 KiB/s (indicative)")
+    );
 
-    ledger.assert("M2.5-FRAME", "FRAME-NOHASH-IN-WRITE", "true", frame.stream_hash_line.is_none().to_string(), None);
+    ledger.assert(
+        "M2.5-FRAME",
+        "FRAME-NOHASH-IN-WRITE",
+        "true",
+        frame.stream_hash_line.is_none().to_string(),
+        None,
+    );
 }
 
 fn run_phase_true_verify_tests(ledger: &RigLedger) {
@@ -71,9 +92,18 @@ fn run_phase_true_verify_tests(ledger: &RigLedger) {
     assert!(frame.verify_entropy_line.is_some());
     let entropy_line = frame.verify_entropy_line.unwrap();
     assert!(entropy_line.contains("Entropy H(X): 0.0012 (diagnostic)"));
-    assert!(!entropy_line.contains("✓"), "Entropy must never be rendered as pass/fail verdict!");
+    assert!(
+        !entropy_line.contains("✓"),
+        "Entropy must never be rendered as pass/fail verdict!"
+    );
 
-    ledger.assert("M2.5-FRAME", "FRAME-VERIFY-ENTROPY-NEUTRAL", "true", entropy_line.contains("(diagnostic)").to_string(), None);
+    ledger.assert(
+        "M2.5-FRAME",
+        "FRAME-VERIFY-ENTROPY-NEUTRAL",
+        "true",
+        entropy_line.contains("(diagnostic)").to_string(),
+        None,
+    );
 }
 
 fn run_heatmap_aggregation_tests(ledger: &RigLedger) {
@@ -85,13 +115,25 @@ fn run_heatmap_aggregation_tests(ledger: &RigLedger) {
 
     assert_eq!(heatmap.cells[0], HeatmapCellState::Verified); // 0..10 verified
     assert_eq!(heatmap.cells[1], HeatmapCellState::Verified); // 10..20 verified
-    assert_eq!(heatmap.cells[2], HeatmapCellState::Failed);   // 20..30 failed at window 25!
-    assert_eq!(heatmap.cells[3], HeatmapCellState::Written);  // 30..40 written
-    assert_eq!(heatmap.cells[4], HeatmapCellState::Written);  // 40..50 written
-    assert_eq!(heatmap.cells[5], HeatmapCellState::Pending);  // 50..60 pending
+    assert_eq!(heatmap.cells[2], HeatmapCellState::Failed); // 20..30 failed at window 25!
+    assert_eq!(heatmap.cells[3], HeatmapCellState::Written); // 30..40 written
+    assert_eq!(heatmap.cells[4], HeatmapCellState::Written); // 40..50 written
+    assert_eq!(heatmap.cells[5], HeatmapCellState::Pending); // 50..60 pending
 
-    ledger.assert("M2.5-HEATMAP", "HEATMAP-FAIL-POSITION", "Failed", format!("{:?}", heatmap.cells[2]), None);
-    ledger.assert("M2.5-HEATMAP", "HEATMAP-ALL-OR-MIXED", "Verified", format!("{:?}", heatmap.cells[0]), None);
+    ledger.assert(
+        "M2.5-HEATMAP",
+        "HEATMAP-FAIL-POSITION",
+        "Failed",
+        format!("{:?}", heatmap.cells[2]),
+        None,
+    );
+    ledger.assert(
+        "M2.5-HEATMAP",
+        "HEATMAP-ALL-OR-MIXED",
+        "Verified",
+        format!("{:?}", heatmap.cells[0]),
+        None,
+    );
 }
 
 fn run_frame_reconciliation_tests(ledger: &RigLedger) {
@@ -118,5 +160,11 @@ fn run_frame_reconciliation_tests(ledger: &RigLedger) {
     assert!(frame.stream_hash_line.unwrap().contains(stream_digest));
     assert_eq!(state.progress_pct(), 100.0);
 
-    ledger.assert("M2.5-RECONCILE", "RECONCILE-FRAME-CERT", "100", state.progress_pct().to_string(), None);
+    ledger.assert(
+        "M2.5-RECONCILE",
+        "RECONCILE-FRAME-CERT",
+        "100",
+        state.progress_pct().to_string(),
+        None,
+    );
 }

@@ -17,8 +17,13 @@ fn test_m2_6_report_matrix() {
     // 4. BATCH-FULLSWEEP: Exhaustive Sweep Without Short-Circuit (Δ477)
     run_batch_sweep_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[M2.6-FAIL] Archival Report matrix contains failing assertions!");
-    println!("\n[=== MILESTONE M2.6 ARCHIVAL REPORT & BATCH VERIFICATION MATRIX PASSED ALL CELLS ===]\n");
+    assert!(
+        ledger.is_all_green(),
+        "[M2.6-FAIL] Archival Report matrix contains failing assertions!"
+    );
+    println!(
+        "\n[=== MILESTONE M2.6 ARCHIVAL REPORT & BATCH VERIFICATION MATRIX PASSED ALL CELLS ===]\n"
+    );
 }
 
 fn run_pdf_determinism_tests(ledger: &RigLedger) {
@@ -38,9 +43,18 @@ fn run_pdf_determinism_tests(ledger: &RigLedger) {
     let doc_2 = model.generate_pdfa();
     let bytes_2 = doc_2.render_pdf_bytes();
 
-    assert_eq!(bytes_1, bytes_2, "PDF/A generation must be 100% deterministic (no clock leaks)!");
+    assert_eq!(
+        bytes_1, bytes_2,
+        "PDF/A generation must be 100% deterministic (no clock leaks)!"
+    );
 
-    ledger.assert("M2.6-PDF", "PDF-DETERMINISM", "true", (bytes_1 == bytes_2).to_string(), None);
+    ledger.assert(
+        "M2.6-PDF",
+        "PDF-DETERMINISM",
+        "true",
+        (bytes_1 == bytes_2).to_string(),
+        None,
+    );
 }
 
 fn run_title_derivation_tests(ledger: &RigLedger) {
@@ -68,14 +82,27 @@ fn run_title_derivation_tests(ledger: &RigLedger) {
     let title_failed = model_failed.derive_title();
     assert_eq!(title_failed, "Sanitization Report — VERIFICATION FAILED");
 
-    ledger.assert("M2.6-TITLE", "TITLE-DERIVED-CLEAN", "Certificate of Sanitization", title_clean, None);
-    ledger.assert("M2.6-TITLE", "TITLE-DERIVED-FAILED", "Sanitization Report — VERIFICATION FAILED", title_failed, None);
+    ledger.assert(
+        "M2.6-TITLE",
+        "TITLE-DERIVED-CLEAN",
+        "Certificate of Sanitization",
+        title_clean,
+        None,
+    );
+    ledger.assert(
+        "M2.6-TITLE",
+        "TITLE-DERIVED-FAILED",
+        "Sanitization Report — VERIFICATION FAILED",
+        title_failed,
+        None,
+    );
 }
 
 fn run_embedded_extraction_tests(ledger: &RigLedger) {
     println!("\n[>>> EXTRACT-IDENTITY: Testing Embedded Evidence Extraction (Δ473) <<<]");
 
-    let cert_content = "{\"schema\":\"dc-cert/2\",\"serial\":\"S6PBNJ0W123456\",\"status\":\"CLEAN\"}";
+    let cert_content =
+        "{\"schema\":\"dc-cert/2\",\"serial\":\"S6PBNJ0W123456\",\"status\":\"CLEAN\"}";
     let model = ReportModel {
         target_serial: "S6PBNJ0W123456".to_string(),
         mechanism_name: "BlockErase".to_string(),
@@ -88,9 +115,18 @@ fn run_embedded_extraction_tests(ledger: &RigLedger) {
     let extracted_bytes = doc.extract_attachment("certificate.json").unwrap();
     let extracted_str = std::str::from_utf8(extracted_bytes).unwrap();
 
-    assert_eq!(extracted_str, cert_content, "Extracted attachment must match original JSON byte-for-byte!");
+    assert_eq!(
+        extracted_str, cert_content,
+        "Extracted attachment must match original JSON byte-for-byte!"
+    );
 
-    ledger.assert("M2.6-EXTRACT", "EXTRACT-IDENTITY", "true", (extracted_str == cert_content).to_string(), None);
+    ledger.assert(
+        "M2.6-EXTRACT",
+        "EXTRACT-IDENTITY",
+        "true",
+        (extracted_str == cert_content).to_string(),
+        None,
+    );
 }
 
 fn run_batch_sweep_tests(ledger: &RigLedger) {
@@ -110,5 +146,11 @@ fn run_batch_sweep_tests(ledger: &RigLedger) {
     assert_eq!(result.passed_count, 2);
     assert_eq!(result.aggregate_exit_code(), 1); // Mixed batch exits loud with code 1
 
-    ledger.assert("M2.6-BATCH", "BATCH-FULLSWEEP-NO-SHORTCIRCUIT", "3", result.total_examined.to_string(), None);
+    ledger.assert(
+        "M2.6-BATCH",
+        "BATCH-FULLSWEEP-NO-SHORTCIRCUIT",
+        "3",
+        result.total_examined.to_string(),
+        None,
+    );
 }

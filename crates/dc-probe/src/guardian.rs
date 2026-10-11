@@ -36,7 +36,10 @@ impl Guardian {
         if identity.stable.size_bytes < 1024 * 1024 {
             return Err(DcError::Guardian(GuardianRefusal {
                 code: "SIZE_ANOMALY",
-                detail: format!("Device size is suspiciously small: {} bytes", identity.stable.size_bytes),
+                detail: format!(
+                    "Device size is suspiciously small: {} bytes",
+                    identity.stable.size_bytes
+                ),
                 hint: "Device must be at least 1 MiB in capacity.".to_string(),
             }));
         }
@@ -45,8 +48,12 @@ impl Guardian {
         if Self::is_partition_name(name) {
             return Err(DcError::Guardian(GuardianRefusal {
                 code: "NOT_WHOLE_DISK",
-                detail: format!("Target '{}' is a partition, not a whole disk block device.", name),
-                hint: "Target the parent drive instead (e.g. /dev/sda instead of /dev/sda1).".to_string(),
+                detail: format!(
+                    "Target '{}' is a partition, not a whole disk block device.",
+                    name
+                ),
+                hint: "Target the parent drive instead (e.g. /dev/sda instead of /dev/sda1)."
+                    .to_string(),
             }));
         }
 
@@ -55,7 +62,9 @@ impl Guardian {
             return Err(DcError::Guardian(GuardianRefusal {
                 code: "RAM_BACKED",
                 detail: format!("Device '{}' is a RAM-backed volatile block device.", name),
-                hint: "RAM devices disappear upon reboot and cannot be sanitized as physical media.".to_string(),
+                hint:
+                    "RAM devices disappear upon reboot and cannot be sanitized as physical media."
+                        .to_string(),
             }));
         }
 
@@ -63,27 +72,38 @@ impl Guardian {
         if LayerStackDetector::is_zoned(name) {
             return Err(DcError::Guardian(GuardianRefusal {
                 code: "ZONED",
-                detail: format!("Device '{}' is a host-managed/aware zoned device (SMR).", name),
-                hint: "Zoned storage wiping requires a sequential zone-reset engine (Phase 3).".to_string(),
+                detail: format!(
+                    "Device '{}' is a host-managed/aware zoned device (SMR).",
+                    name
+                ),
+                hint: "Zoned storage wiping requires a sequential zone-reset engine (Phase 3)."
+                    .to_string(),
             }));
         }
 
         // 5. READ_ONLY (Geometry)
-        if let Ok(f) = File::open(target_path) {
-            if InventoryScanner::is_read_only(&f) {
-                return Err(DcError::Guardian(GuardianRefusal {
-                    code: "READ_ONLY",
-                    detail: format!("Device '{}' is marked read-only by hardware switch or kernel.", name),
-                    hint: "Disable hardware write-protect switch or run 'blockdev --setrw'.".to_string(),
-                }));
-            }
+        if let Ok(f) = File::open(target_path)
+            && InventoryScanner::is_read_only(&f)
+        {
+            return Err(DcError::Guardian(GuardianRefusal {
+                code: "READ_ONLY",
+                detail: format!(
+                    "Device '{}' is marked read-only by hardware switch or kernel.",
+                    name
+                ),
+                hint: "Disable hardware write-protect switch or run 'blockdev --setrw'."
+                    .to_string(),
+            }));
         }
 
         // 6. MULTIPATH_PATH (Structural name pattern)
         if name.contains('c') && name.starts_with("nvme") && name.contains('n') {
             return Err(DcError::Guardian(GuardianRefusal {
                 code: "MULTIPATH_PATH",
-                detail: format!("Target '{}' appears to be an NVMe controller multipath sub-handle.", name),
+                detail: format!(
+                    "Target '{}' appears to be an NVMe controller multipath sub-handle.",
+                    name
+                ),
                 hint: "Target the base namespace instead (e.g. /dev/nvme0n1).".to_string(),
             }));
         }
@@ -118,11 +138,7 @@ impl Guardian {
                 }
 
                 // Verify serial confirmation string matches exactly
-                let expected_confirm = identity
-                    .stable
-                    .serial
-                    .as_deref()
-                    .unwrap_or(name);
+                let expected_confirm = identity.stable.serial.as_deref().unwrap_or(name);
                 match &flags.serial_confirm {
                     Some(confirmed) if confirmed == expected_confirm => {
                         // Authorized override!
@@ -141,7 +157,10 @@ impl Guardian {
             } else {
                 return Err(DcError::Guardian(GuardianRefusal {
                     code: "MOUNTED",
-                    detail: format!("Device '{}' has mounted filesystem partitions: {:?}", name, mount_points),
+                    detail: format!(
+                        "Device '{}' has mounted filesystem partitions: {:?}",
+                        name, mount_points
+                    ),
                     hint: "Unmount all partitions with 'umount' before wiping.".to_string(),
                 }));
             }
@@ -160,8 +179,12 @@ impl Guardian {
         if LayerStackDetector::has_holders(name) {
             return Err(DcError::Guardian(GuardianRefusal {
                 code: "HAS_HOLDERS",
-                detail: format!("Device '{}' or its partitions have active device-mapper or LVM holders.", name),
-                hint: "Deactivate volume groups (vgchange -an) or close dm-crypt mappings.".to_string(),
+                detail: format!(
+                    "Device '{}' or its partitions have active device-mapper or LVM holders.",
+                    name
+                ),
+                hint: "Deactivate volume groups (vgchange -an) or close dm-crypt mappings."
+                    .to_string(),
             }));
         }
 
@@ -169,7 +192,10 @@ impl Guardian {
         if LayerStackDetector::is_md_member(name) {
             return Err(DcError::Guardian(GuardianRefusal {
                 code: "MD_MEMBER",
-                detail: format!("Device '{}' is an active member of a Linux Software RAID (md) array.", name),
+                detail: format!(
+                    "Device '{}' is an active member of a Linux Software RAID (md) array.",
+                    name
+                ),
                 hint: "Stop the md array (mdadm --stop) before sanitization.".to_string(),
             }));
         }
@@ -182,7 +208,8 @@ impl Guardian {
                     return Err(DcError::Guardian(GuardianRefusal {
                         code: "CRYPTO_CONTAINER",
                         detail: format!("Found encrypted storage container header: '{}'", sig),
-                        hint: "Pass '--allow-inactive-signatures' to overwrite encrypted storage.".to_string(),
+                        hint: "Pass '--allow-inactive-signatures' to overwrite encrypted storage."
+                            .to_string(),
                     }));
                 }
             } else if sig.contains("LVM2") {
@@ -190,7 +217,8 @@ impl Guardian {
                     return Err(DcError::Guardian(GuardianRefusal {
                         code: "LVM_PV",
                         detail: format!("Found LVM physical volume signature: '{}'", sig),
-                        hint: "Pass '--allow-member' to permit wiping retired LVM physical volume.".to_string(),
+                        hint: "Pass '--allow-member' to permit wiping retired LVM physical volume."
+                            .to_string(),
                     }));
                 }
             } else if sig.contains("SWAP") {
@@ -198,7 +226,8 @@ impl Guardian {
                     return Err(DcError::Guardian(GuardianRefusal {
                         code: "STALE_SWAP",
                         detail: format!("Found inactive swap signature: '{}'", sig),
-                        hint: "Pass '--allow-member' to permit wiping stale swap signature.".to_string(),
+                        hint: "Pass '--allow-member' to permit wiping stale swap signature."
+                            .to_string(),
                     }));
                 }
             } else if sig.contains("RAID") {
@@ -206,7 +235,8 @@ impl Guardian {
                     return Err(DcError::Guardian(GuardianRefusal {
                         code: "MD_MEMBER",
                         detail: format!("Found inactive RAID superblock signature: '{}'", sig),
-                        hint: "Pass '--allow-member' to permit wiping stale RAID member.".to_string(),
+                        hint: "Pass '--allow-member' to permit wiping stale RAID member."
+                            .to_string(),
                     }));
                 }
             } else if !flags.allow_inactive_signatures {
@@ -248,17 +278,18 @@ impl Guardian {
                 // EBUSY or failure on O_EXCL -> attempt re-classification
                 if let Ok(identity) = InventoryScanner::probe_device(target_path) {
                     let flags = GuardianFlags::default();
-                    if let Err(re_err) = Self::evaluate(target_path, &identity, &flags) {
-                        return Err(re_err);
-                    }
+                    Self::evaluate(target_path, &identity, &flags)?;
                 }
                 return Err(DcError::Guardian(GuardianRefusal {
                     code: "IN_USE_RACE",
                     detail: format!(
                         "Exclusive lock (O_EXCL) failed on '{}': {}",
-                        target_path.display(), e
+                        target_path.display(),
+                        e
                     ),
-                    hint: "Another process holds an active open claim on the disk or its partitions.".to_string(),
+                    hint:
+                        "Another process holds an active open claim on the disk or its partitions."
+                            .to_string(),
                 }));
             }
         };
@@ -275,7 +306,9 @@ impl Guardian {
 
             let sys_dev_dir = PathBuf::from(format!("/sys/dev/block/{}:{}", maj, min));
             let serial = InventoryScanner::read_trimmed_string(&sys_dev_dir.join("device/serial"));
-            if serial.as_ref() != expected_stable.serial.as_ref() && expected_stable.serial.is_some() {
+            if serial.as_ref() != expected_stable.serial.as_ref()
+                && expected_stable.serial.is_some()
+            {
                 return Err(DcError::IdentityDrift {
                     expected: expected_stable.clone(),
                     observed: StableIdentity {
@@ -296,8 +329,12 @@ impl Guardian {
             if libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) != 0 {
                 return Err(DcError::Guardian(GuardianRefusal {
                     code: "BUSY",
-                    detail: format!("Device '{}' is locked by another process.", target_path.display()),
-                    hint: "Ensure no other disk partitioning or inspection tool holds flock.".to_string(),
+                    detail: format!(
+                        "Device '{}' is locked by another process.",
+                        target_path.display()
+                    ),
+                    hint: "Ensure no other disk partitioning or inspection tool holds flock."
+                        .to_string(),
                 }));
             }
         }
@@ -313,12 +350,16 @@ impl Guardian {
         // Only ENOENT (partition vanished between sysfs read and open) is
         // tolerated; every other failure refuses to arm.
         let mut partition_files = Vec::new();
-        let kernel_name = target_path.file_name().unwrap_or_default().to_string_lossy();
+        let kernel_name = target_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
         let sys_block_dir = PathBuf::from(format!("/sys/block/{}", kernel_name));
         if let Ok(entries) = fs::read_dir(&sys_block_dir) {
             for entry in entries.flatten() {
                 let part_name = entry.file_name().to_string_lossy().to_string();
-                if part_name.starts_with(kernel_name.as_ref()) && part_name != kernel_name.as_ref() {
+                if part_name.starts_with(kernel_name.as_ref()) && part_name != kernel_name.as_ref()
+                {
                     let part_path = format!("/dev/{}", part_name);
                     match OpenOptions::new()
                         .read(true)
@@ -400,7 +441,10 @@ impl Guardian {
         // SCSI-style: <letters><partition-index> (sda1, sdb12, vda3).
         // Only for classic letter-only disk prefixes — nvme0n1 ends in a
         // digit but is a whole disk.
-        let letters: String = name.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+        let letters: String = name
+            .chars()
+            .take_while(|c| c.is_ascii_alphabetic())
+            .collect();
         let digits = &name[letters.len()..];
         !digits.is_empty()
             && digits.bytes().all(|b| b.is_ascii_digit())

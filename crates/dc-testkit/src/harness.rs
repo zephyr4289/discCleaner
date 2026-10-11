@@ -3,8 +3,8 @@ use std::collections::HashSet;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReleaseManifest {
-    pub schema: String,            // "dc-release/1"
-    pub tag: String,               // e.g. "v0.1.0"
+    pub schema: String, // "dc-release/1"
+    pub tag: String,    // e.g. "v0.1.0"
     pub commit: String,
     pub target_triple: String,
     pub rustc_version: String,

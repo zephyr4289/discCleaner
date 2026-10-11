@@ -30,11 +30,10 @@ pub enum DcError {
     #[error("Journal corruption at record #{record_index}: {reason}")]
     JournalCorrupt { record_index: u64, reason: String },
 
-    #[error("Verification failed with {mismatches} mismatching windows! First mismatches at LBAs: {sample:?}")]
-    VerificationFailed {
-        mismatches: u64,
-        sample: Vec<u64>,
-    },
+    #[error(
+        "Verification failed with {mismatches} mismatching windows! First mismatches at LBAs: {sample:?}"
+    )]
+    VerificationFailed { mismatches: u64, sample: Vec<u64> },
 
     #[error("Operation interrupted by signal or operator request")]
     Interrupted {

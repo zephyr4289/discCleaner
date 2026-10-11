@@ -1,9 +1,18 @@
+# Build artifacts
 /target
-Cargo.lock
-docs/
-.gemini/
-.agents/
+# NOTE: Cargo.lock IS COMMITTED (reproducible dependency resolution is a
+# security property for a supply-chain-sensitive tool). The historical
+# blanket ignore was removed.
+
+# Operator-secrets and run outputs (never evidence)
+*.key
 *.dcj
 audit-chain.log
 *.cert.json
-*.key
+*.auth.json
+*.tailsave
+
+# Local assistant/agent state
+.gemini/
+.agents/
+.claude/

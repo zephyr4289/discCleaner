@@ -17,13 +17,20 @@ mod unit_tests {
 
     #[test]
     fn two_axis_reconciliation_detects_scope_drift() {
-        let conf = TwoAxisConfirmation::new("CID_0xABC", vec!["user".to_string(), "boot0".to_string()]);
+        let conf =
+            TwoAxisConfirmation::new("CID_0xABC", vec!["user".to_string(), "boot0".to_string()]);
         // Exact scope: OK.
-        assert!(conf.reconcile_executed_scope(&["user".to_string(), "boot0".to_string()]).is_ok());
+        assert!(conf
+            .reconcile_executed_scope(&["user".to_string(), "boot0".to_string()])
+            .is_ok());
         // Unconfirmed partition executed: refusal.
-        assert!(conf.reconcile_executed_scope(&["user".to_string(), "rpmb".to_string()]).is_err());
+        assert!(conf
+            .reconcile_executed_scope(&["user".to_string(), "rpmb".to_string()])
+            .is_err());
         // Confirmed partition missing from execution: refusal.
-        assert!(conf.reconcile_executed_scope(&["user".to_string()]).is_err());
+        assert!(conf
+            .reconcile_executed_scope(&["user".to_string()])
+            .is_err());
     }
 
     #[test]
@@ -32,7 +39,10 @@ mod unit_tests {
         // PARTITION_ACCESS update (Δ340).
         let initial = 0b0100_1000u8; // BOOT_ACK=1, BOOT_PART=1, ACCESS=0
         let updated = write_partition_config(initial, 0b101);
-        assert_eq!(updated, 0b0100_1101, "access bits replaced, boot bits preserved");
+        assert_eq!(
+            updated, 0b0100_1101,
+            "access bits replaced, boot bits preserved"
+        );
     }
 
     #[test]
@@ -40,7 +50,13 @@ mod unit_tests {
         // REG-MMC-LAYERING: the enum now lives in dc-mmc (production) and the
         // testkit re-exports it; a production build must never depend on
         // dc-testkit for this type.
-        assert_eq!(MmcAccessClass::NativeController, MmcAccessClass::NativeController);
-        assert_ne!(MmcAccessClass::NativeController, MmcAccessClass::ReaderMediated);
+        assert_eq!(
+            MmcAccessClass::NativeController,
+            MmcAccessClass::NativeController
+        );
+        assert_ne!(
+            MmcAccessClass::NativeController,
+            MmcAccessClass::ReaderMediated
+        );
     }
 }

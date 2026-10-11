@@ -50,13 +50,25 @@ mod unit_tests {
     #[test]
     fn sat_transfer_classes_have_distinct_protocol_framing() {
         let none = AtaCodec::encode_sat_passthrough_16_framed(
-            0xF4, 0x0001, 0, 1, crate::ata_codec::SatTransferClass::None,
+            0xF4,
+            0x0001,
+            0,
+            1,
+            crate::ata_codec::SatTransferClass::None,
         );
         let din = AtaCodec::encode_sat_passthrough_16_framed(
-            0xEC, 0x0000, 0, 1, crate::ata_codec::SatTransferClass::DataIn,
+            0xEC,
+            0x0000,
+            0,
+            1,
+            crate::ata_codec::SatTransferClass::DataIn,
         );
         let dout = AtaCodec::encode_sat_passthrough_16_framed(
-            0xF1, 0x0000, 0, 1, crate::ata_codec::SatTransferClass::DataOut,
+            0xF1,
+            0x0000,
+            0,
+            1,
+            crate::ata_codec::SatTransferClass::DataOut,
         );
 
         // SAT protocol field lives at CDB byte 1 bits 4:1.
@@ -65,9 +77,21 @@ mod unit_tests {
         assert_eq!((dout[1] >> 1) & 0x0F, 5, "PIO Data-Out = protocol 5");
 
         // T_LENGTH / BYTE_BLOCK / T_DIR framing in byte 2.
-        assert_eq!(none[2] & 0x0F, 0b0000, "non-data: no transfer length, no byte-block");
-        assert_eq!(din[2] & 0x0F, 0b1110, "data-in: T_DIR|BYTE_BLOCK|T_LENGTH=2");
-        assert_eq!(dout[2] & 0x0F, 0b0110, "data-out: BYTE_BLOCK|T_LENGTH=2, T_DIR=0");
+        assert_eq!(
+            none[2] & 0x0F,
+            0b0000,
+            "non-data: no transfer length, no byte-block"
+        );
+        assert_eq!(
+            din[2] & 0x0F,
+            0b1110,
+            "data-in: T_DIR|BYTE_BLOCK|T_LENGTH=2"
+        );
+        assert_eq!(
+            dout[2] & 0x0F,
+            0b0110,
+            "data-out: BYTE_BLOCK|T_LENGTH=2, T_DIR=0"
+        );
     }
 
     #[test]
@@ -79,8 +103,12 @@ mod unit_tests {
         let enhanced = AtaCodec::encode_sat_security_erase_unit(true);
         let freeze = AtaCodec::encode_sat_security_freeze_lock();
 
-        let cases: [(&str, &[u8; 16]); 4] =
-            [("prepare", &prep), ("unit", &unit), ("enhanced", &enhanced), ("freeze", &freeze)];
+        let cases: [(&str, &[u8; 16]); 4] = [
+            ("prepare", &prep),
+            ("unit", &unit),
+            ("enhanced", &enhanced),
+            ("freeze", &freeze),
+        ];
         for (name, cdb) in cases {
             assert_eq!(cdb[14] & 0xF0, 0xF0, "{} opcode high nibble", name);
             assert_eq!(cdb[2], 0x00, "{} must be framed Non-Data", name);
@@ -128,7 +156,8 @@ mod unit_tests {
     fn format_nvm_ses_occupies_bits_10_9() {
         // Verified against QEMU's NVMe emulation + Linux kernel: SES is
         // CDW10 bits 10:09, LBAF bits 03:00, MSET bit 4.
-        let cmd = NvmeCodec::encode_format_nvm(0x1234_5678, NvmeSecureEraseSetting::CryptoErase, 0x5);
+        let cmd =
+            NvmeCodec::encode_format_nvm(0x1234_5678, NvmeSecureEraseSetting::CryptoErase, 0x5);
         assert_eq!(cmd[0], 0x80);
         assert_eq!(&cmd[4..8], &0x1234_5678u32.to_le_bytes());
         let cdw10 = u32::from_le_bytes([cmd[40], cmd[41], cmd[42], cmd[43]]);

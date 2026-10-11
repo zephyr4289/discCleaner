@@ -9,10 +9,12 @@
 //! (in-crate fine-grained regressions live beside the code they guard).
 
 use assert_cmd::Command;
-use dc_cert::{AuthSignatureEntry, AuthorizationSet, KeyringEntry, KeyringRegistry, OperatorKeyPair};
+use dc_cert::{
+    AuthSignatureEntry, AuthorizationSet, KeyringEntry, KeyringRegistry, OperatorKeyPair,
+};
 use dc_core::{AuditLogger, AuditOutcome, AuditRecord};
 use dc_hw::{AtaCodec, NvmeCodec, NvmeSanitizeStatus, ScsiCodec};
-use dc_io::{create_engine, AlignedBuffer, BufferPool, LbaSpan};
+use dc_io::{AlignedBuffer, BufferPool, LbaSpan, create_engine};
 use dc_testkit::JournalOracle;
 
 // ---------------------------------------------------------------------------
@@ -36,8 +38,14 @@ fn reg_engine_failclosed_never_dev_null() {
     // unreliable — the literal can legitimately appear in std machinery).
     let engine_sources: [(&str, &str); 3] = [
         ("lib.rs", include_str!("../../dc-io/src/lib.rs")),
-        ("sync_engine.rs", include_str!("../../dc-io/src/sync_engine.rs")),
-        ("uring_engine.rs", include_str!("../../dc-io/src/uring_engine.rs")),
+        (
+            "sync_engine.rs",
+            include_str!("../../dc-io/src/sync_engine.rs"),
+        ),
+        (
+            "uring_engine.rs",
+            include_str!("../../dc-io/src/uring_engine.rs"),
+        ),
     ];
     for (name, src) in engine_sources {
         // Match the CALL form only — doc comments describing the historical
@@ -87,8 +95,12 @@ fn reg_dualauth_forgery_is_rejected() {
     let a = OperatorKeyPair::generate();
     let b = OperatorKeyPair::generate();
     let mut real = AuthorizationSet::new(&plan_hash);
-    real.add_signature(dc_cli::approve::PlanApprover::countersign_plan(&plan_hash, &a, false));
-    real.add_signature(dc_cli::approve::PlanApprover::countersign_plan(&plan_hash, &b, false));
+    real.add_signature(dc_cli::approve::PlanApprover::countersign_plan(
+        &plan_hash, &a, false,
+    ));
+    real.add_signature(dc_cli::approve::PlanApprover::countersign_plan(
+        &plan_hash, &b, false,
+    ));
     assert!(real.verify_pre_arm_authorization(&plan_hash, true).is_ok());
 }
 
@@ -99,7 +111,11 @@ fn reg_dualauth_forgery_is_rejected() {
 #[test]
 fn reg_scsi_format_unit_fmtdata_clear() {
     let cdb = ScsiCodec::encode_format_unit(false);
-    assert_eq!(cdb[1] & 0x10, 0, "FMTDATA must be clear (no parameter list follows)");
+    assert_eq!(
+        cdb[1] & 0x10,
+        0,
+        "FMTDATA must be clear (no parameter list follows)"
+    );
     let imm = ScsiCodec::encode_format_unit(true);
     assert_eq!(imm[1] & 0x10, 0, "IMMED variant must also clear FMTDATA");
     assert_eq!(imm[1] & 0x80, 0x80, "IMMED bit set when requested");
@@ -125,7 +141,10 @@ fn reg_sat_security_erase_is_non_data_framed() {
     }
     assert_eq!(prep[14], 0xF3);
     assert_eq!(unit[14], 0xF4);
-    assert_eq!(enhanced[4], 0x01, "enhanced erase selected via FEATURES register");
+    assert_eq!(
+        enhanced[4], 0x01,
+        "enhanced erase selected via FEATURES register"
+    );
     assert_eq!(freeze[14], 0xF5);
 }
 
@@ -139,7 +158,10 @@ fn reg_sanitize_rounding_full_scale() {
     log[0..2].copy_from_slice(&65535u16.to_le_bytes());
     log[2..4].copy_from_slice(&1u16.to_le_bytes());
     let status: NvmeSanitizeStatus = NvmeCodec::decode_sanitize_status_log(&log).unwrap();
-    assert_eq!(status.progress_permille, 1000, "0xFFFF/0x10000 must round to 1000, not 999");
+    assert_eq!(
+        status.progress_permille, 1000,
+        "0xFFFF/0x10000 must round to 1000, not 999"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +179,10 @@ fn reg_ata_identify_nul_padding_trimmed() {
     raw[22] = 0;
     raw[23] = 0;
     let data = AtaCodec::decode_identify_device(&raw).unwrap();
-    assert_eq!(data.serial, "SN", "NUL-padded serials must decode without NULs");
+    assert_eq!(
+        data.serial, "SN",
+        "NUL-padded serials must decode without NULs"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +201,10 @@ fn reg_lbaspan_overflow_safe() {
 #[test]
 fn reg_bufferpool_overflow_refused() {
     assert!(AlignedBuffer::allocate(usize::MAX - 16, 4096).is_err());
-    assert!(BufferPool::new(1024, 64 * 1024 * 1024).is_err(), "64 GiB pool must exceed the cap");
+    assert!(
+        BufferPool::new(1024, 64 * 1024 * 1024).is_err(),
+        "64 GiB pool must exceed the cap"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +289,10 @@ fn reg_keyring_superseded_at_t() {
         200,
     )
     .unwrap();
-    assert_eq!(reg.evaluate_signature_at_time("K1", 199).unwrap(), "VALID_AT_TIME");
+    assert_eq!(
+        reg.evaluate_signature_at_time("K1", 199).unwrap(),
+        "VALID_AT_TIME"
+    );
     assert_eq!(
         reg.evaluate_signature_at_time("K1", 200).unwrap(),
         "SUSPECT_SUPERSEDED_KEY",
@@ -280,7 +311,10 @@ fn reg_keyfile_permissions_enforced() {
     let path = tmp.path().join("k.key");
     let kp = OperatorKeyPair::generate();
     kp.save_to_file(&path).unwrap();
-    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+        0
+    );
 
     let mut perms = std::fs::metadata(&path).unwrap().permissions();
     perms.set_mode(0o644);
@@ -339,7 +373,9 @@ fn reg_mmc_layering_production_owns_vocabulary() {
     // inverted dependency can never silently return.
     let manifest = include_str!("../../dc-mmc/Cargo.toml");
     assert!(
-        !manifest.lines().any(|l| l.trim_start().starts_with("dc-testkit")),
+        !manifest
+            .lines()
+            .any(|l| l.trim_start().starts_with("dc-testkit")),
         "dc-mmc must never depend on dc-testkit"
     );
 }
@@ -368,7 +404,11 @@ fn reg_journal_first_record_must_be_header() {
     let err = JournalReader::read_and_verify_chain(&p).unwrap_err();
     let msg = format!("{:?}", err);
     assert!(msg.contains("FIRST_RECORD_NOT_HEADER"), "got: {}", msg);
-    let _ = JournalRecord::Armed { overrides: vec![], locks_held: vec![], at: String::new() };
+    let _ = JournalRecord::Armed {
+        overrides: vec![],
+        locks_held: vec![],
+        at: String::new(),
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -378,14 +418,20 @@ fn reg_journal_first_record_must_be_header() {
 #[test]
 fn reg_check_nonexistent_target_is_guardian_refusal_exit_2() {
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-    cmd.arg("check").arg("--target").arg("/nonexistent/device/xyz");
+    cmd.arg("check")
+        .arg("--target")
+        .arg("/nonexistent/device/xyz");
     cmd.assert().code(2);
 }
 
 #[test]
 fn reg_execute_non_tty_without_confirm_refused_exit_2() {
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-    cmd.arg("execute").arg("--target").arg("/dev/null").arg("--profile").arg("clear-zero");
+    cmd.arg("execute")
+        .arg("--target")
+        .arg("/dev/null")
+        .arg("--profile")
+        .arg("clear-zero");
     // No --serial-confirm, non-TTY stdin: must refuse BEFORE probing.
     cmd.assert().code(2);
 }

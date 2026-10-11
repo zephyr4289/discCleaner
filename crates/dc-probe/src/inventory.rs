@@ -1,4 +1,4 @@
-use dc_core::{BusType, DeviceIdentity, DcError, GuardianRefusal, KernelIdentity, StableIdentity};
+use dc_core::{BusType, DcError, DeviceIdentity, GuardianRefusal, KernelIdentity, StableIdentity};
 use std::fs::{self, File};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
@@ -237,6 +237,9 @@ impl InventoryScanner {
     }
 
     pub fn read_trimmed_string(path: &Path) -> Option<String> {
-        fs::read_to_string(path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 }

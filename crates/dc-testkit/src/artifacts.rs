@@ -48,7 +48,7 @@ impl ArtifactsDumper {
 
             // First 4K
             if f.read_exact(&mut buf_4k).is_ok() {
-                let _ = fs::write(bundle_dir.join("backing_first_4k.bin"), &buf_4k);
+                let _ = fs::write(bundle_dir.join("backing_first_4k.bin"), buf_4k);
             }
 
             // Last 4K
@@ -56,7 +56,7 @@ impl ArtifactsDumper {
                 if len >= 4096 {
                     let _ = f.seek(SeekFrom::Start(len - 4096));
                     if f.read_exact(&mut buf_4k).is_ok() {
-                        let _ = fs::write(bundle_dir.join("backing_last_4k.bin"), &buf_4k);
+                        let _ = fs::write(bundle_dir.join("backing_last_4k.bin"), buf_4k);
                     }
                 }
             }
@@ -69,7 +69,7 @@ impl ArtifactsDumper {
                 if f.read_exact(&mut buf_mismatch).is_ok() {
                     let _ = fs::write(
                         bundle_dir.join(format!("backing_mismatch_at_{}.bin", off)),
-                        &buf_mismatch,
+                        buf_mismatch,
                     );
                 }
             }

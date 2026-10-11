@@ -29,7 +29,7 @@ impl CleanroomPRNG {
         window_bytes: u64,
     ) -> String {
         let mut hasher = blake3::Hasher::new();
-        let total_windows = (total_size_bytes + window_bytes - 1) / window_bytes;
+        let total_windows = total_size_bytes.div_ceil(window_bytes);
 
         let mut buf = vec![0u8; window_bytes as usize];
 
@@ -102,7 +102,8 @@ impl CleanroomPRNG {
             ));
         }
 
-        let seed_bytes = hex::decode(&recipe.seed).map_err(|e| format!("Invalid seed hex: {}", e))?;
+        let seed_bytes =
+            hex::decode(&recipe.seed).map_err(|e| format!("Invalid seed hex: {}", e))?;
         if seed_bytes.len() != 32 {
             return Err("Invalid seed length (must be 32 bytes)".to_string());
         }
@@ -110,11 +111,8 @@ impl CleanroomPRNG {
         let mut seed = [0u8; 32];
         seed.copy_from_slice(&seed_bytes);
 
-        let calculated_hash = Self::compute_stream_digest(
-            &seed,
-            recipe.device_bytes,
-            recipe.window_bytes,
-        );
+        let calculated_hash =
+            Self::compute_stream_digest(&seed, recipe.device_bytes, recipe.window_bytes);
 
         if calculated_hash == recipe.stream_hash_blake3 {
             Ok(true)
@@ -151,7 +149,9 @@ impl CleanroomPRNG {
         let mut seed_hex: Option<String> = None;
         let mut scheme: Option<String> = None;
         for p in passes {
-            let pat = p.get("pattern").ok_or("PASS_MISSING_PATTERN: pass has no pattern object")?;
+            let pat = p
+                .get("pattern")
+                .ok_or("PASS_MISSING_PATTERN: pass has no pattern object")?;
             if pat.get("type").and_then(|v| v.as_str()) == Some("deterministic_random") {
                 seed_hex = Some(
                     pat.get("seed")
@@ -173,7 +173,8 @@ impl CleanroomPRNG {
             return Err(format!("UNKNOWN_SCHEME: {}", scheme));
         }
 
-        let seed_hex = seed_hex.ok_or("NO_DETERMINISTIC_RANDOM_PASS: no reproducible pass in plan")?;
+        let seed_hex =
+            seed_hex.ok_or("NO_DETERMINISTIC_RANDOM_PASS: no reproducible pass in plan")?;
         let seed_bytes = hex::decode(&seed_hex)
             .map_err(|e| format!("Invalid seed hex in certificate: {}", e))?;
         if seed_bytes.len() != 32 {

@@ -53,9 +53,7 @@ impl UringEngine {
             let mut p: [u8; 128] = [0u8; 128];
             let ret = unsafe { libc::syscall(sys_setup, 0, p.as_mut_ptr()) };
             if ret < 0 {
-                let errno = std::io::Error::last_os_error()
-                    .raw_os_error()
-                    .unwrap_or(0);
+                let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                 errno == libc::EINVAL
             } else {
                 unsafe { libc::close(ret as i32) };

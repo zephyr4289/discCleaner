@@ -1,7 +1,7 @@
 use assert_cmd::Command;
 use dc_testkit::{
-    ArtifactsDumper, CertOracle, DioProbe, EnvironmentFingerprint, Janitor,
-    JournalOracle, LoopDevice, SentinelManager,
+    ArtifactsDumper, CertOracle, DioProbe, EnvironmentFingerprint, Janitor, JournalOracle,
+    LoopDevice, SentinelManager,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,9 @@ fn is_root() -> bool {
 #[test]
 fn test_t1_zero_trust_matrix() {
     if !is_root() {
-        eprintln!("[SKIP] T1 integration test requires root privileges (EUID 0) to attach loop devices.");
+        eprintln!(
+            "[SKIP] T1 integration test requires root privileges (EUID 0) to attach loop devices."
+        );
         return;
     }
 
@@ -29,7 +31,10 @@ fn test_t1_zero_trust_matrix() {
         }
     };
 
-    println!("[+] Verified scratch directory with real O_DIRECT: {}", scratch_dir.display());
+    println!(
+        "[+] Verified scratch directory with real O_DIRECT: {}",
+        scratch_dir.display()
+    );
 
     // Clean prior runs
     let reclaimed = Janitor::sweep_leaked_loops(&scratch_dir);
@@ -91,7 +96,10 @@ fn run_t1_cell(
     engine: &str,
     no_write_zeroes: bool,
 ) {
-    println!("\n[>>> RUNNING CELL: {} (Size: {} B, LBS: {} B, Engine: {}) <<<]", cell_name, size_bytes, lbs, engine);
+    println!(
+        "\n[>>> RUNNING CELL: {} (Size: {} B, LBS: {} B, Engine: {}) <<<]",
+        cell_name, size_bytes, lbs, engine
+    );
 
     let test_run_dir = scratch_dir.join(format!("t1_run_{}_{}", cell_name, std::process::id()));
     let _ = fs::create_dir_all(&test_run_dir);
@@ -106,7 +114,10 @@ fn run_t1_cell(
     let loop_dev = LoopDevice::create_and_attach(&backing_path, size_bytes, lbs)
         .unwrap_or_else(|e| panic!("[A6-ATTACH] {}", e));
 
-    println!("  [+] Attached loop device: {}", loop_dev.dev_path.display());
+    println!(
+        "  [+] Attached loop device: {}",
+        loop_dev.dev_path.display()
+    );
 
     // Phase A8: Sentinel pre-check through loop
     SentinelManager::verify_sentinel_pre_check(&loop_dev.dev_path, size_bytes)
@@ -174,19 +185,34 @@ fn run_t1_cell(
     }
 
     // Phase C1: Journal Oracle
-    let total_windows = (size_bytes + (2 * 1024 * 1024) - 1) / (2 * 1024 * 1024);
-    let journal_path = find_single_file_with_ext(&out_dir, "dcj")
-        .unwrap_or_else(|| panic!("[C1-JOURNAL] Journal file not found in {}", out_dir.display()));
+    let total_windows = size_bytes.div_ceil(2 * 1024 * 1024);
+    let journal_path = find_single_file_with_ext(&out_dir, "dcj").unwrap_or_else(|| {
+        panic!(
+            "[C1-JOURNAL] Journal file not found in {}",
+            out_dir.display()
+        )
+    });
 
     let journal_report = JournalOracle::parse_and_validate(&journal_path, total_windows)
         .unwrap_or_else(|e| {
-            let dump = ArtifactsDumper::dump_failure_bundle(cell_name, &test_run_dir, &backing_path, &stdout, &stderr, None);
+            let dump = ArtifactsDumper::dump_failure_bundle(
+                cell_name,
+                &test_run_dir,
+                &backing_path,
+                &stdout,
+                &stderr,
+                None,
+            );
             panic!("[C1-CHAIN] {} (Dump: {})", e, dump.display())
         });
 
     // Phase C2: Cert Oracle
-    let cert_path = find_single_file_with_ext(&out_dir, "json")
-        .unwrap_or_else(|| panic!("[C2-CERT] Certificate file not found in {}", out_dir.display()));
+    let cert_path = find_single_file_with_ext(&out_dir, "json").unwrap_or_else(|| {
+        panic!(
+            "[C2-CERT] Certificate file not found in {}",
+            out_dir.display()
+        )
+    });
 
     let cert_report = CertOracle::parse_and_validate(
         &cert_path,
@@ -194,14 +220,28 @@ fn run_t1_cell(
         loop_dev.write_zeroes_max_bytes,
     )
     .unwrap_or_else(|e| {
-        let dump = ArtifactsDumper::dump_failure_bundle(cell_name, &test_run_dir, &backing_path, &stdout, &stderr, None);
+        let dump = ArtifactsDumper::dump_failure_bundle(
+            cell_name,
+            &test_run_dir,
+            &backing_path,
+            &stdout,
+            &stderr,
+            None,
+        );
         panic!("[C2-CERT] {} (Dump: {})", e, dump.display())
     });
 
     // Phase C3: Media Oracle (Sequential O_DIRECT of backing file)
     let media_result = SentinelManager::verify_zero_media_oracle(&backing_path, size_bytes)
         .unwrap_or_else(|e| {
-            let dump = ArtifactsDumper::dump_failure_bundle(cell_name, &test_run_dir, &backing_path, &stdout, &stderr, None);
+            let dump = ArtifactsDumper::dump_failure_bundle(
+                cell_name,
+                &test_run_dir,
+                &backing_path,
+                &stdout,
+                &stderr,
+                None,
+            );
             panic!("[C3-MEDIA] {} (Dump: {})", e, dump.display())
         });
 
@@ -233,13 +273,24 @@ fn run_t1_cell(
     );
 
     // Phase C4: Dual-view cross-check
-    SentinelManager::verify_dual_view_cross_check(&loop_dev.dev_path, size_bytes)
-        .unwrap_or_else(|e| {
-            let dump = ArtifactsDumper::dump_failure_bundle(cell_name, &test_run_dir, &backing_path, &stdout, &stderr, None);
+    SentinelManager::verify_dual_view_cross_check(&loop_dev.dev_path, size_bytes).unwrap_or_else(
+        |e| {
+            let dump = ArtifactsDumper::dump_failure_bundle(
+                cell_name,
+                &test_run_dir,
+                &backing_path,
+                &stdout,
+                &stderr,
+                None,
+            );
             panic!("[C4-VIEW] {} (Dump: {})", e, dump.display())
-        });
+        },
+    );
 
-    println!("  [✓] Cell {} PASSED: All 16 Kill-Obligations Satisfied.", cell_name);
+    println!(
+        "  [✓] Cell {} PASSED: All 16 Kill-Obligations Satisfied.",
+        cell_name
+    );
 }
 
 fn run_negative_tests(scratch_dir: &Path) {

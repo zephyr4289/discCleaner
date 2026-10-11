@@ -44,10 +44,12 @@ impl JournalForge {
             }
 
             let mut body_bytes = vec![0u8; len];
-            file.read_exact(&mut body_bytes).map_err(|e| e.to_string())?;
+            file.read_exact(&mut body_bytes)
+                .map_err(|e| e.to_string())?;
 
             let mut stored_hash = [0u8; 32];
-            file.read_exact(&mut stored_hash).map_err(|e| e.to_string())?;
+            file.read_exact(&mut stored_hash)
+                .map_err(|e| e.to_string())?;
 
             // Detect sealed status from record 0
             if records.is_empty() {
@@ -91,7 +93,8 @@ impl JournalForge {
         file.write_all(b"DCJ1").map_err(|e| e.to_string())?;
 
         for r in records {
-            file.write_all(&r.len.to_le_bytes()).map_err(|e| e.to_string())?;
+            file.write_all(&r.len.to_le_bytes())
+                .map_err(|e| e.to_string())?;
             file.write_all(&r.body_bytes).map_err(|e| e.to_string())?;
             file.write_all(&r.stored_hash).map_err(|e| e.to_string())?;
             if let Some(ref sig) = r.stored_sig {
@@ -111,12 +114,14 @@ impl JournalForge {
             .open(path)
             .map_err(|e| e.to_string())?;
 
-        file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| e.to_string())?;
         let mut b = [0u8; 1];
         file.read_exact(&mut b).map_err(|e| e.to_string())?;
         b[0] ^= 0xFF; // Bit-flip
 
-        file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| e.to_string())?;
         file.write_all(&b).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
         Ok(())

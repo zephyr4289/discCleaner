@@ -1,6 +1,8 @@
-pub const SPEC_NVME_BASE: &str = "NVM Express Base Specification, Revision 2.0d, §5.24 (Sanitize) & §5.15 (Get Log Page)";
+pub const SPEC_NVME_BASE: &str =
+    "NVM Express Base Specification, Revision 2.0d, §5.24 (Sanitize) & §5.15 (Get Log Page)";
 pub const SPEC_ATA8_ACS: &str = "ATA/ATAPI Command Set - 8 (ATA8-ACS), Revision 6a, §7.16 (IDENTIFY DEVICE) & §7.43 (SECURITY ERASE)";
-pub const SPEC_SPC4: &str = "SCSI Primary Commands - 4 (SPC-4), Revision 37, §6.34 (SANITIZE) & §7.2 (Sense Data)";
+pub const SPEC_SPC4: &str =
+    "SCSI Primary Commands - 4 (SPC-4), Revision 37, §6.34 (SANITIZE) & §7.2 (Sense Data)";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpecCitation {

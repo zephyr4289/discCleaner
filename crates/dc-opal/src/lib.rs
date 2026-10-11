@@ -13,10 +13,16 @@ mod unit_tests {
     #[test]
     fn psid_hash_is_stable_and_debug_never_leaks_secret() {
         let psid = PsidSecret::load_from_slice(b"0123456789ABCDEF");
-        assert_eq!(psid.compute_hash(), blake3::hash(b"0123456789ABCDEF").to_hex().to_string());
+        assert_eq!(
+            psid.compute_hash(),
+            blake3::hash(b"0123456789ABCDEF").to_hex().to_string()
+        );
         let dbg = format!("{:?}", psid);
         assert!(dbg.contains("PsidSecret(hash="));
-        assert!(!dbg.contains("0123456789ABCDEF"), "Debug must never leak the secret");
+        assert!(
+            !dbg.contains("0123456789ABCDEF"),
+            "Debug must never leak the secret"
+        );
     }
 
     #[test]

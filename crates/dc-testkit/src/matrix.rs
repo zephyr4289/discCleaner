@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BridgeClassification {
     Honest,
-    Lie { class: BridgeLieClass, detail: String },
+    Lie {
+        class: BridgeLieClass,
+        detail: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,9 +28,17 @@ pub struct BridgeMatrixLedger {
     pub entries: Vec<BridgeMatrixEntry>,
 }
 
+impl Default for BridgeMatrixLedger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BridgeMatrixLedger {
     pub fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     /// Append a new bridge characterization entry with cryptographic hash chaining (Δ296).
@@ -46,11 +57,21 @@ impl BridgeMatrixLedger {
             .entries
             .last()
             .map(|e| e.entry_hash.clone())
-            .unwrap_or_else(|| "0000000000000000000000000000000000000000000000000000000000000000".to_string());
+            .unwrap_or_else(|| {
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string()
+            });
 
         let payload = format!(
             "{}:{:#06x}:{:#06x}:{}:{}:{}:{:?}:{}:{}",
-            sequence, vid, pid, firmware, protocol, command_class, classification, evidence_bundle_hash, prev_entry_hash
+            sequence,
+            vid,
+            pid,
+            firmware,
+            protocol,
+            command_class,
+            classification,
+            evidence_bundle_hash,
+            prev_entry_hash
         );
         let entry_hash = blake3::hash(payload.as_bytes()).to_hex().to_string();
 

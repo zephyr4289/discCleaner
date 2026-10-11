@@ -16,7 +16,10 @@ fn test_t22_trust_matrix() {
     // 4. HSM-ECDSA-REFUSED: Nondeterministic ECDSA Refusal (Δ429)
     run_hsm_ecdsa_refusal_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[T22-FAIL] Trust Anchor matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[T22-FAIL] Trust Anchor matrix contains failing assertions!"
+    );
     println!("\n[=== PHASE T22 TRUST ANCHOR RIG MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -33,14 +36,32 @@ fn run_tsa_nonce_replay_tests(ledger: &RigLedger) {
     let verify_ok = TsaMock::verify_token_offline(&token, doc_hash, nonce_req, 1800000000);
     let nonce_echo_ok = verify_ok.is_ok();
     assert!(nonce_echo_ok);
-    assert!(verify_ok.clone().unwrap().contains("anchored: existed at-or-before"));
+    assert!(
+        verify_ok
+            .clone()
+            .unwrap()
+            .contains("anchored: existed at-or-before")
+    );
 
     // 2. Mismatched nonce (Replay attack!) -> Refused!
-    let verify_replay = TsaMock::verify_token_offline(&token, doc_hash, "DIFFERENT_NONCE_112233", 1800000000);
+    let verify_replay =
+        TsaMock::verify_token_offline(&token, doc_hash, "DIFFERENT_NONCE_112233", 1800000000);
     assert_eq!(verify_replay, Err("REPLAY_DETECTED_NONCE_MISMATCH"));
 
-    ledger.assert("T22-TSA", "TSA-NONCE-ECHO", "true", nonce_echo_ok.to_string(), None);
-    ledger.assert("T22-TSA", "TSA-REPLAY-REFUSED", "true", (verify_replay == Err("REPLAY_DETECTED_NONCE_MISMATCH")).to_string(), None);
+    ledger.assert(
+        "T22-TSA",
+        "TSA-NONCE-ECHO",
+        "true",
+        nonce_echo_ok.to_string(),
+        None,
+    );
+    ledger.assert(
+        "T22-TSA",
+        "TSA-REPLAY-REFUSED",
+        "true",
+        (verify_replay == Err("REPLAY_DETECTED_NONCE_MISMATCH")).to_string(),
+        None,
+    );
 }
 
 fn run_tsa_historical_validity_tests(ledger: &RigLedger) {
@@ -63,8 +84,20 @@ fn run_tsa_historical_validity_tests(ledger: &RigLedger) {
     let verify_expired = TsaMock::verify_token_offline(&token_late, doc_hash, nonce, 1800000000);
     assert_eq!(verify_expired, Err("ROOT_EXPIRED_PRIOR_TO_TOKEN_ISSUANCE"));
 
-    ledger.assert("T22-HIST", "TSA-HISTORICAL-VALID", "true", verify_historical.is_ok().to_string(), None);
-    ledger.assert("T22-HIST", "TSA-HISTORICAL-EXPIRED", "true", (verify_expired == Err("ROOT_EXPIRED_PRIOR_TO_TOKEN_ISSUANCE")).to_string(), None);
+    ledger.assert(
+        "T22-HIST",
+        "TSA-HISTORICAL-VALID",
+        "true",
+        verify_historical.is_ok().to_string(),
+        None,
+    );
+    ledger.assert(
+        "T22-HIST",
+        "TSA-HISTORICAL-EXPIRED",
+        "true",
+        (verify_expired == Err("ROOT_EXPIRED_PRIOR_TO_TOKEN_ISSUANCE")).to_string(),
+        None,
+    );
 }
 
 fn run_hsm_signing_tests(ledger: &RigLedger) {
@@ -77,13 +110,22 @@ fn run_hsm_signing_tests(ledger: &RigLedger) {
     let sig_2 = hsm.sign_canonical(doc_bytes, "123456").unwrap();
 
     // Deterministic Ed25519 (RFC 8032) -> identical signatures across sessions!
-    assert_eq!(sig_1, sig_2, "Ed25519 hardware signatures must be byte-identical (PROJ-IDENTITY)!");
+    assert_eq!(
+        sig_1, sig_2,
+        "Ed25519 hardware signatures must be byte-identical (PROJ-IDENTITY)!"
+    );
 
     // Wrong PIN -> Rejected
     let wrong_pin_res = hsm.sign_canonical(doc_bytes, "999999");
     assert_eq!(wrong_pin_res, Err("PIN_REJECTED"));
 
-    ledger.assert("T22-HSM", "HSM-ED25519-DETERMINISTIC", "true", (sig_1 == sig_2).to_string(), None);
+    ledger.assert(
+        "T22-HSM",
+        "HSM-ED25519-DETERMINISTIC",
+        "true",
+        (sig_1 == sig_2).to_string(),
+        None,
+    );
 }
 
 fn run_hsm_ecdsa_refusal_tests(ledger: &RigLedger) {
@@ -95,5 +137,11 @@ fn run_hsm_ecdsa_refusal_tests(ledger: &RigLedger) {
     let res = hsm_ecdsa.sign_canonical(doc_bytes, "123456");
     assert_eq!(res, Err("ECDSA_NONDETERMINISTIC_SIGNATURES_REFUSED"));
 
-    ledger.assert("T22-HSM", "HSM-ECDSA-REFUSED", "true", (res == Err("ECDSA_NONDETERMINISTIC_SIGNATURES_REFUSED")).to_string(), None);
+    ledger.assert(
+        "T22-HSM",
+        "HSM-ECDSA-REFUSED",
+        "true",
+        (res == Err("ECDSA_NONDETERMINISTIC_SIGNATURES_REFUSED")).to_string(),
+        None,
+    );
 }

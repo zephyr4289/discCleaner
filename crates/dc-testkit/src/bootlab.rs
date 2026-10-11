@@ -79,7 +79,8 @@ impl BootLabMock {
     pub fn generate_environment_provenance(&self) -> EnvironmentProvenance {
         EnvironmentProvenance {
             kernel_version: "Linux 6.6.21-dc-rt".to_string(),
-            initramfs_build_hash: "a4f8e1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab".to_string(),
+            initramfs_build_hash:
+                "a4f8e1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab".to_string(),
             boot_medium_serial: self.boot_medium_serial.clone(),
             owns_the_box: self.owns_the_box,
             entropy_source: "getrandom/virtio-rng".to_string(),

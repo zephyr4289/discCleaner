@@ -4,8 +4,7 @@ pub mod transport;
 
 pub use permit::PurgePermit;
 pub use purge::{
-    CompletionEvidence, MechanismFallback, NvmePurgeClient, PurgeExecutionSummary,
-    PurgeMechanism,
+    CompletionEvidence, MechanismFallback, NvmePurgeClient, PurgeExecutionSummary, PurgeMechanism,
 };
 pub use transport::{ErrnoClassifier, IoctlTaxonomy, NvmeAdminTransport};
 
@@ -21,11 +20,12 @@ mod unit_tests {
     impl NvmeAdminTransport for TerminalTransport {
         fn admin_passthrough(&mut self, cmd: &[u8; 64]) -> Result<Vec<u8>, IoctlTaxonomy> {
             match cmd[0] {
-                0x84 => Ok(vec![]),              // Sanitize accepted
-                0x02 => {                        // Get Log Page 0x81
+                0x84 => Ok(vec![]), // Sanitize accepted
+                0x02 => {
+                    // Get Log Page 0x81
                     let mut log = vec![0u8; 512];
                     log[0..2].copy_from_slice(&65535u16.to_le_bytes()); // SPROG full
-                    log[2..4].copy_from_slice(&1u16.to_le_bytes());     // SSTAT completed
+                    log[2..4].copy_from_slice(&1u16.to_le_bytes()); // SSTAT completed
                     Ok(log)
                 }
                 _ => Ok(vec![]),
@@ -68,11 +68,26 @@ mod unit_tests {
 
     #[test]
     fn errno_taxonomy_maps_kernel_errnos() {
-        assert!(matches!(ErrnoClassifier::classify(0), IoctlTaxonomy::Success));
-        assert!(matches!(ErrnoClassifier::classify(libc::EIO), IoctlTaxonomy::ControllerRejected { .. }));
-        assert!(matches!(ErrnoClassifier::classify(libc::EFAULT), IoctlTaxonomy::OurBug { .. }));
-        assert!(matches!(ErrnoClassifier::classify(libc::ETIMEDOUT), IoctlTaxonomy::TimeoutAmbiguous { .. }));
-        assert!(matches!(ErrnoClassifier::classify(libc::ENOSYS), IoctlTaxonomy::UnmappedLoud { .. }));
+        assert!(matches!(
+            ErrnoClassifier::classify(0),
+            IoctlTaxonomy::Success
+        ));
+        assert!(matches!(
+            ErrnoClassifier::classify(libc::EIO),
+            IoctlTaxonomy::ControllerRejected { .. }
+        ));
+        assert!(matches!(
+            ErrnoClassifier::classify(libc::EFAULT),
+            IoctlTaxonomy::OurBug { .. }
+        ));
+        assert!(matches!(
+            ErrnoClassifier::classify(libc::ETIMEDOUT),
+            IoctlTaxonomy::TimeoutAmbiguous { .. }
+        ));
+        assert!(matches!(
+            ErrnoClassifier::classify(libc::ENOSYS),
+            IoctlTaxonomy::UnmappedLoud { .. }
+        ));
     }
 
     #[test]
@@ -96,17 +111,23 @@ mod unit_tests {
             .unwrap();
         assert!(summary.status.is_completed);
         assert_eq!(summary.fallbacks.len(), 0);
-        assert_eq!(summary.completion_evidence(), CompletionEvidence::SanitizeStatusLog);
+        assert_eq!(
+            summary.completion_evidence(),
+            CompletionEvidence::SanitizeStatusLog
+        );
     }
 
     #[test]
     fn ladder_falls_back_on_controller_rejection() {
         let mut t = RejectAllSanitize;
-        let mut client = NvmePurgeClient::new(&mut t)
-            .with_poll_budget(2, Duration::from_millis(0));
+        let mut client = NvmePurgeClient::new(&mut t).with_poll_budget(2, Duration::from_millis(0));
         let res = client.execute_purge_ladder(&permit(), PurgeMechanism::SanitizeCryptoErase);
         let err = res.unwrap_err();
-        assert!(err.contains("LOGICAL_OVERWRITE_NOT_ADMIN_EXECUTABLE"), "got: {}", err);
+        assert!(
+            err.contains("LOGICAL_OVERWRITE_NOT_ADMIN_EXECUTABLE"),
+            "got: {}",
+            err
+        );
     }
 
     #[test]

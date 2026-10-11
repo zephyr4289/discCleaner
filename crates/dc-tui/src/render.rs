@@ -44,7 +44,11 @@ impl TuiRenderer {
             PhaseView::Writing { .. } => {
                 // Write phase MUST NOT render stream hash or entropy! (Δ461)
             }
-            PhaseView::Verifying { checked_windows, entropy, .. } => {
+            PhaseView::Verifying {
+                checked_windows,
+                entropy,
+                ..
+            } => {
                 verified_windows = *checked_windows;
                 // Neutral diagnostic rendering (Δ461, Δ465)
                 verify_entropy_line = Some(format!(
@@ -52,7 +56,10 @@ impl TuiRenderer {
                     checked_windows, entropy
                 ));
             }
-            PhaseView::Complete { stream_hash, duration_ms } => {
+            PhaseView::Complete {
+                stream_hash,
+                duration_ms,
+            } => {
                 verified_windows = state.total_windows;
                 stream_hash_line = Some(format!(
                     "STREAM DIGEST: BLAKE3:{} (completed in {}ms)",
@@ -72,10 +79,26 @@ impl TuiRenderer {
         let heatmap_summary = format!(
             "HEATMAP: {} cells (Verified: {}, Mixed: {}, Failed: {}, Pending: {})",
             heatmap.total_cells,
-            heatmap.cells.iter().filter(|&&c| c == crate::heatmap::HeatmapCellState::Verified).count(),
-            heatmap.cells.iter().filter(|&&c| c == crate::heatmap::HeatmapCellState::Mixed).count(),
-            heatmap.cells.iter().filter(|&&c| c == crate::heatmap::HeatmapCellState::Failed).count(),
-            heatmap.cells.iter().filter(|&&c| c == crate::heatmap::HeatmapCellState::Pending).count(),
+            heatmap
+                .cells
+                .iter()
+                .filter(|&&c| c == crate::heatmap::HeatmapCellState::Verified)
+                .count(),
+            heatmap
+                .cells
+                .iter()
+                .filter(|&&c| c == crate::heatmap::HeatmapCellState::Mixed)
+                .count(),
+            heatmap
+                .cells
+                .iter()
+                .filter(|&&c| c == crate::heatmap::HeatmapCellState::Failed)
+                .count(),
+            heatmap
+                .cells
+                .iter()
+                .filter(|&&c| c == crate::heatmap::HeatmapCellState::Pending)
+                .count(),
         );
 
         RenderedFrame {

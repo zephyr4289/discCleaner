@@ -1,7 +1,5 @@
 use assert_cmd::Command;
-use dc_testkit::{
-    DioProbe, Janitor, JournalOracle, LoopDevice, SentinelManager, Signals,
-};
+use dc_testkit::{DioProbe, Janitor, JournalOracle, LoopDevice, SentinelManager, Signals};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -56,8 +54,14 @@ fn run_f0_prelude(scratch_dir: &Path) {
     // Check census on current test process
     let current_pid = std::process::id();
     let census = Signals::census(current_pid).expect("Census must read current process");
-    assert!(!census.is_empty(), "SigBlk census must return at least one thread");
-    println!("  [✓] M-MASKS: /proc/<pid>/task/*/status SigBlk census functional across {} threads.", census.len());
+    assert!(
+        !census.is_empty(),
+        "SigBlk census must return at least one thread"
+    );
+    println!(
+        "  [✓] M-MASKS: /proc/<pid>/task/*/status SigBlk census functional across {} threads.",
+        census.len()
+    );
 }
 
 fn run_f1_boundary_lattice(scratch_dir: &Path) {
@@ -78,16 +82,23 @@ fn run_f1_boundary_lattice(scratch_dir: &Path) {
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
         cmd.env("DC_SIGNAL_AT", "pre-arm")
             .arg("execute")
-            .arg("--target").arg(&loop_dev.dev_path)
-            .arg("--profile").arg("clear-zero")
-            .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
+            .arg("--profile")
+            .arg("clear-zero")
+            .arg("--serial-confirm")
+            .arg(format!("loop{}", loop_dev.minor))
             .arg("--allow-loop")
-            .arg("--out-dir").arg(&out_dir)
+            .arg("--out-dir")
+            .arg(&out_dir)
             .arg("--no-progress");
 
         cmd.assert().code(3);
         let journals = find_all_files_with_ext(&out_dir, "dcj");
-        assert!(journals.is_empty(), "[B-PREARM] Journal must NOT be created on pre-arm interrupt!");
+        assert!(
+            journals.is_empty(),
+            "[B-PREARM] Journal must NOT be created on pre-arm interrupt!"
+        );
         println!("  [✓] B-PREARM: Pre-arm interrupt exited with code 3 and created no journal.");
     }
 
@@ -103,16 +114,23 @@ fn run_f1_boundary_lattice(scratch_dir: &Path) {
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
         cmd.env("DC_SIGNAL_AT", "prompt-wait")
             .arg("execute")
-            .arg("--target").arg(&loop_dev.dev_path)
-            .arg("--profile").arg("clear-zero")
-            .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
+            .arg("--profile")
+            .arg("clear-zero")
+            .arg("--serial-confirm")
+            .arg(format!("loop{}", loop_dev.minor))
             .arg("--allow-loop")
-            .arg("--out-dir").arg(&out_dir)
+            .arg("--out-dir")
+            .arg(&out_dir)
             .arg("--no-progress");
 
         cmd.assert().code(3);
         let journals = find_all_files_with_ext(&out_dir, "dcj");
-        assert!(journals.is_empty(), "[B-PROMPT] Journal must NOT be created on prompt interrupt!");
+        assert!(
+            journals.is_empty(),
+            "[B-PROMPT] Journal must NOT be created on prompt interrupt!"
+        );
         println!("  [✓] B-PROMPT: Confirmation prompt interrupt exited with code 3 cleanly.");
     }
 
@@ -128,11 +146,15 @@ fn run_f1_boundary_lattice(scratch_dir: &Path) {
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
         cmd.env("DC_SIGNAL_AT", "commit-write:1")
             .arg("execute")
-            .arg("--target").arg(&loop_dev.dev_path)
-            .arg("--profile").arg("clear-zero")
-            .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
+            .arg("--profile")
+            .arg("clear-zero")
+            .arg("--serial-confirm")
+            .arg(format!("loop{}", loop_dev.minor))
             .arg("--allow-loop")
-            .arg("--out-dir").arg(&out_dir)
+            .arg("--out-dir")
+            .arg(&out_dir)
             .arg("--no-progress");
 
         cmd.assert().code(3);
@@ -140,8 +162,13 @@ fn run_f1_boundary_lattice(scratch_dir: &Path) {
 
         // Independent oracle parse: zero torn tail bytes under voluntary death (Δ83)
         let rep = JournalOracle::audit(&journal_path, 64 * 1024 * 1024, 2 * 1024 * 1024).unwrap();
-        assert_eq!(rep.discarded_tail_bytes, 0, "[B-NOTORN] Voluntary interrupt must leave ZERO torn bytes!");
-        println!("  [✓] B-COMMIT / B-CPEQ: Voluntary interrupt left zero torn bytes and clean terminal record.");
+        assert_eq!(
+            rep.discarded_tail_bytes, 0,
+            "[B-NOTORN] Voluntary interrupt must leave ZERO torn bytes!"
+        );
+        println!(
+            "  [✓] B-COMMIT / B-CPEQ: Voluntary interrupt left zero torn bytes and clean terminal record."
+        );
     }
 
     // 4. B-VICTORY: Signal arriving after verify -> MUST EXIT 0 under Victory-Lap Rule (Δ83)
@@ -156,16 +183,23 @@ fn run_f1_boundary_lattice(scratch_dir: &Path) {
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
         cmd.env("DC_SIGNAL_AT", "post-verify")
             .arg("execute")
-            .arg("--target").arg(&loop_dev.dev_path)
-            .arg("--profile").arg("clear-zero")
-            .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+            .arg("--target")
+            .arg(&loop_dev.dev_path)
+            .arg("--profile")
+            .arg("clear-zero")
+            .arg("--serial-confirm")
+            .arg(format!("loop{}", loop_dev.minor))
             .arg("--allow-loop")
-            .arg("--out-dir").arg(&out_dir)
+            .arg("--out-dir")
+            .arg(&out_dir)
             .arg("--no-progress");
 
         cmd.assert().code(0);
         let cert_path = find_single_file_with_ext(&out_dir, "cert.json");
-        assert!(cert_path.is_some(), "[B-VICTORY] Post-verify signal must complete and issue certificate!");
+        assert!(
+            cert_path.is_some(),
+            "[B-VICTORY] Post-verify signal must complete and issue certificate!"
+        );
         println!("  [✓] B-VICTORY: Victory-lap rule successfully completed wipe with exit code 0.");
     }
 }
@@ -186,11 +220,15 @@ fn run_f2_external_delivery(scratch_dir: &Path) {
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
     cmd.env("DC_SIGNAL_AT", "commit-write:1")
         .arg("execute")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--profile").arg("clear-zero")
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--profile")
+        .arg("clear-zero")
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
 
     cmd.assert().code(3);
@@ -198,7 +236,9 @@ fn run_f2_external_delivery(scratch_dir: &Path) {
 }
 
 fn run_f5_multi_epoch_loop(scratch_dir: &Path) {
-    println!("\n[>>> F5: Testing Multi-Epoch Loop (execute -> interrupt -> resume -> complete) <<<]");
+    println!(
+        "\n[>>> F5: Testing Multi-Epoch Loop (execute -> interrupt -> resume -> complete) <<<]"
+    );
     let run_dir = scratch_dir.join(format!("t11_loop_{}", std::process::id()));
     let _ = fs::create_dir_all(&run_dir);
 
@@ -213,11 +253,15 @@ fn run_f5_multi_epoch_loop(scratch_dir: &Path) {
     let mut cmd1 = Command::cargo_bin("diskcleaner").unwrap();
     cmd1.env("DC_SIGNAL_AT", "commit-write:1")
         .arg("execute")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--profile").arg("clear-zero")
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--profile")
+        .arg("clear-zero")
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
     cmd1.assert().code(3);
 
@@ -225,15 +269,21 @@ fn run_f5_multi_epoch_loop(scratch_dir: &Path) {
 
     // 2. Resume and complete
     let mut resume_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    resume_cmd.arg("resume")
-        .arg("--journal").arg(&journal_path)
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+    resume_cmd
+        .arg("resume")
+        .arg("--journal")
+        .arg(&journal_path)
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
     resume_cmd.assert().code(0);
 
-    println!("  [✓] L-LOOP: Execute -> Interrupt -> Resume loop completed successfully with exit code 0.");
+    println!(
+        "  [✓] L-LOOP: Execute -> Interrupt -> Resume loop completed successfully with exit code 0."
+    );
 }
 
 fn find_single_file_with_ext(dir: &Path, ext: &str) -> Option<PathBuf> {
@@ -254,10 +304,10 @@ fn find_all_files_with_ext(dir: &Path, ext: &str) -> Vec<PathBuf> {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let p = entry.path();
-            if let Some(name) = p.file_name() {
-                if name.to_string_lossy().ends_with(ext) {
-                    out.push(p);
-                }
+            if let Some(name) = p.file_name()
+                && name.to_string_lossy().ends_with(ext)
+            {
+                out.push(p);
             }
         }
     }

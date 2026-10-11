@@ -92,6 +92,10 @@ mod unit_tests {
         }
         v.on_window(0, true, &buf).unwrap();
         let e = v.finalize().entropy.unwrap();
-        assert!(e.h_min > 7.0, "scattered bytes must have real entropy: {}", e.h_min);
+        assert!(
+            e.h_min > 7.0,
+            "scattered bytes must have real entropy: {}",
+            e.h_min
+        );
     }
 }

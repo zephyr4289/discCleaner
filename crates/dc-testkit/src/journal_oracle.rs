@@ -24,8 +24,12 @@ pub struct JournalOracleReport {
 
 impl JournalOracle {
     /// Independent in-test validator for DCJ1 hash chain, Ed25519 sealed signatures, and FSM Grammar v3.
-    pub fn parse_and_validate(path: &Path, _expected_total_windows: u64) -> Result<JournalOracleReport, String> {
-        let mut file = File::open(path).map_err(|e| format!("Failed to open journal {}: {}", path.display(), e))?;
+    pub fn parse_and_validate(
+        path: &Path,
+        _expected_total_windows: u64,
+    ) -> Result<JournalOracleReport, String> {
+        let mut file = File::open(path)
+            .map_err(|e| format!("Failed to open journal {}: {}", path.display(), e))?;
         let file_len = file.metadata().map_err(|e| e.to_string())?.len();
 
         let mut magic = [0u8; 4];
@@ -182,10 +186,16 @@ impl JournalOracle {
             sequence.push(rec_type.clone());
 
             if rec_type == "range_commit" {
-                let num_win = json.get("num_windows").and_then(|v| v.as_u64()).unwrap_or(0);
+                let num_win = json
+                    .get("num_windows")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 committed_windows += num_win;
             } else if rec_type == "verify" {
-                verify_mismatches = json.get("mismatch_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                verify_mismatches = json
+                    .get("mismatch_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 stream_hash = json
                     .get("stream_hash_blake3")
                     .and_then(|v| v.as_str())
@@ -196,7 +206,10 @@ impl JournalOracle {
                 last_failed = Some(json.clone());
             } else if rec_type == "resumed" {
                 resume_count += 1;
-                frontier_before_resume = json.get("from_window").and_then(|v| v.as_u64()).unwrap_or(0);
+                frontier_before_resume = json
+                    .get("from_window")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
             }
 
             prev_hash = stored_hash;
@@ -247,7 +260,10 @@ impl JournalOracle {
         }
 
         if sequence.first().map(|s| s.as_str()) != Some("header") {
-            return Err(format!("First record must be header, found {:?}", sequence.first()));
+            return Err(format!(
+                "First record must be header, found {:?}",
+                sequence.first()
+            ));
         }
 
         for i in 0..sequence.len().saturating_sub(1) {
@@ -263,22 +279,37 @@ impl JournalOracle {
                     "header" => next == "armed",
                     "armed" => next == "begin_pass" || next == "resumed" || next == "armed",
                     "begin_pass" => {
-                        next == "range_commit" || next == "failed" || next == "end_pass" || next == "armed"
+                        next == "range_commit"
+                            || next == "failed"
+                            || next == "end_pass"
+                            || next == "armed"
                     }
                     "range_commit" => {
-                        next == "range_commit" || next == "failed" || next == "end_pass" || next == "armed"
+                        next == "range_commit"
+                            || next == "failed"
+                            || next == "end_pass"
+                            || next == "armed"
                     }
                     "failed" => next == "armed",
                     "interrupted" => next == "armed",
                     "resumed" => {
-                        next == "range_commit" || next == "end_pass" || next == "verify"
-                            || next == "failed" || next == "begin_pass"
+                        next == "range_commit"
+                            || next == "end_pass"
+                            || next == "verify"
+                            || next == "failed"
+                            || next == "begin_pass"
                     }
                     "end_pass" => {
-                        next == "flushed" || next == "begin_pass" || next == "failed" || next == "armed"
+                        next == "flushed"
+                            || next == "begin_pass"
+                            || next == "failed"
+                            || next == "armed"
                     }
                     "flushed" => {
-                        next == "verify" || next == "begin_pass" || next == "failed" || next == "armed"
+                        next == "verify"
+                            || next == "begin_pass"
+                            || next == "failed"
+                            || next == "armed"
                     }
                     "verify" => next == "completed" || next == "failed" || next == "armed",
                     "completed" | "aborted" => false,

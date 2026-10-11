@@ -8,7 +8,7 @@ pub mod layer_stack;
 pub mod sniff;
 
 pub use bootfacts::{BootAttestation, BootAttestor, ReadOnlyCandidate};
-pub use classify::{classify_pure, BlockTree, DeviceNode};
+pub use classify::{BlockTree, DeviceNode, classify_pure};
 pub use graph::{BlockGraph, DangerHop, DangerPath, WalkOutcome};
 pub use guardian::{Guardian, GuardianFlags, GuardianLockHandle};
 pub use identity::{IdentityComparator, IdentityComparison};
@@ -49,10 +49,33 @@ mod unit_tests {
     fn partition_name_matrix_separates_disks_from_partitions() {
         // REG-PARTITION-NAME: "loop0" is a WHOLE DISK (the 'p' inside "loop"
         // is part of the driver name, not a partition separator).
-        for disk in ["sda", "sdb", "nvme0n1", "nvme10n2", "mmcblk0", "loop0", "loop7", "zram0", "vda", "hdа".replace('а', "a").as_str()] {
-            assert!(!Guardian::is_partition_name(disk), "{} is a whole disk", disk);
+        for disk in [
+            "sda",
+            "sdb",
+            "nvme0n1",
+            "nvme10n2",
+            "mmcblk0",
+            "loop0",
+            "loop7",
+            "zram0",
+            "vda",
+            "hdа".replace('а', "a").as_str(),
+        ] {
+            assert!(
+                !Guardian::is_partition_name(disk),
+                "{} is a whole disk",
+                disk
+            );
         }
-        for part in ["sda1", "sdb12", "nvme0n1p1", "nvme0n1p12", "mmcblk0p2", "loop0p1", "vda3"] {
+        for part in [
+            "sda1",
+            "sdb12",
+            "nvme0n1p1",
+            "nvme0n1p12",
+            "mmcblk0p2",
+            "loop0p1",
+            "vda3",
+        ] {
             assert!(Guardian::is_partition_name(part), "{} is a partition", part);
         }
     }
@@ -70,14 +93,21 @@ mod unit_tests {
                 dm_name: None,
                 dm_uuid: None,
             },
-            kernel: KernelIdentity { major: 254, minor: 0 },
+            kernel: KernelIdentity {
+                major: 254,
+                minor: 0,
+            },
             kernel_name: name.to_string(),
             dev_path: format!("/dev/{}", name),
             logical_block_size: 512,
             physical_block_size: 512,
         };
 
-        for (name, code) in [("zram0", "RAM_BACKED"), ("ram1", "RAM_BACKED"), ("loop0", "LOOP")] {
+        for (name, code) in [
+            ("zram0", "RAM_BACKED"),
+            ("ram1", "RAM_BACKED"),
+            ("loop0", "LOOP"),
+        ] {
             let flags = GuardianFlags {
                 allow_system_disk: false,
                 serial_confirm: None,
@@ -85,8 +115,12 @@ mod unit_tests {
                 allow_inactive_signatures: true,
                 allow_member: true,
             };
-            let err = Guardian::evaluate(std::path::Path::new(&format!("/dev/{}", name)), &mk(name), &flags)
-                .unwrap_err();
+            let err = Guardian::evaluate(
+                std::path::Path::new(&format!("/dev/{}", name)),
+                &mk(name),
+                &flags,
+            )
+            .unwrap_err();
             match err {
                 dc_core::DcError::Guardian(ref g) => assert_eq!(g.code, code, "for {}", name),
                 other => panic!("expected Guardian refusal for {}, got {:?}", name, other),

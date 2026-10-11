@@ -27,17 +27,17 @@ impl LayerStackDetector {
             let fields: Vec<&str> = line.split_whitespace().collect();
             if fields.len() >= 5 {
                 let maj_min = fields[2];
-                if let Some((maj_str, min_str)) = maj_min.split_once(':') {
-                    if let (Ok(maj), Ok(min)) = (maj_str.parse::<u32>(), min_str.parse::<u32>()) {
-                        let mount_point = fields[4].to_string();
-                        let fs_type = fields.get(8).unwrap_or(&"unknown").to_string();
-                        list.push(MountEntry {
-                            major: maj,
-                            minor: min,
-                            mount_point,
-                            fs_type,
-                        });
-                    }
+                if let Some((maj_str, min_str)) = maj_min.split_once(':')
+                    && let (Ok(maj), Ok(min)) = (maj_str.parse::<u32>(), min_str.parse::<u32>())
+                {
+                    let mount_point = fields[4].to_string();
+                    let fs_type = fields.get(8).unwrap_or(&"unknown").to_string();
+                    list.push(MountEntry {
+                        major: maj,
+                        minor: min,
+                        mount_point,
+                        fs_type,
+                    });
                 }
             }
         }
@@ -95,19 +95,18 @@ impl LayerStackDetector {
                 let part_name = entry.file_name().to_string_lossy().to_string();
                 if part_name.starts_with(kernel_name) && part_name != kernel_name {
                     let dev_file = sys_block_dir.join(&part_name).join("dev");
-                    if let Ok(dev_str) = fs::read_to_string(dev_file) {
-                        if let Some((maj_s, min_s)) = dev_str.trim().split_once(':') {
-                            if let (Ok(p_maj), Ok(p_min)) = (maj_s.parse::<u32>(), min_s.parse::<u32>()) {
-                                for m in &all_mounts {
-                                    if m.major == p_maj && m.minor == p_min {
-                                        matching.push(MountEntry {
-                                            major: m.major,
-                                            minor: m.minor,
-                                            mount_point: m.mount_point.clone(),
-                                            fs_type: m.fs_type.clone(),
-                                        });
-                                    }
-                                }
+                    if let Ok(dev_str) = fs::read_to_string(dev_file)
+                        && let Some((maj_s, min_s)) = dev_str.trim().split_once(':')
+                        && let (Ok(p_maj), Ok(p_min)) = (maj_s.parse::<u32>(), min_s.parse::<u32>())
+                    {
+                        for m in &all_mounts {
+                            if m.major == p_maj && m.minor == p_min {
+                                matching.push(MountEntry {
+                                    major: m.major,
+                                    minor: m.minor,
+                                    mount_point: m.mount_point.clone(),
+                                    fs_type: m.fs_type.clone(),
+                                });
                             }
                         }
                     }
@@ -122,10 +121,10 @@ impl LayerStackDetector {
     pub fn is_swap_active(kernel_name: &str) -> bool {
         if let Ok(content) = fs::read_to_string("/proc/swaps") {
             for line in content.lines().skip(1) {
-                if let Some(dev) = line.split_whitespace().next() {
-                    if dev.contains(kernel_name) {
-                        return true;
-                    }
+                if let Some(dev) = line.split_whitespace().next()
+                    && dev.contains(kernel_name)
+                {
+                    return true;
                 }
             }
         }
@@ -136,10 +135,10 @@ impl LayerStackDetector {
     pub fn has_holders(kernel_name: &str) -> bool {
         let sys_block_dir = PathBuf::from(format!("/sys/block/{}", kernel_name));
         let holders_dir = sys_block_dir.join("holders");
-        if let Ok(entries) = fs::read_dir(&holders_dir) {
-            if entries.flatten().count() > 0 {
-                return true;
-            }
+        if let Ok(entries) = fs::read_dir(&holders_dir)
+            && entries.flatten().count() > 0
+        {
+            return true;
         }
 
         // Check child partitions
@@ -148,10 +147,10 @@ impl LayerStackDetector {
                 let part_name = entry.file_name().to_string_lossy().to_string();
                 if part_name.starts_with(kernel_name) && part_name != kernel_name {
                     let part_holders = sys_block_dir.join(&part_name).join("holders");
-                    if let Ok(h_entries) = fs::read_dir(&part_holders) {
-                        if h_entries.flatten().count() > 0 {
-                            return true;
-                        }
+                    if let Ok(h_entries) = fs::read_dir(&part_holders)
+                        && h_entries.flatten().count() > 0
+                    {
+                        return true;
                     }
                 }
             }
@@ -181,10 +180,10 @@ impl LayerStackDetector {
     /// Check if BLKZEROOUT / write_zeroes is supported.
     pub fn can_write_zeroes(kernel_name: &str) -> bool {
         let wz_file = format!("/sys/block/{}/queue/write_zeroes_max_bytes", kernel_name);
-        if let Ok(s) = fs::read_to_string(wz_file) {
-            if let Ok(bytes) = s.trim().parse::<u64>() {
-                return bytes > 0;
-            }
+        if let Ok(s) = fs::read_to_string(wz_file)
+            && let Ok(bytes) = s.trim().parse::<u64>()
+        {
+            return bytes > 0;
         }
         false
     }

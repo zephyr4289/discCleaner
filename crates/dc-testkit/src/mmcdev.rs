@@ -27,7 +27,10 @@ impl MmcPartitionMap {
         let is_user_wiped = matches!(self.user_area, MmcPartitionDisposition::Wiped { .. });
         let is_boot0_wiped = matches!(self.boot0, MmcPartitionDisposition::Wiped { .. });
         let is_boot1_wiped = matches!(self.boot1, MmcPartitionDisposition::Wiped { .. });
-        let is_rpmb_honest = matches!(self.rpmb, MmcPartitionDisposition::KeyProtectedInaccessible { .. });
+        let is_rpmb_honest = matches!(
+            self.rpmb,
+            MmcPartitionDisposition::KeyProtectedInaccessible { .. }
+        );
 
         if is_user_wiped && is_boot0_wiped && is_boot1_wiped && is_rpmb_honest {
             "DEVICE_PURGE_COMPLETE"
@@ -66,9 +69,15 @@ impl MmcDevMock {
             access_class,
             partition_config_byte: 0b0100_1000, // Boot ACK=1, Boot Partition 1 enabled, Access=User
             partition_map: MmcPartitionMap {
-                user_area: MmcPartitionDisposition::Wiped { mechanism: "MmcSanitize".to_string() },
-                boot0: MmcPartitionDisposition::Wiped { mechanism: "MmcSecureTrim".to_string() },
-                boot1: MmcPartitionDisposition::Wiped { mechanism: "MmcSecureTrim".to_string() },
+                user_area: MmcPartitionDisposition::Wiped {
+                    mechanism: "MmcSanitize".to_string(),
+                },
+                boot0: MmcPartitionDisposition::Wiped {
+                    mechanism: "MmcSecureTrim".to_string(),
+                },
+                boot1: MmcPartitionDisposition::Wiped {
+                    mechanism: "MmcSecureTrim".to_string(),
+                },
                 rpmb: MmcPartitionDisposition::KeyProtectedInaccessible {
                     detail: "RPMB key-protected authenticated storage (not sanitized)".to_string(),
                 },
@@ -78,9 +87,7 @@ impl MmcDevMock {
 
     /// Select physical partition target via register transaction (Δ340).
     pub fn switch_partition(&mut self, target_access_bits: u8) {
-        self.partition_config_byte = ExtCsdRegister::write_partition_config(
-            self.partition_config_byte,
-            target_access_bits,
-        );
+        self.partition_config_byte =
+            ExtCsdRegister::write_partition_config(self.partition_config_byte, target_access_bits);
     }
 }

@@ -41,7 +41,11 @@ impl StreamVerifier {
             logical_block_size: logical_block_size.max(512),
             // The hasher's presence encodes the flag; no redundant booleans.
             blake3_hasher: blake3::Hasher::new(),
-            sha256_hasher: if enable_sha256 { Some(Sha256::new()) } else { None },
+            sha256_hasher: if enable_sha256 {
+                Some(Sha256::new())
+            } else {
+                None
+            },
             entropy_calc: if enable_entropy {
                 Some(EntropyCalculator::new())
             } else {

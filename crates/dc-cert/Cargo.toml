@@ -1,6 +1,6 @@
 [package]
 name = "dc-cert"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2024"
 
 [dependencies]
@@ -19,3 +19,6 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.14"
+
+[lints]
+workspace = true

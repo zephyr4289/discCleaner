@@ -11,8 +11,13 @@ pub enum ReadbackExpectation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReadbackVerdict {
     Verified,
-    ConsistentWithErased { detail: String },
-    Failed { reason: String, signature_hit: Option<String> },
+    ConsistentWithErased {
+        detail: String,
+    },
+    Failed {
+        reason: String,
+        signature_hit: Option<String>,
+    },
 }
 
 pub struct ReadbackLab;
@@ -58,11 +63,9 @@ impl ReadbackLab {
                     detail: "No residual signatures found; pattern statistically consistent with post-crypto random state".to_string(),
                 }
             }
-            ReadbackExpectation::None => {
-                ReadbackVerdict::ConsistentWithErased {
-                    detail: "Unspecified expectation; no residual signatures found".to_string(),
-                }
-            }
+            ReadbackExpectation::None => ReadbackVerdict::ConsistentWithErased {
+                detail: "Unspecified expectation; no residual signatures found".to_string(),
+            },
         }
     }
 

@@ -3,9 +3,18 @@ use dc_core::StableIdentity;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IdentityComparison {
     Match,
-    MatchWithWarnings { absent_fields: Vec<String> },
-    Contradiction { field: String, expected: String, observed: String },
-    SizeMismatch { expected: u64, observed: u64 },
+    MatchWithWarnings {
+        absent_fields: Vec<String>,
+    },
+    Contradiction {
+        field: String,
+        expected: String,
+        observed: String,
+    },
+    SizeMismatch {
+        expected: u64,
+        observed: u64,
+    },
 }
 
 pub struct IdentityComparator;
@@ -20,25 +29,25 @@ impl IdentityComparator {
         nsid: Option<u32>,
         kernel_name: &str,
     ) -> String {
-        if let Some(ng) = nguid {
-            if !ng.is_empty() {
-                return format!("nguid:{}", ng);
-            }
+        if let Some(ng) = nguid
+            && !ng.is_empty()
+        {
+            return format!("nguid:{}", ng);
         }
-        if let Some(eui) = eui64 {
-            if !eui.is_empty() {
-                return format!("eui64:{}", eui);
-            }
+        if let Some(eui) = eui64
+            && !eui.is_empty()
+        {
+            return format!("eui64:{}", eui);
         }
-        if let (Some(sn), Some(ns)) = (serial, nsid) {
-            if !sn.is_empty() {
-                return format!("{}:n{}", sn, ns);
-            }
+        if let (Some(sn), Some(ns)) = (serial, nsid)
+            && !sn.is_empty()
+        {
+            return format!("{}:n{}", sn, ns);
         }
-        if let Some(sn) = serial {
-            if !sn.is_empty() {
-                return sn.to_string();
-            }
+        if let Some(sn) = serial
+            && !sn.is_empty()
+        {
+            return sn.to_string();
         }
         kernel_name.to_string()
     }
@@ -104,28 +113,30 @@ impl IdentityComparator {
         }
 
         // 5. DM name/UUID comparison
-        if expected.dm_name.is_some() || observed.dm_name.is_some() {
-            if expected.dm_name != observed.dm_name {
-                return IdentityComparison::Contradiction {
-                    field: "dm_name".to_string(),
-                    expected: expected.dm_name.clone().unwrap_or_default(),
-                    observed: observed.dm_name.clone().unwrap_or_default(),
-                };
-            }
+        if (expected.dm_name.is_some() || observed.dm_name.is_some())
+            && expected.dm_name != observed.dm_name
+        {
+            return IdentityComparison::Contradiction {
+                field: "dm_name".to_string(),
+                expected: expected.dm_name.clone().unwrap_or_default(),
+                observed: observed.dm_name.clone().unwrap_or_default(),
+            };
         }
 
-        if expected.dm_uuid.is_some() || observed.dm_uuid.is_some() {
-            if expected.dm_uuid != observed.dm_uuid {
-                return IdentityComparison::Contradiction {
-                    field: "dm_uuid".to_string(),
-                    expected: expected.dm_uuid.clone().unwrap_or_default(),
-                    observed: observed.dm_uuid.clone().unwrap_or_default(),
-                };
-            }
+        if (expected.dm_uuid.is_some() || observed.dm_uuid.is_some())
+            && expected.dm_uuid != observed.dm_uuid
+        {
+            return IdentityComparison::Contradiction {
+                field: "dm_uuid".to_string(),
+                expected: expected.dm_uuid.clone().unwrap_or_default(),
+                observed: observed.dm_uuid.clone().unwrap_or_default(),
+            };
         }
 
         if !absent.is_empty() {
-            IdentityComparison::MatchWithWarnings { absent_fields: absent }
+            IdentityComparison::MatchWithWarnings {
+                absent_fields: absent,
+            }
         } else {
             IdentityComparison::Match
         }

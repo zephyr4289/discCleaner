@@ -50,10 +50,14 @@ impl DioProbe {
 
     fn check_free_space(dir: &Path, min_bytes: u64) -> Result<(), String> {
         let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-        let c_path = std::ffi::CString::new(dir.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+        let c_path =
+            std::ffi::CString::new(dir.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
         let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
         if ret != 0 {
-            return Err(format!("statvfs failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "statvfs failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         let free_bytes = stat.f_bavail as u64 * stat.f_frsize as u64;
@@ -95,14 +99,8 @@ impl DioProbe {
             s
         };
 
-        let pwrite_ret = unsafe {
-            libc::pwrite(
-                fd,
-                write_buf.as_ptr() as *const libc::c_void,
-                4096,
-                0,
-            )
-        };
+        let pwrite_ret =
+            unsafe { libc::pwrite(fd, write_buf.as_ptr() as *const libc::c_void, 4096, 0) };
 
         if pwrite_ret != 4096 {
             unsafe { libc::free(raw_ptr) };
@@ -118,14 +116,8 @@ impl DioProbe {
             s
         };
 
-        let pread_ret = unsafe {
-            libc::pread(
-                fd,
-                read_buf.as_mut_ptr() as *mut libc::c_void,
-                4096,
-                0,
-            )
-        };
+        let pread_ret =
+            unsafe { libc::pread(fd, read_buf.as_mut_ptr() as *mut libc::c_void, 4096, 0) };
 
         let is_match = pread_ret == 4096 && read_buf == write_buf;
 

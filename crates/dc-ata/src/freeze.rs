@@ -18,9 +18,9 @@ impl FreezeEvaluator {
                 disclosure_text: "Drive is frozen by host firmware/BIOS. Destructive security commands refused unless --assume-unfrozen is set in boot environments.".to_string(),
                 override_active: false,
             })
-        } else if is_frozen && allow_override {
-            Ok(())
         } else {
+            // Not frozen (fine), or frozen with an explicit operator override
+            // (fine by policy): both proceed identically.
             Ok(())
         }
     }

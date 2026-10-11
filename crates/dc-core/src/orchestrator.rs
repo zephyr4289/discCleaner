@@ -97,15 +97,9 @@ impl Orchestrator {
                 self.state = OrchestratorState::Completed;
                 OrchestratorEffect::WriteCertificate
             }
-            OrchestratorState::Completed => {
-                OrchestratorEffect::Exit { code: 0 }
-            }
-            OrchestratorState::Interrupted => {
-                OrchestratorEffect::Exit { code: 3 }
-            }
-            OrchestratorState::Failed => {
-                OrchestratorEffect::Exit { code: 1 }
-            }
+            OrchestratorState::Completed => OrchestratorEffect::Exit { code: 0 },
+            OrchestratorState::Interrupted => OrchestratorEffect::Exit { code: 3 },
+            OrchestratorState::Failed => OrchestratorEffect::Exit { code: 1 },
         }
     }
 }

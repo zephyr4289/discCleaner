@@ -108,7 +108,7 @@ impl AtaCodec {
     /// Real drives pad with spaces AND NUL bytes (both are stripped).
     fn decode_ata_string(bytes: &[u8]) -> String {
         let mut swapped = Vec::with_capacity(bytes.len());
-        for chunk in bytes.chunks_exact(2) {
+        for chunk in bytes.as_chunks::<2>().0 {
             swapped.push(chunk[1]);
             swapped.push(chunk[0]);
         }
@@ -178,13 +178,7 @@ impl AtaCodec {
     /// SECURITY ERASE PREPARE (ATA-ACS: opcode 0xF3, non-data).
     /// Mandatory prelude before SECURITY ERASE UNIT on locked/frozen stacks.
     pub fn encode_sat_security_erase_prepare() -> [u8; 16] {
-        Self::encode_sat_passthrough_16_framed(
-            0xF3,
-            0x0000,
-            0,
-            1,
-            SatTransferClass::None,
-        )
+        Self::encode_sat_passthrough_16_framed(0xF3, 0x0000, 0, 1, SatTransferClass::None)
     }
 
     /// SECURITY ERASE UNIT (ATA-ACS: opcode 0xF4, non-data).
@@ -202,12 +196,6 @@ impl AtaCodec {
 
     /// SECURITY FREEZE LOCK (ATA-ACS: opcode 0xF5, non-data). Idempotent.
     pub fn encode_sat_security_freeze_lock() -> [u8; 16] {
-        Self::encode_sat_passthrough_16_framed(
-            0xF5,
-            0x0000,
-            0,
-            1,
-            SatTransferClass::None,
-        )
+        Self::encode_sat_passthrough_16_framed(0xF5, 0x0000, 0, 1, SatTransferClass::None)
     }
 }
