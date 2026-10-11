@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "dc-ata"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "dc-core",
@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "dc-cert"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64",
  "blake3",
@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "dc-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "blake3",
@@ -378,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "dc-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "chacha20",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "dc-hw"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "hex",
@@ -407,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "dc-io"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "dc-core",
@@ -420,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "dc-mmc"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "dc-core",
  "dc-hw",
@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "dc-nvme"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "dc-core",
  "dc-hw",
@@ -447,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "dc-opal"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "dc-core",
@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "dc-probe"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "dc-core",
  "libc",
@@ -476,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "dc-report"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "dc-cert",
@@ -487,7 +487,7 @@ dependencies = [
 
 [[package]]
 name = "dc-scsi"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "dc-core",
  "dc-hw",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "dc-testkit"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "base64",
@@ -526,7 +526,7 @@ dependencies = [
 
 [[package]]
 name = "dc-tui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "dc-core",
@@ -535,7 +535,7 @@ dependencies = [
 
 [[package]]
 name = "dc-verify"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "dc-core",

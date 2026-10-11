@@ -49,3 +49,17 @@ would only destroy it).
 48 integration suites (`tests/`) incl. `r900_regression_guards.rs` (20
 pinned defects with `REG-*` identifiers). Lit-style driver:
 `python3 tests/run_tests.py` from the repo root.
+
+## v0.5.0 — fleet-grade command surface
+
+| Command | What it does |
+|---|---|
+| `dc execute --target A --target B ...` | **Parallel multi-device wipe**: all-or-nothing precheck (probe/Guardian/plan per device — any refusal aborts the batch with nothing armed), one interactive comma-separated token confirmation, atomic O_EXCL arming of every device, then one worker thread per device (own FSM, journal, engine, certificate) with multiplexed progress bars and a batch summary. |
+| `dc profiles` | Renders the full standards profile catalog (pass counts, verification defaults, standard references, flash suitability) — procurement-ready reference table. |
+| `dc bench --file F --size-mib N` | Bake-off evidence: runs the production engines (zero write + read-back verify) on a regular file and reports MiB/s plus an ETA table for every profile at a reference capacity. Refuses block devices and `/dev`-tree paths by construction. |
+| `dc purge --target /dev/nvme0n1` | **Controller-attested hardware purge** (NIST 800-88 Purge): Identify → capability attestation → strategy ladder → Sanitize Crypto/Block Erase or Format NVM crypto-erase through the real ioctl transport, with Log 0x81 completion polling, pre/post SMART-health snapshots in the certificate, and sampled zero read-back for format-crypto. Seconds instead of hours on self-encrypting media. |
+| `dc execute --verify sample:N` | NIST SP 800-88 sampled verification: deterministic 1-in-N window sampling — the engine skips unsampled windows' I/O entirely (that *is* the speedup). `full` and `none` also available; cannot override a `--plan` (plan-hash binding). |
+
+Every new path keeps the fail-closed discipline: batch aborts leave zero
+journals, purge refusals never fabricate evidence, and all guards are pinned
+in `r900_regression_guards.rs` + `t14_fleet_parallel_matrix.rs`.
