@@ -51,7 +51,11 @@ impl SentinelManager {
             return Err("Failed to allocate aligned buffer".to_string());
         }
 
-        let offsets = [0u64, (total_bytes / 2) & !4095, (total_bytes - 4096) & !4095];
+        let offsets = [
+            0u64,
+            (total_bytes / 2) & !4095,
+            (total_bytes - 4096) & !4095,
+        ];
 
         for &off in &offsets {
             let read_ret = unsafe { libc::pread(fd, raw_ptr, 4096, off as libc::off_t) };
@@ -87,7 +91,7 @@ impl SentinelManager {
             .map_err(|e| format!("Failed to open backing file: {}", e))?;
         let fd = file.as_raw_fd();
 
-        let total_windows = (total_bytes + window_bytes - 1) / window_bytes;
+        let total_windows = total_bytes.div_ceil(window_bytes);
         let mut raw_ptr: *mut libc::c_void = std::ptr::null_mut();
         unsafe { libc::posix_memalign(&mut raw_ptr, 4096, window_bytes as usize) };
         if raw_ptr.is_null() {
@@ -199,7 +203,10 @@ impl SentinelManager {
     }
 
     /// Dual-view cross-check through loop device (both O_DIRECT and buffered).
-    pub fn verify_dual_view_cross_check(loop_dev_path: &Path, total_bytes: u64) -> Result<(), String> {
+    pub fn verify_dual_view_cross_check(
+        loop_dev_path: &Path,
+        total_bytes: u64,
+    ) -> Result<(), String> {
         let mut file = File::open(loop_dev_path)
             .map_err(|e| format!("Failed to open loop for buffered cross-check: {}", e))?;
 
@@ -213,7 +220,10 @@ impl SentinelManager {
                 .map_err(|e| format!("Read failed at offset {}: {}", off, e))?;
 
             if !buf.iter().all(|&b| b == 0x00) {
-                return Err(format!("Dual-view buffered check failed at offset {}: non-zero byte detected", off));
+                return Err(format!(
+                    "Dual-view buffered check failed at offset {}: non-zero byte detected",
+                    off
+                ));
             }
         }
 

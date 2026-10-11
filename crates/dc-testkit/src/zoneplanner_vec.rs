@@ -3,10 +3,20 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ZoneOp {
-    Reset { zone_id: u64 },
-    Open { zone_id: u64 },
-    Write { zone_id: u64, target_lba: u64, window_idx: u64 },
-    Finish { zone_id: u64 },
+    Reset {
+        zone_id: u64,
+    },
+    Open {
+        zone_id: u64,
+    },
+    Write {
+        zone_id: u64,
+        target_lba: u64,
+        window_idx: u64,
+    },
+    Finish {
+        zone_id: u64,
+    },
 }
 
 pub struct ZoneDisciplinePlanner;
@@ -24,10 +34,14 @@ impl ZoneDisciplinePlanner {
             match zone.zone_type {
                 ZoneType::SequentialWriteRequired | ZoneType::SequentialWritePreferred => {
                     // Reset zone first to enable fresh pass
-                    ops.push(ZoneOp::Reset { zone_id: zone.zone_id });
-                    ops.push(ZoneOp::Open { zone_id: zone.zone_id });
+                    ops.push(ZoneOp::Reset {
+                        zone_id: zone.zone_id,
+                    });
+                    ops.push(ZoneOp::Open {
+                        zone_id: zone.zone_id,
+                    });
 
-                    let num_windows = (zone.capacity_lbas + window_size_lbas - 1) / window_size_lbas;
+                    let num_windows = zone.capacity_lbas.div_ceil(window_size_lbas);
                     for k in 0..num_windows {
                         let target_lba = zone.start_lba + k * window_size_lbas;
                         ops.push(ZoneOp::Write {
@@ -37,10 +51,12 @@ impl ZoneDisciplinePlanner {
                         });
                     }
 
-                    ops.push(ZoneOp::Finish { zone_id: zone.zone_id });
+                    ops.push(ZoneOp::Finish {
+                        zone_id: zone.zone_id,
+                    });
                 }
                 ZoneType::Conventional => {
-                    let num_windows = (zone.capacity_lbas + window_size_lbas - 1) / window_size_lbas;
+                    let num_windows = zone.capacity_lbas.div_ceil(window_size_lbas);
                     for k in 0..num_windows {
                         let target_lba = zone.start_lba + k * window_size_lbas;
                         ops.push(ZoneOp::Write {

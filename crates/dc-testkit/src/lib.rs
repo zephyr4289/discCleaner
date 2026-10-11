@@ -68,8 +68,10 @@ pub use ata_lying::{BridgeLieClass, BridgeLieDetector};
 pub use atadev::{AtaDev, AtaDeviceState, AtaSecurityResult};
 pub use audit_oracle::AuditOracle;
 pub use bootlab::{BootLabMock, EnvironmentProvenance, EvidenceSinkMode};
-pub use cert2_oracle::{Cert2Oracle, ExecutedMechanism, InterrogationContract, NistSanitizationClass};
 pub use cert_oracle::{CertOracle, CertOracleReport};
+pub use cert2_oracle::{
+    Cert2Oracle, ExecutedMechanism, InterrogationContract, NistSanitizationClass,
+};
 pub use certforge::CertForge;
 pub use chacha_ref::ChaCha20Ref;
 pub use cleanroom::{CleanroomPRNG, FixedPointEntropy};
@@ -96,7 +98,9 @@ pub use loopdev::{LoopConfig, LoopDevice, LoopInfo64};
 pub use lvmx::LvmSandbox;
 pub use manifest::{EnduranceLedger, HardwareManifest, ManifestDrive};
 pub use matrix::{BridgeClassification, BridgeMatrixEntry, BridgeMatrixLedger};
-pub use mmcdev::{ExtCsdRegister, MmcAccessClass, MmcDevMock, MmcPartitionDisposition, MmcPartitionMap};
+pub use mmcdev::{
+    ExtCsdRegister, MmcAccessClass, MmcDevMock, MmcPartitionDisposition, MmcPartitionMap,
+};
 pub use opaldev::{OpalDevMock, OpalFrameParser, OpalLifecycle, PsidAuthResult};
 pub use partition::{PartitionOracle, PredictedOutcome};
 pub use probe_battery::{ObservationChannel, ProbeBattery};
@@ -110,7 +114,7 @@ pub use reprotriangle::{BuildProvenance, ReproducibilityTriangle};
 pub use sanitize_mock::{MockLogFeed, SanitizeStatusSource};
 pub use scale_oracle::ScaleOracle;
 pub use scsi_mock::{ScsiDevMock, ScsiLunDesignator, ScsiMechanismGrade, ScsiSenseVerdict};
-pub use sentinel::{MediaOracleResult, SentinelManager, SENTINEL_BYTE};
+pub use sentinel::{MediaOracleResult, SENTINEL_BYTE, SentinelManager};
 pub use sigcraft::SigCraft;
 pub use signals::{Signals, TaskSignalStatus};
 pub use spawn::{ProcessGuard, ToolSpawner};

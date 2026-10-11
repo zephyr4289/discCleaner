@@ -1,11 +1,9 @@
 use assert_cmd::Command;
 use dc_core::{
-    FastPathPolicy, Orchestrator, OrchestratorEffect, OrchestratorState, SanitizationPlan,
-    StableIdentity, BusType,
+    BusType, FastPathPolicy, Orchestrator, OrchestratorEffect, OrchestratorState, SanitizationPlan,
+    StableIdentity,
 };
-use dc_testkit::{
-    DioProbe, Janitor, LoopDevice, RigLedger, SentinelManager,
-};
+use dc_testkit::{DioProbe, Janitor, LoopDevice, RigLedger, SentinelManager};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -29,7 +27,9 @@ fn test_g7_operator_surface_matrix() {
     run_conf_nontty_tests(&ledger);
 
     if !is_root() {
-        eprintln!("[SKIP] G7 E2E live device tests require root privileges (EUID 0). Pure tests passed.");
+        eprintln!(
+            "[SKIP] G7 E2E live device tests require root privileges (EUID 0). Pure tests passed."
+        );
         assert!(ledger.is_all_green());
         return;
     }
@@ -48,7 +48,10 @@ fn test_g7_operator_surface_matrix() {
 
     Janitor::sweep_all(&scratch_dir);
 
-    assert!(ledger.is_all_green(), "[G7-FAIL] Operator matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[G7-FAIL] Operator matrix contains failing assertions!"
+    );
     println!("\n[=== G7 OPERATOR SURFACE MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -115,14 +118,22 @@ fn run_conf_nontty_tests(ledger: &RigLedger) {
 
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
     cmd.arg("execute")
-        .arg("--target").arg("/dev/null")
-        .arg("--profile").arg("clear-zero");
+        .arg("--target")
+        .arg("/dev/null")
+        .arg("--profile")
+        .arg("clear-zero");
     // Should fail with Exit 2 or Exit 8 (refusal / confirm required without TTY)
     let status = cmd.assert();
     let code = status.get_output().status.code().unwrap_or(-1);
 
     let rejected = code == 2 || code == 8;
-    ledger.assert("G7-CONF", "CONF-NONTTY-REJECT", "true", rejected.to_string(), None);
+    ledger.assert(
+        "G7-CONF",
+        "CONF-NONTTY-REJECT",
+        "true",
+        rejected.to_string(),
+        None,
+    );
 }
 
 fn run_resume_ladder_tests(ledger: &RigLedger, scratch_dir: &Path) {
@@ -140,13 +151,18 @@ fn run_resume_ladder_tests(ledger: &RigLedger, scratch_dir: &Path) {
 
     // Interrupt at pass 0 commit 1
     let mut exec_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    exec_cmd.env("DC_SIGNAL_AT", "commit-write:1")
+    exec_cmd
+        .env("DC_SIGNAL_AT", "commit-write:1")
         .arg("execute")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--profile").arg("clear-zero")
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--profile")
+        .arg("clear-zero")
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
     exec_cmd.assert().code(3);
 
@@ -154,17 +170,27 @@ fn run_resume_ladder_tests(ledger: &RigLedger, scratch_dir: &Path) {
 
     // Prompt-less resume
     let mut resume_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    resume_cmd.arg("resume")
-        .arg("--journal").arg(&journal_path)
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+    resume_cmd
+        .arg("resume")
+        .arg("--journal")
+        .arg(&journal_path)
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
     resume_cmd.assert().code(0);
 
     // Verify certificate was written
     let cert_path = find_single_file_with_ext(&out_dir, "cert.json");
-    ledger.assert("G7-RESUME", "RESUME-CERT-ISSUED", "true", cert_path.is_some().to_string(), None);
+    ledger.assert(
+        "G7-RESUME",
+        "RESUME-CERT-ISSUED",
+        "true",
+        cert_path.is_some().to_string(),
+        None,
+    );
 }
 
 fn find_single_file_with_ext(dir: &Path, ext: &str) -> Option<PathBuf> {

@@ -1,6 +1,5 @@
 use dc_core::fleet::{
-    AdvisoryResolution, ArgvConstructor, BatchManifest, BatchReconstructor, ChildJournalState,
-    FleetJobOutcome, FleetJobRecord, FleetReport, IdentityResolver, SpawnContext,
+    AdvisoryResolution, ArgvConstructor, BatchManifest, IdentityResolver, SpawnContext,
 };
 use serde::{Deserialize, Serialize};
 
@@ -40,11 +39,8 @@ impl FleetSupervisor {
             let res = IdentityResolver::resolve_identity(&row.expected_serial, live_devices);
             match res {
                 AdvisoryResolution::Unique { path, serial } => {
-                    let argv = ArgvConstructor::construct_child_argv(
-                        &serial,
-                        &path,
-                        &self.spawn_ctx,
-                    );
+                    let argv =
+                        ArgvConstructor::construct_child_argv(&serial, &path, &self.spawn_ctx);
                     let hash = ArgvConstructor::compute_argv_hash(&argv);
                     spawns.push(ChildSpawnSeam {
                         slot_id: row.slot_id,

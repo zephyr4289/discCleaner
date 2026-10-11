@@ -1,15 +1,17 @@
-use std::fs::{self, File, OpenOptions};
-use std::os::unix::fs::FileTypeExt;
+use std::fs::{self, File};
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+#[allow(dead_code)] // kept for future dm ioctl rigs
 const DM_DIR: u8 = 0xfd;
 
 const DM_VERSION_CMD: libc::c_ulong = 0xc138fd00;
+#[allow(dead_code)] // kept for future dm ioctl rigs
 const DM_LIST_DEVICES_CMD: libc::c_ulong = 0xc138fd02;
 const DM_DEV_CREATE_CMD: libc::c_ulong = 0xc138fd03;
 const DM_DEV_REMOVE_CMD: libc::c_ulong = 0xc138fd04;
 const DM_DEV_SUSPEND_CMD: libc::c_ulong = 0xc138fd06;
+#[allow(dead_code)] // kept for future dm ioctl rigs
 const DM_DEV_STATUS_CMD: libc::c_ulong = 0xc138fd07;
 const DM_TABLE_LOAD_CMD: libc::c_ulong = 0xc138fd0c;
 const DM_TABLE_STATUS_CMD: libc::c_ulong = 0xc138fd0f;
@@ -115,8 +117,9 @@ impl DmDevice {
                 }
                 let c_dev = std::ffi::CString::new(dev_path.to_string_lossy().as_bytes())
                     .map_err(|e| e.to_string())?;
-                let dev_t = unsafe { libc::makedev(major, minor) };
-                let mknod_ret = unsafe { libc::mknod(c_dev.as_ptr(), libc::S_IFBLK | 0o600, dev_t) };
+                let dev_t = libc::makedev(major, minor);
+                let mknod_ret =
+                    unsafe { libc::mknod(c_dev.as_ptr(), libc::S_IFBLK | 0o600, dev_t) };
                 if mknod_ret == 0 {
                     created_node = true;
                 }
@@ -169,7 +172,10 @@ impl DmDevice {
                     spec.sector_start = *start_sector;
                     spec.length = *length_sectors;
                     copy_str_to_buf("linear", &mut spec.target_type);
-                    format!("{}:{} {}", backing_major, backing_minor, backing_start_sector)
+                    format!(
+                        "{}:{} {}",
+                        backing_major, backing_minor, backing_start_sector
+                    )
                 }
                 TableLine::Error {
                     start_sector,
@@ -212,9 +218,8 @@ impl DmDevice {
         req.data_size = offset as u32;
         req.data_start = header_len as u32;
 
-        let req_bytes = unsafe {
-            std::slice::from_raw_parts(&req as *const DmIoctl as *const u8, header_len)
-        };
+        let req_bytes =
+            unsafe { std::slice::from_raw_parts(&req as *const DmIoctl as *const u8, header_len) };
         payload[0..header_len].copy_from_slice(req_bytes);
 
         let ret = unsafe { libc::ioctl(ctl_fd, DM_TABLE_LOAD_CMD, payload.as_mut_ptr()) };
@@ -269,14 +274,16 @@ impl DmDevice {
         req.flags = DM_STATUS_TABLE_FLAG;
         req.data_size = 16384;
 
-        let req_bytes = unsafe {
-            std::slice::from_raw_parts(&req as *const DmIoctl as *const u8, header_len)
-        };
+        let req_bytes =
+            unsafe { std::slice::from_raw_parts(&req as *const DmIoctl as *const u8, header_len) };
         payload[0..header_len].copy_from_slice(req_bytes);
 
         let ret = unsafe { libc::ioctl(ctl_fd, DM_TABLE_STATUS_CMD, payload.as_mut_ptr()) };
         if ret != 0 {
-            return Err(format!("DM_TABLE_STATUS failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "DM_TABLE_STATUS failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         let resp_header = unsafe { &*(payload.as_ptr() as *const DmIoctl) };
@@ -289,8 +296,10 @@ impl DmDevice {
             }
 
             let spec = unsafe { &*(payload[offset..].as_ptr() as *const DmTargetSpec) };
-            let t_type = unsafe { std::ffi::CStr::from_ptr(spec.target_type.as_ptr() as *const libc::c_char) }
-                .to_string_lossy();
+            let t_type = unsafe {
+                std::ffi::CStr::from_ptr(spec.target_type.as_ptr() as *const libc::c_char)
+            }
+            .to_string_lossy();
 
             let params_start = offset + std::mem::size_of::<DmTargetSpec>();
             let params = unsafe {
@@ -298,7 +307,10 @@ impl DmDevice {
             }
             .to_string_lossy();
 
-            lines.push(format!("{} {} {} {}", spec.sector_start, spec.length, t_type, params));
+            lines.push(format!(
+                "{} {} {} {}",
+                spec.sector_start, spec.length, t_type, params
+            ));
 
             if spec.next == 0 {
                 break;
@@ -311,14 +323,21 @@ impl DmDevice {
 
     /// Prelude self-validation: tests that dm_mod and dm-error target are supported.
     pub fn prelude_check() -> Result<(), String> {
-        let ctl = File::open("/dev/mapper/control")
-            .map_err(|e| format!("Cannot open /dev/mapper/control: {}. Please run 'modprobe dm_mod'", e))?;
+        let ctl = File::open("/dev/mapper/control").map_err(|e| {
+            format!(
+                "Cannot open /dev/mapper/control: {}. Please run 'modprobe dm_mod'",
+                e
+            )
+        })?;
         let ctl_fd = ctl.as_raw_fd();
 
         let mut req = DmIoctl::default();
         let ret = unsafe { libc::ioctl(ctl_fd, DM_VERSION_CMD, &mut req) };
         if ret != 0 {
-            return Err(format!("DM_VERSION ioctl failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "DM_VERSION ioctl failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         Ok(())

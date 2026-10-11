@@ -1,7 +1,6 @@
 use assert_cmd::Command;
 use dc_testkit::{
-    DioProbe, DmDevice, Janitor, LoopDevice, RebindChoreographer, SentinelManager, TableLine,
-    TestIdentityReader,
+    DioProbe, DmDevice, Janitor, LoopDevice, SentinelManager, TableLine, TestIdentityReader,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -107,10 +106,14 @@ fn run_f1_plan_binding(scratch_dir: &Path) {
     // 2. Compile plan file P for dm(uuid_a)
     let plan_path = run_dir.join("plan_a.json");
     let mut plan_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    plan_cmd.arg("plan")
-        .arg("--target").arg(&dm.dev_path)
-        .arg("--profile").arg("clear-zero")
-        .arg("--out").arg(&plan_path);
+    plan_cmd
+        .arg("plan")
+        .arg("--target")
+        .arg(&dm.dev_path)
+        .arg("--profile")
+        .arg("clear-zero")
+        .arg("--out")
+        .arg(&plan_path);
     plan_cmd.assert().code(0);
 
     // 3. REBIND CHOREOGRAPHY: Remove dm and recreate with uuid_b over loop_b
@@ -132,20 +135,30 @@ fn run_f1_plan_binding(scratch_dir: &Path) {
     let _ = fs::create_dir_all(&out_dir);
 
     let mut exec_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    exec_cmd.arg("execute")
-        .arg("--target").arg(&dm_b.dev_path)
-        .arg("--plan").arg(&plan_path)
-        .arg("--serial-confirm").arg(&uuid_b)
+    exec_cmd
+        .arg("execute")
+        .arg("--target")
+        .arg(&dm_b.dev_path)
+        .arg("--plan")
+        .arg(&plan_path)
+        .arg("--serial-confirm")
+        .arg(&uuid_b)
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
 
     exec_cmd.assert().code(7);
 
     // 5. NEAR-VICTIM CHECK: loop_b must remain 100% untouched sentinel 0xA5
     let b_media = SentinelManager::verify_zero_media_oracle(&backing_b, 64 * 1024 * 1024).unwrap();
-    assert!(!b_media.all_zeros, "[D-REBIND-PLAN] Near-victim loop_b was modified!");
-    println!("  [✓] D-REBIND-PLAN: Plan binding caught device swap; refused with exit 7 (near-victim intact).");
+    assert!(
+        !b_media.all_zeros,
+        "[D-REBIND-PLAN] Near-victim loop_b was modified!"
+    );
+    println!(
+        "  [✓] D-REBIND-PLAN: Plan binding caught device swap; refused with exit 7 (near-victim intact)."
+    );
 
     // 6. N8-PLANTAMPER: Tampered plan file -> exit 6
     let tampered_plan_path = run_dir.join("tampered_plan.json");
@@ -156,12 +169,17 @@ fn run_f1_plan_binding(scratch_dir: &Path) {
     fs::write(&tampered_plan_path, plan_bytes).unwrap();
 
     let mut tamper_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    tamper_cmd.arg("execute")
-        .arg("--target").arg(&dm_b.dev_path)
-        .arg("--plan").arg(&tampered_plan_path)
-        .arg("--serial-confirm").arg(&uuid_b)
+    tamper_cmd
+        .arg("execute")
+        .arg("--target")
+        .arg(&dm_b.dev_path)
+        .arg("--plan")
+        .arg(&tampered_plan_path)
+        .arg("--serial-confirm")
+        .arg(&uuid_b)
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
 
     tamper_cmd.assert().code(6);
@@ -196,12 +214,17 @@ fn run_f2_confirmation_binding(scratch_dir: &Path) {
     let _ = fs::create_dir_all(&out_dir);
 
     let mut exec_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    exec_cmd.arg("execute")
-        .arg("--target").arg(&dm.dev_path)
-        .arg("--profile").arg("clear-zero")
-        .arg("--serial-confirm").arg("DC-T7-OLD-EXPIRED-TOKEN")
+    exec_cmd
+        .arg("execute")
+        .arg("--target")
+        .arg(&dm.dev_path)
+        .arg("--profile")
+        .arg("clear-zero")
+        .arg("--serial-confirm")
+        .arg("DC-T7-OLD-EXPIRED-TOKEN")
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
 
     exec_cmd.assert().code(8);
@@ -243,11 +266,15 @@ fn run_f3_rediscovery_drift(scratch_dir: &Path) {
 
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
     cmd.arg("execute")
-        .arg("--target").arg(&dm.dev_path)
-        .arg("--profile").arg("clear-zero")
-        .arg("--serial-confirm").arg(&uuid_a)
+        .arg("--target")
+        .arg(&dm.dev_path)
+        .arg("--profile")
+        .arg("clear-zero")
+        .arg("--serial-confirm")
+        .arg(&uuid_a)
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress")
         .env("DC_CRASH_AT", "commit:2");
     let _ = cmd.assert();
@@ -270,9 +297,12 @@ fn run_f3_rediscovery_drift(scratch_dir: &Path) {
 
     // 3. Resume on drifted journal -> MUST REFUSE with exit 7 (device mismatch)
     let mut resume_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    resume_cmd.arg("resume")
-        .arg("--journal").arg(&journal_path)
-        .arg("--out-dir").arg(&out_dir)
+    resume_cmd
+        .arg("resume")
+        .arg("--journal")
+        .arg(&journal_path)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress")
         .env_remove("DC_CRASH_AT");
 
@@ -280,9 +310,14 @@ fn run_f3_rediscovery_drift(scratch_dir: &Path) {
 
     // 4. Check near-victim loop_b is untouched
     let b_media = SentinelManager::verify_zero_media_oracle(&backing_b, 64 * 1024 * 1024).unwrap();
-    assert!(!b_media.all_zeros, "[R-DRIFT] Near-victim loop_b was modified on resume!");
+    assert!(
+        !b_media.all_zeros,
+        "[R-DRIFT] Near-victim loop_b was modified on resume!"
+    );
 
-    println!("  [✓] R-DRIFT: Swapped device on resume caught and refused with exit 7 (near-victim intact).");
+    println!(
+        "  [✓] R-DRIFT: Swapped device on resume caught and refused with exit 7 (near-victim intact)."
+    );
 }
 
 fn find_single_file_with_ext(dir: &Path, ext: &str) -> Option<PathBuf> {

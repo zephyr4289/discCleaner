@@ -1,7 +1,7 @@
 use assert_cmd::Command;
 use dc_testkit::{
     DioProbe, EnduranceLedger, GenBench, HardwareManifest, Janitor, LoopDevice, ManifestDrive,
-    ScaleOracle, SentinelManager, TestIdentityReader,
+    ScaleOracle, SentinelManager,
 };
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
@@ -19,7 +19,9 @@ fn test_t10_hardware_verification_matrix() {
     run_t10_prelude_pure();
 
     if !is_root() {
-        eprintln!("[SKIP] T10 E2E scale and verify cells require root privileges (EUID 0). Prelude passed.");
+        eprintln!(
+            "[SKIP] T10 E2E scale and verify cells require root privileges (EUID 0). Prelude passed."
+        );
         return;
     }
 
@@ -65,11 +67,18 @@ fn run_t10_prelude_pure() {
     };
 
     // Valid drive in manifest
-    assert!(manifest.verify_manifest_pinning("SACRIFICIAL-NVME-001").is_ok());
+    assert!(
+        manifest
+            .verify_manifest_pinning("SACRIFICIAL-NVME-001")
+            .is_ok()
+    );
 
     // Host boot disk NOT in manifest -> MUST REFUSE (Guardian safety)
     let boot_disk_attempt = manifest.verify_manifest_pinning("HOST-BOOT-DRIVE-SDA-000");
-    assert!(boot_disk_attempt.is_err(), "[MANIFEST-FAIL] Allowed unlisted host boot disk!");
+    assert!(
+        boot_disk_attempt.is_err(),
+        "[MANIFEST-FAIL] Allowed unlisted host boot disk!"
+    );
     println!("  [✓] Hardware Manifest: Unlisted host boot disks strictly refused.");
 
     // 3. Endurance Ledger (Δ76)
@@ -77,12 +86,17 @@ fn run_t10_prelude_pure() {
     let ledger_path = temp_dir.path().join("endurance.json");
     let mut ledger = EnduranceLedger::load_or_init(&ledger_path, "SACRIFICIAL-NVME-001");
 
-    let drive = manifest.verify_manifest_pinning("SACRIFICIAL-NVME-001").unwrap();
+    let drive = manifest
+        .verify_manifest_pinning("SACRIFICIAL-NVME-001")
+        .unwrap();
     assert!(ledger.check_budget(drive).is_ok());
 
     // Simulate 700 TB written (exceeding 80% of 600 TBW)
     ledger.cumulative_bytes_written = 500_000_000_000_000;
-    assert!(ledger.check_budget(drive).is_err(), "[ENDURANCE-FAIL] Allowed run on exhausted drive!");
+    assert!(
+        ledger.check_budget(drive).is_err(),
+        "[ENDURANCE-FAIL] Allowed run on exhausted drive!"
+    );
     println!("  [✓] Endurance Ledger: Wear budget limit (>80% TBW) cleanly halts execution.");
 }
 
@@ -108,21 +122,32 @@ fn run_t10_verify_orphan_adoption(scratch_dir: &Path) {
     let plan_path = run_dir.join("plan.json");
 
     let mut plan_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    plan_cmd.arg("plan")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--profile").arg("clear-random")
-        .arg("--seed").arg(fixed_seed)
-        .arg("--out").arg(&plan_path);
+    plan_cmd
+        .arg("plan")
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--profile")
+        .arg("clear-random")
+        .arg("--seed")
+        .arg(fixed_seed)
+        .arg("--out")
+        .arg(&plan_path);
     plan_cmd.assert().code(0);
 
     let mut exec_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    exec_cmd.arg("execute")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--plan").arg(&plan_path)
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
-        .arg("--key").arg(&key_path)
+    exec_cmd
+        .arg("execute")
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--plan")
+        .arg(&plan_path)
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
+        .arg("--key")
+        .arg(&key_path)
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
     exec_cmd.assert().code(0);
 
@@ -130,14 +155,20 @@ fn run_t10_verify_orphan_adoption(scratch_dir: &Path) {
 
     // 1. First run: Clean verification from journal -> MUST EXIT 0
     let mut verify_clean = Command::cargo_bin("diskcleaner").unwrap();
-    verify_clean.arg("verify")
-        .arg("--journal").arg(&journal_path)
-        .arg("--target").arg(&loop_dev.dev_path);
+    verify_clean
+        .arg("verify")
+        .arg("--journal")
+        .arg(&journal_path)
+        .arg("--target")
+        .arg(&loop_dev.dev_path);
     verify_clean.assert().code(0);
     println!("  [✓] dc verify --journal passed cleanly on verified wiped disk.");
 
     // 2. Plant 4 KiB corruption at LBA 1024 (Offset 512 KiB)
-    let mut f = fs::OpenOptions::new().write(true).open(&loop_dev.dev_path).unwrap();
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .open(&loop_dev.dev_path)
+        .unwrap();
     f.seek(SeekFrom::Start(512 * 1024)).unwrap();
     f.write_all(&[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
     f.sync_all().unwrap();
@@ -145,15 +176,23 @@ fn run_t10_verify_orphan_adoption(scratch_dir: &Path) {
 
     // 3. Second run: Verification on tampered disk -> MUST EXIT 4 and locate mismatch
     let mut verify_tampered = Command::cargo_bin("diskcleaner").unwrap();
-    verify_tampered.arg("verify")
-        .arg("--journal").arg(&journal_path)
-        .arg("--target").arg(&loop_dev.dev_path);
+    verify_tampered
+        .arg("verify")
+        .arg("--journal")
+        .arg(&journal_path)
+        .arg("--target")
+        .arg(&loop_dev.dev_path);
 
     let output = verify_tampered.assert().code(4).get_output().stderr.clone();
     let stderr = String::from_utf8_lossy(&output);
-    assert!(stderr.contains("Verification failed"), "[VERIFY-FAIL] Did not report verification failure!");
+    assert!(
+        stderr.contains("Verification failed"),
+        "[VERIFY-FAIL] Did not report verification failure!"
+    );
 
-    println!("  [✓] dc verify --journal successfully caught planted corruption; exited with code 4.");
+    println!(
+        "  [✓] dc verify --journal successfully caught planted corruption; exited with code 4."
+    );
 }
 
 fn run_t10_scale_and_media(scratch_dir: &Path) {
@@ -174,20 +213,30 @@ fn run_t10_scale_and_media(scratch_dir: &Path) {
     let plan_path = run_dir.join("plan_scale.json");
 
     let mut plan_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    plan_cmd.arg("plan")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--profile").arg("clear-random")
-        .arg("--seed").arg(&fixed_seed_hex)
-        .arg("--out").arg(&plan_path);
+    plan_cmd
+        .arg("plan")
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--profile")
+        .arg("clear-random")
+        .arg("--seed")
+        .arg(&fixed_seed_hex)
+        .arg("--out")
+        .arg(&plan_path);
     plan_cmd.assert().code(0);
 
     let mut exec_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    exec_cmd.arg("execute")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--plan").arg(&plan_path)
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+    exec_cmd
+        .arg("execute")
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--plan")
+        .arg(&plan_path)
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress");
     exec_cmd.assert().code(0);
 
@@ -197,10 +246,13 @@ fn run_t10_scale_and_media(scratch_dir: &Path) {
         &fixed_seed,
         64 * 1024 * 1024,
         2 * 1024 * 1024,
-    ).expect("[SCALE-FAIL] Stratified cleanroom scale check failed!");
+    )
+    .expect("[SCALE-FAIL] Stratified cleanroom scale check failed!");
 
     assert!(scale_res);
-    println!("  [✓] T10.scale: Stratified cleanroom memory verification passed across all windows.");
+    println!(
+        "  [✓] T10.scale: Stratified cleanroom memory verification passed across all windows."
+    );
 }
 
 fn find_single_file_with_ext(dir: &Path, ext: &str) -> Option<PathBuf> {

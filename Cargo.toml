@@ -66,3 +66,26 @@ thiserror = "2.0"
 assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.14"
+
+# ---------------------------------------------------------------------------
+# Workspace lints
+# ---------------------------------------------------------------------------
+# Centralized, documented lint policy. Crates opt in with `[lints] workspace = true`.
+[workspace.lints.rust]
+# NOTE: no blanket `unsafe_code = "deny"` — this is an ioctl/signal/flock FFI
+# tool by nature (see docs/SECURITY.md "unsafe policy"). Every unsafe block
+# in the tree is a bounded libc call with its invariants documented inline.
+
+[workspace.lints.clippy]
+# DcError is the forensic error type: every variant carries auditable context
+# (guardian codes, LBA locations, chain indices). Boxing it into an indirection
+# would trade forensic clarity for stack bytes; 45 call sites are fine as-is.
+result_large_err = "allow"
+# DcError's Guardian variant is intentionally large for the same reason.
+large_enum_variant = "allow"
+# Purge ladders, engine constructors and projector functions take explicit
+# parameters instead of option structs: at this safety level, every argument
+# should be visible at the call site.
+too_many_arguments = "allow"
+# High-value lints kept ON (fail CI):
+#   - clippy::unwrap_used stays allowed only inside dc-testkit (see below)

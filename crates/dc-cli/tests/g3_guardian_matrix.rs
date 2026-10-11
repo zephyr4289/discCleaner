@@ -1,11 +1,10 @@
 use assert_cmd::Command;
 use dc_core::{BusType, StableIdentity};
 use dc_probe::{
-    classify_pure, BlockTree, DeviceNode, GuardianFlags, IdentityComparison, IdentityComparator,
-    Sniffer, StorageSignature,
+    BlockTree, DeviceNode, GuardianFlags, IdentityComparator, IdentityComparison, Sniffer,
+    StorageSignature, classify_pure,
 };
 use dc_testkit::RigLedger;
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -26,7 +25,10 @@ fn test_g3_guardian_identity_matrix() {
     // 4. GUARD-VERBS-LIST-CHECK: dc list & dc check Determinism (Δ126, Δ127)
     run_guard_verbs(&ledger, temp_dir.path());
 
-    assert!(ledger.is_all_green(), "[G3-FAIL] Guardian matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[G3-FAIL] Guardian matrix contains failing assertions!"
+    );
     println!("\n[=== G3 GUARDIAN & IDENTITY MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -58,62 +60,116 @@ fn run_guard_classify_pure(ledger: &RigLedger) {
     let mut tree = BlockTree::default();
     tree.nodes.insert("sda".to_string(), base_node.clone());
     let res_clean = classify_pure("sda", &tree, &flags);
-    ledger.assert("G3-PURE", "VEC-CLEAN", "true", res_clean.is_ok().to_string(), None);
+    ledger.assert(
+        "G3-PURE",
+        "VEC-CLEAN",
+        "true",
+        res_clean.is_ok().to_string(),
+        None,
+    );
 
     // 2. SIZE_ANOMALY (< 1 MiB)
     let mut node_small = base_node.clone();
     node_small.size_bytes = 512 * 1024;
     tree.nodes.insert("sda".to_string(), node_small);
     let res_small = classify_pure("sda", &tree, &flags);
-    ledger.assert("G3-PURE", "VEC-SIZE-ANOMALY", "SIZE_ANOMALY", res_small.unwrap_err().code, None);
+    ledger.assert(
+        "G3-PURE",
+        "VEC-SIZE-ANOMALY",
+        "SIZE_ANOMALY",
+        res_small.unwrap_err().code,
+        None,
+    );
 
     // 3. NOT_WHOLE_DISK (Partition)
     let mut node_part = base_node.clone();
     node_part.is_partition = true;
     tree.nodes.insert("sda".to_string(), node_part);
     let res_part = classify_pure("sda", &tree, &flags);
-    ledger.assert("G3-PURE", "VEC-NOT-WHOLE-DISK", "NOT_WHOLE_DISK", res_part.unwrap_err().code, None);
+    ledger.assert(
+        "G3-PURE",
+        "VEC-NOT-WHOLE-DISK",
+        "NOT_WHOLE_DISK",
+        res_part.unwrap_err().code,
+        None,
+    );
 
     // 4. RAM_BACKED
     let mut node_ram = base_node.clone();
     node_ram.is_ram_backed = true;
     tree.nodes.insert("sda".to_string(), node_ram);
     let res_ram = classify_pure("sda", &tree, &flags);
-    ledger.assert("G3-PURE", "VEC-RAM-BACKED", "RAM_BACKED", res_ram.unwrap_err().code, None);
+    ledger.assert(
+        "G3-PURE",
+        "VEC-RAM-BACKED",
+        "RAM_BACKED",
+        res_ram.unwrap_err().code,
+        None,
+    );
 
     // 5. SYSTEM_DISK vs MOUNTED
     let mut node_sys = base_node.clone();
     node_sys.mounts = vec!["/".to_string()];
     tree.nodes.insert("sda".to_string(), node_sys);
     let res_sys = classify_pure("sda", &tree, &flags);
-    ledger.assert("G3-PURE", "VEC-SYSTEM-DISK", "SYSTEM_DISK", res_sys.unwrap_err().code, None);
+    ledger.assert(
+        "G3-PURE",
+        "VEC-SYSTEM-DISK",
+        "SYSTEM_DISK",
+        res_sys.unwrap_err().code,
+        None,
+    );
 
     let mut node_mnt = base_node.clone();
     node_mnt.mounts = vec!["/mnt/data".to_string()];
     tree.nodes.insert("sda".to_string(), node_mnt);
     let res_mnt = classify_pure("sda", &tree, &flags);
-    ledger.assert("G3-PURE", "VEC-MOUNTED", "MOUNTED", res_mnt.unwrap_err().code, None);
+    ledger.assert(
+        "G3-PURE",
+        "VEC-MOUNTED",
+        "MOUNTED",
+        res_mnt.unwrap_err().code,
+        None,
+    );
 
     // 6. SWAP_ACTIVE
     let mut node_swap = base_node.clone();
     node_swap.swap_active = true;
     tree.nodes.insert("sda".to_string(), node_swap);
     let res_swap = classify_pure("sda", &tree, &flags);
-    ledger.assert("G3-PURE", "VEC-SWAP-ACTIVE", "SWAP_ACTIVE", res_swap.unwrap_err().code, None);
+    ledger.assert(
+        "G3-PURE",
+        "VEC-SWAP-ACTIVE",
+        "SWAP_ACTIVE",
+        res_swap.unwrap_err().code,
+        None,
+    );
 
     // 7. LVM_ACTIVE
     let mut node_lvm = base_node.clone();
     node_lvm.active_lvm = true;
     tree.nodes.insert("sda".to_string(), node_lvm);
     let res_lvm = classify_pure("sda", &tree, &flags);
-    ledger.assert("G3-PURE", "VEC-LVM-ACTIVE", "LVM_ACTIVE", res_lvm.unwrap_err().code, None);
+    ledger.assert(
+        "G3-PURE",
+        "VEC-LVM-ACTIVE",
+        "LVM_ACTIVE",
+        res_lvm.unwrap_err().code,
+        None,
+    );
 
     // 8. HOLDERS_PRESENT
     let mut node_holder = base_node.clone();
     node_holder.holders = vec!["dm-0".to_string()];
     tree.nodes.insert("sda".to_string(), node_holder);
     let res_holder = classify_pure("sda", &tree, &flags);
-    ledger.assert("G3-PURE", "VEC-HOLDERS-PRESENT", "HOLDERS_PRESENT", res_holder.unwrap_err().code, None);
+    ledger.assert(
+        "G3-PURE",
+        "VEC-HOLDERS-PRESENT",
+        "HOLDERS_PRESENT",
+        res_holder.unwrap_err().code,
+        None,
+    );
 }
 
 fn run_guard_ident_compare(ledger: &RigLedger) {
@@ -131,13 +187,25 @@ fn run_guard_ident_compare(ledger: &RigLedger) {
 
     // 1. Exact Match
     let c_exact = IdentityComparator::compare(&base, &base);
-    ledger.assert("G3-IDENT", "CMP-EXACT", "true", (c_exact == IdentityComparison::Match).to_string(), None);
+    ledger.assert(
+        "G3-IDENT",
+        "CMP-EXACT",
+        "true",
+        (c_exact == IdentityComparison::Match).to_string(),
+        None,
+    );
 
     // 2. Match with Warnings (missing optional serial in observed)
     let mut observed_no_serial = base.clone();
     observed_no_serial.serial = None;
     let c_warn = IdentityComparator::compare(&base, &observed_no_serial);
-    ledger.assert("G3-IDENT", "CMP-WARN", "true", matches!(c_warn, IdentityComparison::MatchWithWarnings { .. }).to_string(), None);
+    ledger.assert(
+        "G3-IDENT",
+        "CMP-WARN",
+        "true",
+        matches!(c_warn, IdentityComparison::MatchWithWarnings { .. }).to_string(),
+        None,
+    );
 
     // 3. Serial Contradiction
     let mut observed_wrong_serial = base.clone();
@@ -149,7 +217,13 @@ fn run_guard_ident_compare(ledger: &RigLedger) {
     let mut observed_wrong_size = base.clone();
     observed_wrong_size.size_bytes = 2_000_398_934_016;
     let c_size = IdentityComparator::compare(&base, &observed_wrong_size);
-    ledger.assert("G3-IDENT", "CMP-SIZE", "true", matches!(c_size, IdentityComparison::SizeMismatch { .. }).to_string(), None);
+    ledger.assert(
+        "G3-IDENT",
+        "CMP-SIZE",
+        "true",
+        matches!(c_size, IdentityComparison::SizeMismatch { .. }).to_string(),
+        None,
+    );
 }
 
 fn run_guard_sniff_bounds(ledger: &RigLedger, temp_dir: &Path) {
@@ -162,7 +236,13 @@ fn run_guard_sniff_bounds(ledger: &RigLedger, temp_dir: &Path) {
     fs::write(&lvm_file, &lvm_bytes).unwrap();
 
     let sig_lvm = Sniffer::sniff_device(&lvm_file);
-    ledger.assert("G3-SNIFF", "SNIFF-LVM", "true", matches!(sig_lvm, Some(StorageSignature::LvmLabel { offset: 512 })).to_string(), None);
+    ledger.assert(
+        "G3-SNIFF",
+        "SNIFF-LVM",
+        "true",
+        matches!(sig_lvm, Some(StorageSignature::LvmLabel { offset: 512 })).to_string(),
+        None,
+    );
 
     // 2. Synthetic LUKS file
     let luks_file = temp_dir.join("luks_test.raw");
@@ -172,7 +252,13 @@ fn run_guard_sniff_bounds(ledger: &RigLedger, temp_dir: &Path) {
     fs::write(&luks_file, &luks_bytes).unwrap();
 
     let sig_luks = Sniffer::sniff_device(&luks_file);
-    ledger.assert("G3-SNIFF", "SNIFF-LUKS", "true", matches!(sig_luks, Some(StorageSignature::Luks { version: 2 })).to_string(), None);
+    ledger.assert(
+        "G3-SNIFF",
+        "SNIFF-LUKS",
+        "true",
+        matches!(sig_luks, Some(StorageSignature::Luks { version: 2 })).to_string(),
+        None,
+    );
 }
 
 fn run_guard_verbs(ledger: &RigLedger, temp_dir: &Path) {

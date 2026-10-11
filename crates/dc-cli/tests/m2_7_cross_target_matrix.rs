@@ -18,7 +18,10 @@ fn test_m2_7_cross_target_matrix() {
     // 4. ROUNDTRIP-ARM-TO-X86: Cross-Architecture Evidence Round-Trip (Δ491)
     run_cross_arch_roundtrip_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[M2.7-FAIL] Cross-Target matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[M2.7-FAIL] Cross-Target matrix contains failing assertions!"
+    );
     println!("\n[=== MILESTONE M2.7 CROSS-TARGET RELEASES & PHASE 2 CLOSE PASSED ALL CELLS ===]\n");
 }
 
@@ -41,8 +44,20 @@ fn run_corpus_agreement_tests(ledger: &RigLedger) {
     );
     assert!(res_cert.matched);
 
-    ledger.assert("M2.7-ARCH", "ARCH-CORPUS-AGREE-PRNG", "true", res_prng.matched.to_string(), None);
-    ledger.assert("M2.7-ARCH", "ARCH-CORPUS-AGREE-CERT", "true", res_cert.matched.to_string(), None);
+    ledger.assert(
+        "M2.7-ARCH",
+        "ARCH-CORPUS-AGREE-PRNG",
+        "true",
+        res_prng.matched.to_string(),
+        None,
+    );
+    ledger.assert(
+        "M2.7-ARCH",
+        "ARCH-CORPUS-AGREE-CERT",
+        "true",
+        res_cert.matched.to_string(),
+        None,
+    );
 }
 
 fn run_boot_arm_tests(ledger: &RigLedger) {
@@ -58,10 +73,26 @@ fn run_boot_arm_tests(ledger: &RigLedger) {
     let cells_x86 = ArchAgreementDriver::get_boot_matrix_cells(TargetArch::X86_64Musl);
     let cells_arm = ArchAgreementDriver::get_boot_matrix_cells(TargetArch::Aarch64Musl);
     assert_eq!(cells_x86.len(), 4, "x86 matrix must have 4 cells!");
-    assert_eq!(cells_arm.len(), 2, "ARM matrix must have exactly 2 real cells (no BIOS padding)!");
+    assert_eq!(
+        cells_arm.len(),
+        2,
+        "ARM matrix must have exactly 2 real cells (no BIOS padding)!"
+    );
 
-    ledger.assert("M2.7-BOOTARM", "BOOTARM-CONSOLE-PL011", "ttyAMA0", console_arm, None);
-    ledger.assert("M2.7-BOOTARM", "BOOTARM-MATRIX-2CELLS", "2", cells_arm.len().to_string(), None);
+    ledger.assert(
+        "M2.7-BOOTARM",
+        "BOOTARM-CONSOLE-PL011",
+        "ttyAMA0",
+        console_arm,
+        None,
+    );
+    ledger.assert(
+        "M2.7-BOOTARM",
+        "BOOTARM-MATRIX-2CELLS",
+        "2",
+        cells_arm.len().to_string(),
+        None,
+    );
 }
 
 fn run_reproducibility_triangle_tests(ledger: &RigLedger) {
@@ -94,16 +125,30 @@ fn run_reproducibility_triangle_tests(ledger: &RigLedger) {
     );
     assert!(repro_res.is_ok());
 
-    ledger.assert("M2.7-REPRO", "REPRO-TRIANGLE-BIN", "true", repro_res.is_ok().to_string(), None);
+    ledger.assert(
+        "M2.7-REPRO",
+        "REPRO-TRIANGLE-BIN",
+        "true",
+        repro_res.is_ok().to_string(),
+        None,
+    );
 }
 
 fn run_cross_arch_roundtrip_tests(ledger: &RigLedger) {
     println!("\n[>>> ROUNDTRIP-ARM-TO-X86: Testing Evidence Round-Trip (Δ491) <<<]");
 
-    let arm_produced_evidence_hash = "6a8b0c2d4e6f8a0b2c4d6e8f0a2b4c6d8e0f2a4b3a7b9c1d0e2f4a6b8c0d2e4f";
-    let x86_verified_evidence_hash = "6a8b0c2d4e6f8a0b2c4d6e8f0a2b4c6d8e0f2a4b3a7b9c1d0e2f4a6b8c0d2e4f";
+    let arm_produced_evidence_hash =
+        "6a8b0c2d4e6f8a0b2c4d6e8f0a2b4c6d8e0f2a4b3a7b9c1d0e2f4a6b8c0d2e4f";
+    let x86_verified_evidence_hash =
+        "6a8b0c2d4e6f8a0b2c4d6e8f0a2b4c6d8e0f2a4b3a7b9c1d0e2f4a6b8c0d2e4f";
 
     assert_eq!(arm_produced_evidence_hash, x86_verified_evidence_hash);
 
-    ledger.assert("M2.7-ROUNDTRIP", "ROUNDTRIP-ARM-TO-X86", "true", (arm_produced_evidence_hash == x86_verified_evidence_hash).to_string(), None);
+    ledger.assert(
+        "M2.7-ROUNDTRIP",
+        "ROUNDTRIP-ARM-TO-X86",
+        "true",
+        (arm_produced_evidence_hash == x86_verified_evidence_hash).to_string(),
+        None,
+    );
 }

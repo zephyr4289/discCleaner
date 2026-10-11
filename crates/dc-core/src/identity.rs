@@ -76,7 +76,8 @@ impl StableIdentity {
                 warnings.push("DM UUID missing in observed target".to_string());
             }
             (None, Some(_)) => {
-                warnings.push("DM UUID present in observed target but absent in expected".to_string());
+                warnings
+                    .push("DM UUID present in observed target but absent in expected".to_string());
             }
             _ => {}
         }
@@ -90,7 +91,10 @@ impl StableIdentity {
                 ));
             }
             (Some(_), None) => {
-                warnings.push("Drive serial missing in observed target (possible bridge difference)".to_string());
+                warnings.push(
+                    "Drive serial missing in observed target (possible bridge difference)"
+                        .to_string(),
+                );
             }
             (None, Some(_)) => {
                 warnings.push("Drive serial observed but absent in expected baseline".to_string());

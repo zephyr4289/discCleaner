@@ -44,7 +44,9 @@ impl Heatmap {
             }
 
             // Check for failures in this range
-            let has_failure = failed_windows.iter().any(|&w| w >= start_win && w < end_win);
+            let has_failure = failed_windows
+                .iter()
+                .any(|&w| w >= start_win && w < end_win);
             if has_failure {
                 cells.push(HeatmapCellState::Failed);
                 continue;

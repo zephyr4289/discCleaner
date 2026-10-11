@@ -17,10 +17,7 @@ pub struct ZoneProductionDriver;
 
 impl ZoneProductionDriver {
     /// Strategy compiler with orthogonal write-model axis (Δ507, Δ508).
-    pub fn compile_zoned_strategy(
-        is_zoned: bool,
-        has_crypto_erase: bool,
-    ) -> ComposedStrategy {
+    pub fn compile_zoned_strategy(is_zoned: bool, has_crypto_erase: bool) -> ComposedStrategy {
         let mut ladder = Vec::new();
         if has_crypto_erase {
             ladder.push("CryptoErase".to_string());

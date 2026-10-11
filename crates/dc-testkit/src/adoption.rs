@@ -24,7 +24,9 @@ impl AdoptionArbiter {
                 return AdoptionDecision::RefuseForeign;
             } else {
                 return AdoptionDecision::RefuseContradiction {
-                    reason: "Drive is not in an active sanitize state and no journal issuance exists".to_string(),
+                    reason:
+                        "Drive is not in an active sanitize state and no journal issuance exists"
+                            .to_string(),
                 };
             }
         }
@@ -32,7 +34,8 @@ impl AdoptionArbiter {
         // Case 4: Contradiction (journal says failed/aborted, but drive says in-progress)
         if journal_failed_or_aborted && drive_status.is_in_progress {
             return AdoptionDecision::RefuseContradiction {
-                reason: "Journal recorded operation failure, but drive is currently in-progress".to_string(),
+                reason: "Journal recorded operation failure, but drive is currently in-progress"
+                    .to_string(),
             };
         }
 
@@ -50,7 +53,10 @@ impl AdoptionArbiter {
         }
 
         AdoptionDecision::RefuseContradiction {
-            reason: format!("Unexpected controller status SSTAT={}", drive_status.raw_sstat),
+            reason: format!(
+                "Unexpected controller status SSTAT={}",
+                drive_status.raw_sstat
+            ),
         }
     }
 }

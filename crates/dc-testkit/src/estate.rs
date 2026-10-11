@@ -15,6 +15,12 @@ pub struct EstateLedger {
     pub assets: HashMap<String, AssetLifecycleRecord>,
 }
 
+impl Default for EstateLedger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EstateLedger {
     pub fn new() -> Self {
         Self {
@@ -27,7 +33,11 @@ impl EstateLedger {
     }
 
     /// Authorize a characterization campaign against the asset endurance budget (Δ302).
-    pub fn authorize_campaign(&mut self, serial: &str, tbw_cost_gb: u64) -> Result<(), &'static str> {
+    pub fn authorize_campaign(
+        &mut self,
+        serial: &str,
+        tbw_cost_gb: u64,
+    ) -> Result<(), &'static str> {
         if let Some(asset) = self.assets.get_mut(serial) {
             if asset.retired {
                 return Err("ASSET_RETIRED");

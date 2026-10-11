@@ -1,5 +1,5 @@
 use std::os::unix::process::CommandExt;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::time::Instant;
 
 pub struct PtraceKiller;

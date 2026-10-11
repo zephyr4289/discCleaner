@@ -20,7 +20,10 @@ fn test_m1_4_ata_client_matrix() {
     // 4. ATA-FREEZE-DISCLOSE: Freeze Product Contract & Override (Δ280)
     run_freeze_contract_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[M1.4-FAIL] ATA Client matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[M1.4-FAIL] ATA Client matrix contains failing assertions!"
+    );
     println!("\n[=== MILESTONE M1.4 ATA PURGE CLIENT MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -49,7 +52,12 @@ fn run_fsm_vectors_tests(ledger: &RigLedger) {
     assert!(fsm2.process_intake(&sec_ok).is_ok());
     fsm2.arm("rescue456", true);
     let out2 = fsm2.on_erase_failure(true);
-    assert_eq!(out2, AtaFsmOutcome::Repaired { rescue_password: "rescue456".to_string() });
+    assert_eq!(
+        out2,
+        AtaFsmOutcome::Repaired {
+            rescue_password: "rescue456".to_string()
+        }
+    );
     ledger.assert("M1.4-FSM", "ATA-FSM-REPAIR", "rescue456", "rescue456", None);
 
     // 3. Intake refusal on pre-locked drive
@@ -58,7 +66,13 @@ fn run_fsm_vectors_tests(ledger: &RigLedger) {
     sec_locked.locked = true;
     let intake_res = fsm3.process_intake(&sec_locked);
     assert_eq!(intake_res, Err(AtaFsmOutcome::RefusedPreLocked));
-    ledger.assert("M1.4-FSM", "ATA-FSM-INTAKE-REFUSAL", "true", intake_res.is_err().to_string(), None);
+    ledger.assert(
+        "M1.4-FSM",
+        "ATA-FSM-INTAKE-REFUSAL",
+        "true",
+        intake_res.is_err().to_string(),
+        None,
+    );
 }
 
 fn run_lifeline_lifecycle_tests(ledger: &RigLedger) {
@@ -66,13 +80,22 @@ fn run_lifeline_lifecycle_tests(ledger: &RigLedger) {
 
     let mut lifeline = AtaLifeline::new("secret_rescue_password");
     assert!(!lifeline.voided);
-    assert_eq!(lifeline.plaintext_password, Some("secret_rescue_password".to_string()));
+    assert_eq!(
+        lifeline.plaintext_password,
+        Some("secret_rescue_password".to_string())
+    );
 
     // Voiding upon verified unlock
     lifeline.void();
     assert!(lifeline.voided);
     assert_eq!(lifeline.plaintext_password, None);
-    ledger.assert("M1.4-LIFELINE", "ATA-LIFELINE-VOID", "true", lifeline.voided.to_string(), None);
+    ledger.assert(
+        "M1.4-LIFELINE",
+        "ATA-LIFELINE-VOID",
+        "true",
+        lifeline.voided.to_string(),
+        None,
+    );
 }
 
 fn run_geometry_transaction_tests(ledger: &RigLedger) {
@@ -94,7 +117,13 @@ fn run_geometry_transaction_tests(ledger: &RigLedger) {
     txn.commit();
     assert!(txn.committed);
     assert_eq!(txn.stages.len(), 2);
-    ledger.assert("M1.4-GEOM", "ATA-GEOM-TXN", "2000000", txn.current_capacity.to_string(), None);
+    ledger.assert(
+        "M1.4-GEOM",
+        "ATA-GEOM-TXN",
+        "2000000",
+        txn.current_capacity.to_string(),
+        None,
+    );
 }
 
 fn run_freeze_contract_tests(ledger: &RigLedger) {

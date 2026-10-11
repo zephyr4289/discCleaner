@@ -17,7 +17,10 @@ fn test_p1_codec_matrix() {
     // 3. HW-SCSI: SCSI SANITIZE CDB Encoding & Sense Decoding (Δ209)
     run_scsi_codec_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[P1-FAIL] Hardware Codec matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[P1-FAIL] Hardware Codec matrix contains failing assertions!"
+    );
     println!("\n[=== PHASE 1 HARDWARE CODEC MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -27,7 +30,12 @@ fn run_nvme_codec_tests(ledger: &RigLedger) {
     // 1. Sanitize Crypto Erase
     let sanitize_cmd = NvmeCodec::encode_sanitize(NvmeSanitizeAction::CryptoErase, true);
     assert_eq!(sanitize_cmd[0], 0x84, "Opcode must be 0x84 (Sanitize)");
-    let cdw10 = u32::from_le_bytes([sanitize_cmd[40], sanitize_cmd[41], sanitize_cmd[42], sanitize_cmd[43]]);
+    let cdw10 = u32::from_le_bytes([
+        sanitize_cmd[40],
+        sanitize_cmd[41],
+        sanitize_cmd[42],
+        sanitize_cmd[43],
+    ]);
     assert_eq!(cdw10 & 0x07, 4, "SANACT must be 4 (Crypto Erase)");
     assert_eq!((cdw10 >> 9) & 1, 1, "NODAS bit must be 1");
     ledger.assert("P1-NVME", "HW-NVME-SANITIZE-ENCODE", "true", "true", None);
@@ -35,19 +43,30 @@ fn run_nvme_codec_tests(ledger: &RigLedger) {
     // 2. Format NVM (SES=2 Crypto Erase)
     let format_cmd = NvmeCodec::encode_format_nvm(1, NvmeSecureEraseSetting::CryptoErase, 0);
     assert_eq!(format_cmd[0], 0x80, "Opcode must be 0x80 (Format NVM)");
-    let f_cdw10 = u32::from_le_bytes([format_cmd[40], format_cmd[41], format_cmd[42], format_cmd[43]]);
+    let f_cdw10 = u32::from_le_bytes([
+        format_cmd[40],
+        format_cmd[41],
+        format_cmd[42],
+        format_cmd[43],
+    ]);
     assert_eq!((f_cdw10 >> 9) & 0x07, 2, "SES must be 2 (Crypto Erase)");
     ledger.assert("P1-NVME", "HW-NVME-FORMAT-ENCODE", "true", "true", None);
 
     // 3. Decode Log 0x81 (SPROG=32768 => 50% = 500 permille, SSTAT=2 In Progress)
     let mut raw_log = vec![0u8; 512];
     raw_log[0..2].copy_from_slice(&32768u16.to_le_bytes()); // SPROG
-    raw_log[2..4].copy_from_slice(&2u16.to_le_bytes());     // SSTAT (In progress)
+    raw_log[2..4].copy_from_slice(&2u16.to_le_bytes()); // SSTAT (In progress)
     let status = NvmeCodec::decode_sanitize_status_log(&raw_log).unwrap();
     assert_eq!(status.progress_permille, 500);
     assert!(status.is_in_progress);
     assert!(!status.is_completed);
-    ledger.assert("P1-NVME", "HW-NVME-LOG-DECODE", "500", status.progress_permille.to_string(), None);
+    ledger.assert(
+        "P1-NVME",
+        "HW-NVME-LOG-DECODE",
+        "500",
+        status.progress_permille.to_string(),
+        None,
+    );
 }
 
 fn run_ata_codec_tests(ledger: &RigLedger) {
@@ -74,7 +93,13 @@ fn run_ata_codec_tests(ledger: &RigLedger) {
     assert!(ident.security.enabled);
     assert!(ident.security.frozen);
     assert!(ident.security.enhanced_erase_supported);
-    ledger.assert("P1-ATA", "HW-ATA-IDENTIFY-WORD128", "true", ident.security.frozen.to_string(), None);
+    ledger.assert(
+        "P1-ATA",
+        "HW-ATA-IDENTIFY-WORD128",
+        "true",
+        ident.security.frozen.to_string(),
+        None,
+    );
 
     // 2. SAT ATA PASS-THROUGH (16) encoding (Opcode 0x85)
     let sat_cdb = AtaCodec::encode_sat_passthrough_16(0xEC, 0x0000, 0, 1, 4); // IDENTIFY DEVICE
@@ -104,5 +129,11 @@ fn run_scsi_codec_tests(ledger: &RigLedger) {
     let sense = ScsiCodec::decode_sense_data(&raw_sense).unwrap();
     assert_eq!(sense.sense_key, 2);
     assert_eq!(sense.progress_permille, Some(500));
-    ledger.assert("P1-SCSI", "HW-SCSI-SENSE-DECODE", "500", sense.progress_permille.unwrap().to_string(), None);
+    ledger.assert(
+        "P1-SCSI",
+        "HW-SCSI-SENSE-DECODE",
+        "500",
+        sense.progress_permille.unwrap().to_string(),
+        None,
+    );
 }

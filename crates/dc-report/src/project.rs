@@ -30,8 +30,18 @@ impl ReportModel {
 
         let mut doc = PdfaDocument::new(title, &header);
 
-        doc.add_line(&format!("Execution Status: {}", if self.outcome_clean { "VERIFIED_CLEAN" } else { "VERIFICATION_FAILURE" }));
-        doc.add_line(&format!("Evidence Time (UTC): {}", self.evidence_timestamp_utc));
+        doc.add_line(&format!(
+            "Execution Status: {}",
+            if self.outcome_clean {
+                "VERIFIED_CLEAN"
+            } else {
+                "VERIFICATION_FAILURE"
+            }
+        ));
+        doc.add_line(&format!(
+            "Evidence Time (UTC): {}",
+            self.evidence_timestamp_utc
+        ));
         doc.add_line(&format!("Sanitization Mechanism: {}", self.mechanism_name));
 
         // Embed verifiable signed certificate JSON as document attachment (Δ473)

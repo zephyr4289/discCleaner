@@ -33,7 +33,9 @@ impl Sniffer {
         for s in 0..4 {
             let offset = s * 512;
             if &head[offset..offset + 8] == b"LABELONE" {
-                return Some(StorageSignature::LvmLabel { offset: offset as u64 });
+                return Some(StorageSignature::LvmLabel {
+                    offset: offset as u64,
+                });
             }
         }
 
@@ -49,14 +51,14 @@ impl Sniffer {
         }
 
         // 2. Read tail 4 KiB if size > 8192 (for MD RAID v1.2 superblock)
-        if total_size >= 8192 {
-            if file.seek(SeekFrom::End(-4096)).is_ok() {
-                let mut tail = [0u8; 4096];
-                if file.read_exact(&mut tail).is_ok() {
-                    // MD superblock magic: 0xa92b4efc in little-endian
-                    if tail.windows(4).any(|w| w == &[0xfc, 0x4e, 0x2b, 0xa9]) {
-                        return Some(StorageSignature::MdRaid { version: "1.2".to_string() });
-                    }
+        if total_size >= 8192 && file.seek(SeekFrom::End(-4096)).is_ok() {
+            let mut tail = [0u8; 4096];
+            if file.read_exact(&mut tail).is_ok() {
+                // MD superblock magic: 0xa92b4efc in little-endian
+                if tail.windows(4).any(|w| w == [0xfc, 0x4e, 0x2b, 0xa9]) {
+                    return Some(StorageSignature::MdRaid {
+                        version: "1.2".to_string(),
+                    });
                 }
             }
         }

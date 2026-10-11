@@ -1,4 +1,4 @@
-use dc_cert::{AuthorizationSet, CustodyType, KeyringEntry, KeyringRegistry};
+use dc_cert::{AuthorizationSet, CustodyType, KeyringEntry, KeyringRegistry, OperatorKeyPair};
 use dc_cli::approve::PlanApprover;
 use dc_cli::key::KeyLifecycleVerbs;
 use dc_testkit::RigLedger;
@@ -19,7 +19,10 @@ fn test_m2_4_custody_matrix() {
     // 4. REV-PRE-T-STANDS & REV-POST-T-SUSPECT: At-or-After Revocation (Δ452)
     run_revocation_semantics_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[M2.4-FAIL] Custody matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[M2.4-FAIL] Custody matrix contains failing assertions!"
+    );
     println!("\n[=== MILESTONE M2.4 TWO-PERSON INTEGRITY & CUSTODY MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -28,22 +31,108 @@ fn run_pre_arm_gating_tests(ledger: &RigLedger) {
 
     let plan_hash = "3a7b9c1d0e2f4a6b8c0d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4c6d8e0f2a4b";
 
+    // Real officer keypairs: the countersignatures are genuine Ed25519
+    // signatures over the plan hash, not forgeable string hashes.
+    let officer_a = OperatorKeyPair::generate();
+    let officer_b = OperatorKeyPair::generate();
+
     let mut auth_set = AuthorizationSet::new(plan_hash);
-    let sig_officer_a = PlanApprover::countersign_plan(plan_hash, "OFFICER_A_KEY_HASH", false);
+    let sig_officer_a = PlanApprover::countersign_plan(plan_hash, &officer_a, false);
     auth_set.add_signature(sig_officer_a);
 
     // 1. Single signature under 2PI policy -> Refused!
     let res_single = auth_set.verify_pre_arm_authorization(plan_hash, true);
     assert_eq!(res_single, Err("AUTHORIZATION_INCOMPLETE"));
 
-    // 2. Add second signature from Officer B -> Accepted!
-    let sig_officer_b = PlanApprover::countersign_plan(plan_hash, "OFFICER_B_KEY_HASH", false);
+    // 2. Add second signature from a DISTINCT officer key -> Accepted!
+    let sig_officer_b = PlanApprover::countersign_plan(plan_hash, &officer_b, false);
     auth_set.add_signature(sig_officer_b);
     let res_dual = auth_set.verify_pre_arm_authorization(plan_hash, true);
     assert!(res_dual.is_ok());
 
-    ledger.assert("M2.4-GATE", "GATE-INCOMPLETE-REFUSES", "true", (res_single == Err("AUTHORIZATION_INCOMPLETE")).to_string(), None);
-    ledger.assert("M2.4-GATE", "GATE-APPROVE-EXEC", "true", res_dual.is_ok().to_string(), None);
+    // 3. REG-DUALAUTH-FORGERY: a hash-of-strings forgery must be REJECTED.
+    //    (The pre-hardening implementation accepted exactly this.)
+    let mut forged = AuthorizationSet::new(plan_hash);
+    forged.add_signature(dc_cert::AuthSignatureEntry {
+        key_fingerprint: blake3::hash(b"OFFICER_A_KEY_HASH").to_hex().to_string(),
+        public_key_hex: hex::encode([0u8; 32]),
+        signature_hex: blake3::hash(
+            format!("APPROVE_PLAN_{}_BY_{}", plan_hash, "OFFICER_A_KEY_HASH").as_bytes(),
+        )
+        .to_hex()
+        .to_string(),
+        is_hardware_token: false,
+    });
+    forged.add_signature(dc_cert::AuthSignatureEntry {
+        key_fingerprint: blake3::hash(b"OFFICER_B_KEY_HASH").to_hex().to_string(),
+        public_key_hex: hex::encode([1u8; 32]),
+        signature_hex: blake3::hash(
+            format!("APPROVE_PLAN_{}_BY_{}", plan_hash, "OFFICER_B_KEY_HASH").as_bytes(),
+        )
+        .to_hex()
+        .to_string(),
+        is_hardware_token: false,
+    });
+    let res_forged = forged.verify_pre_arm_authorization(plan_hash, true);
+    assert!(
+        res_forged.is_err(),
+        "Blake3-of-strings forgery must not authorize!"
+    );
+
+    // 4. One officer signing twice with two entries is NOT two-person control.
+    let mut same_officer_twice = AuthorizationSet::new(plan_hash);
+    same_officer_twice.add_signature(PlanApprover::countersign_plan(plan_hash, &officer_a, false));
+    same_officer_twice.add_signature(PlanApprover::countersign_plan(plan_hash, &officer_a, true));
+    let res_same = same_officer_twice.verify_pre_arm_authorization(plan_hash, true);
+    assert_eq!(res_same, Err("AUTHORIZATION_INCOMPLETE"));
+
+    // 5. A signature bound to a different plan hash must be rejected.
+    let other_hash = "1111111111111111111111111111111111111111111111111111111111111111";
+    let mut wrong_plan = AuthorizationSet::new(other_hash);
+    wrong_plan.add_signature(PlanApprover::countersign_plan(
+        other_hash, &officer_a, false,
+    ));
+    wrong_plan.add_signature(PlanApprover::countersign_plan(
+        other_hash, &officer_b, false,
+    ));
+    let res_binding = wrong_plan.verify_pre_arm_authorization(plan_hash, true);
+    assert_eq!(res_binding, Err("PLAN_HASH_BINDING_MISMATCH"));
+
+    ledger.assert(
+        "M2.4-GATE",
+        "GATE-INCOMPLETE-REFUSES",
+        "true",
+        (res_single == Err("AUTHORIZATION_INCOMPLETE")).to_string(),
+        None,
+    );
+    ledger.assert(
+        "M2.4-GATE",
+        "GATE-APPROVE-EXEC",
+        "true",
+        res_dual.is_ok().to_string(),
+        None,
+    );
+    ledger.assert(
+        "M2.4-GATE",
+        "GATE-FORGERY-REFUSED",
+        "true",
+        res_forged.is_err().to_string(),
+        None,
+    );
+    ledger.assert(
+        "M2.4-GATE",
+        "GATE-SAME-KEY-REFUSED",
+        "true",
+        (res_same == Err("AUTHORIZATION_INCOMPLETE")).to_string(),
+        None,
+    );
+    ledger.assert(
+        "M2.4-GATE",
+        "GATE-BINDING-MISMATCH",
+        "true",
+        (res_binding == Err("PLAN_HASH_BINDING_MISMATCH")).to_string(),
+        None,
+    );
 }
 
 fn run_custody_vocabulary_tests(ledger: &RigLedger) {
@@ -52,26 +141,54 @@ fn run_custody_vocabulary_tests(ledger: &RigLedger) {
     let plan_hash = "3a7b9c1d0e2f4a6b8c0d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4c6d8e0f2a4b";
 
     // 1. Keyfile pair -> shared-filesystem
+    let key_a = OperatorKeyPair::generate();
+    let key_b = OperatorKeyPair::generate();
     let mut auth_file = AuthorizationSet::new(plan_hash);
-    auth_file.add_signature(PlanApprover::countersign_plan(plan_hash, "KEY_A", false));
-    auth_file.add_signature(PlanApprover::countersign_plan(plan_hash, "KEY_B", false));
-    assert_eq!(auth_file.derive_custody_type(), CustodyType::SharedFilesystem);
+    auth_file.add_signature(PlanApprover::countersign_plan(plan_hash, &key_a, false));
+    auth_file.add_signature(PlanApprover::countersign_plan(plan_hash, &key_b, false));
+    assert_eq!(
+        auth_file.derive_custody_type(),
+        CustodyType::SharedFilesystem
+    );
 
     // 2. Hardware HSM pair -> separate-hardware
+    let hsm_a = OperatorKeyPair::generate();
+    let hsm_b = OperatorKeyPair::generate();
     let mut auth_hsm = AuthorizationSet::new(plan_hash);
-    auth_hsm.add_signature(PlanApprover::countersign_plan(plan_hash, "HSM_A", true));
-    auth_hsm.add_signature(PlanApprover::countersign_plan(plan_hash, "HSM_B", true));
-    assert_eq!(auth_hsm.derive_custody_type(), CustodyType::SeparateHardware);
+    auth_hsm.add_signature(PlanApprover::countersign_plan(plan_hash, &hsm_a, true));
+    auth_hsm.add_signature(PlanApprover::countersign_plan(plan_hash, &hsm_b, true));
+    assert_eq!(
+        auth_hsm.derive_custody_type(),
+        CustodyType::SeparateHardware
+    );
 
-    ledger.assert("M2.4-VOCAB", "VOCAB-SHARED-FILESYSTEM", "SharedFilesystem", format!("{:?}", auth_file.derive_custody_type()), None);
-    ledger.assert("M2.4-VOCAB", "VOCAB-SEPARATE-HARDWARE", "SeparateHardware", format!("{:?}", auth_hsm.derive_custody_type()), None);
+    ledger.assert(
+        "M2.4-VOCAB",
+        "VOCAB-SHARED-FILESYSTEM",
+        "SharedFilesystem",
+        format!("{:?}", auth_file.derive_custody_type()),
+        None,
+    );
+    ledger.assert(
+        "M2.4-VOCAB",
+        "VOCAB-SEPARATE-HARDWARE",
+        "SeparateHardware",
+        format!("{:?}", auth_hsm.derive_custody_type()),
+        None,
+    );
 }
 
 fn run_bilateral_rotation_tests(ledger: &RigLedger) {
     println!("\n[>>> ROT-BILATERAL: Testing Bilateral Key Rotation (Δ450) <<<]");
 
     let mut registry = KeyringRegistry::new();
-    KeyLifecycleVerbs::register_generated_key(&mut registry, "KEY_V1_HASH", "Officer Alpha", "Lead Auditor", 1700000000);
+    KeyLifecycleVerbs::register_generated_key(
+        &mut registry,
+        "KEY_V1_HASH",
+        "Officer Alpha",
+        "Lead Auditor",
+        1700000000,
+    );
 
     let new_key_entry = KeyringEntry {
         key_hash: "KEY_V2_HASH".to_string(),
@@ -82,20 +199,33 @@ fn run_bilateral_rotation_tests(ledger: &RigLedger) {
         revoked_at_utc: None,
     };
 
-    let rot_res = KeyLifecycleVerbs::rotate_key(&mut registry, "KEY_V1_HASH", new_key_entry, 1720000000);
+    let rot_res =
+        KeyLifecycleVerbs::rotate_key(&mut registry, "KEY_V1_HASH", new_key_entry, 1720000000);
     assert!(rot_res.is_ok());
 
     assert_eq!(registry.entries[0].superseded_at_utc, Some(1720000000));
     assert_eq!(registry.entries[1].active_from_utc, 1720000000);
 
-    ledger.assert("M2.4-ROT", "ROT-BILATERAL", "true", rot_res.is_ok().to_string(), None);
+    ledger.assert(
+        "M2.4-ROT",
+        "ROT-BILATERAL",
+        "true",
+        rot_res.is_ok().to_string(),
+        None,
+    );
 }
 
 fn run_revocation_semantics_tests(ledger: &RigLedger) {
     println!("\n[>>> REV-SEMANTICS: Testing At-or-After Revocation (Δ452) <<<]");
 
     let mut registry = KeyringRegistry::new();
-    KeyLifecycleVerbs::register_generated_key(&mut registry, "KEY_TARGET_HASH", "Officer Beta", "Wipe Operator", 1700000000);
+    KeyLifecycleVerbs::register_generated_key(
+        &mut registry,
+        "KEY_TARGET_HASH",
+        "Officer Beta",
+        "Wipe Operator",
+        1700000000,
+    );
 
     // Key revoked at T = 1720000000
     KeyLifecycleVerbs::revoke_key(&mut registry, "KEY_TARGET_HASH", 1720000000).unwrap();
@@ -108,6 +238,18 @@ fn run_revocation_semantics_tests(ledger: &RigLedger) {
     let res_post = registry.evaluate_signature_at_time("KEY_TARGET_HASH", 1730000000);
     assert_eq!(res_post, Ok("SUSPECT_REVOKED_KEY"));
 
-    ledger.assert("M2.4-REV", "REV-PRE-T-STANDS", "Ok(\"VALID_AT_TIME\")", format!("{:?}", res_pre), None);
-    ledger.assert("M2.4-REV", "REV-POST-T-SUSPECT", "Ok(\"SUSPECT_REVOKED_KEY\")", format!("{:?}", res_post), None);
+    ledger.assert(
+        "M2.4-REV",
+        "REV-PRE-T-STANDS",
+        "Ok(\"VALID_AT_TIME\")",
+        format!("{:?}", res_pre),
+        None,
+    );
+    ledger.assert(
+        "M2.4-REV",
+        "REV-POST-T-SUSPECT",
+        "Ok(\"SUSPECT_REVOKED_KEY\")",
+        format!("{:?}", res_post),
+        None,
+    );
 }

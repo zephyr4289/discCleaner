@@ -45,9 +45,14 @@ pub enum AtaFsmOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AtaSecurityState {
     Intake,
-    Armed { lifeline: AtaLifeline, enhanced: bool },
+    Armed {
+        lifeline: AtaLifeline,
+        enhanced: bool,
+    },
     Erasing,
-    Repairing { lifeline: AtaLifeline },
+    Repairing {
+        lifeline: AtaLifeline,
+    },
     Terminal(AtaFsmOutcome),
 }
 
@@ -114,5 +119,11 @@ impl AtaSecurityFsm {
             self.state = AtaSecurityState::Terminal(AtaFsmOutcome::RefusedPreLocked);
             AtaFsmOutcome::RefusedPreLocked
         }
+    }
+}
+
+impl Default for AtaSecurityFsm {
+    fn default() -> Self {
+        Self::new()
     }
 }

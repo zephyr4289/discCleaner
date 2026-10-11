@@ -30,11 +30,10 @@ pub enum DcError {
     #[error("Journal corruption at record #{record_index}: {reason}")]
     JournalCorrupt { record_index: u64, reason: String },
 
-    #[error("Verification failed with {mismatches} mismatching windows! First mismatches at LBAs: {sample:?}")]
-    VerificationFailed {
-        mismatches: u64,
-        sample: Vec<u64>,
-    },
+    #[error(
+        "Verification failed with {mismatches} mismatching windows! First mismatches at LBAs: {sample:?}"
+    )]
+    VerificationFailed { mismatches: u64, sample: Vec<u64> },
 
     #[error("Operation interrupted by signal or operator request")]
     Interrupted {
@@ -59,8 +58,18 @@ pub enum DcError {
     #[error("I/O OS error: {0}")]
     StdIo(#[from] std::io::Error),
 
+    /// Note: carried as `String` (via the `From` impl below) so that this
+    /// variant stays source-compatible across `getrandom` releases whose
+    /// `Error` type may not implement `std::error::Error` in every feature
+    /// configuration. Display output is preserved for operators.
     #[error("RNG error: {0}")]
-    Rng(#[from] getrandom::Error),
+    Rng(String),
+}
+
+impl From<getrandom::Error> for DcError {
+    fn from(e: getrandom::Error) -> Self {
+        DcError::Rng(e.to_string())
+    }
 }
 
 impl DcError {

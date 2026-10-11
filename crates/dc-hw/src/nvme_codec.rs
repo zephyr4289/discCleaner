@@ -67,6 +67,12 @@ pub struct NvmeCodec;
 
 impl NvmeCodec {
     /// Encode a 64-byte NVMe Format NVM Admin Command (Opcode 0x80).
+    ///
+    /// CDW10 layout (NVMe Base §Format NVM, verified against QEMU's NVMe
+    /// emulation and the Linux kernel): bits 03:00 LBAF, bit 4 MSET,
+    /// bits 07:05 PI, bit 8 PIL, bits 10:09 SES, bits 13:12 LBAFU.
+    /// SES is therefore bits 10:09 and `ses << 9` is the correct encoding
+    /// (1=User Data Erase, 2=Crypto Erase, 0=No secure erase).
     pub fn encode_format_nvm(nsid: u32, ses: NvmeSecureEraseSetting, lbaf: u8) -> [u8; 64] {
         let mut cmd = [0u8; 64];
         cmd[0] = 0x80; // Opcode: Format NVM
@@ -100,7 +106,7 @@ impl NvmeCodec {
         cmd[4..8].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // NSID: 0xFFFFFFFF (Global)
 
         // CDW10: Log ID 0x81, NUMDL = (512 / 4) - 1 = 127 = 0x7F in upper 16 bits
-        let cdw10 = 0x81 | (0x007F << 16);
+        let cdw10: u32 = 0x81 | (0x007F << 16);
         cmd[40..44].copy_from_slice(&cdw10.to_le_bytes());
 
         cmd
@@ -120,8 +126,9 @@ impl NvmeCodec {
         let is_in_progress = status_code == 2;
         let is_failed = status_code == 3;
 
-        // sprog is fraction of 65536
-        let progress_permille = ((sprog as u64 * 1000) / 65536) as u16;
+        // sprog is a fraction of 65536; round half-up so a fully completed
+        // sanitize (SPROG=0xFFFF) reports 1000 permille, not 999.
+        let progress_permille = ((sprog as u64 * 1000 + 32768) / 65536) as u16;
 
         Ok(NvmeSanitizeStatus {
             progress_permille,

@@ -1,6 +1,4 @@
-use dc_testkit::{
-    OpalDevMock, OpalFrameParser, OpalLifecycle, PsidAuthResult, RigLedger,
-};
+use dc_testkit::{OpalDevMock, OpalFrameParser, OpalLifecycle, PsidAuthResult, RigLedger};
 
 #[test]
 fn test_t19_opal_matrix() {
@@ -18,7 +16,10 @@ fn test_t19_opal_matrix() {
     // 4. T19-STATE: Spec-Inferred / State-Attested Scope Honesty (Δ360)
     run_state_attestation_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[T19-FAIL] Opal/SED matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[T19-FAIL] Opal/SED matrix contains failing assertions!"
+    );
     println!("\n[=== PHASE T19 OPAL / SED RIG MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -39,7 +40,13 @@ fn run_hostage_lifecycle_tests(ledger: &RigLedger) {
     assert_eq!(dev.lifecycle, OpalLifecycle::Manufactured);
     assert!(!dev.locking_ranges_configured);
 
-    ledger.assert("T19-SM", "T19-SM-LIFECYCLE", "Manufactured", format!("{:?}", dev.lifecycle), None);
+    ledger.assert(
+        "T19-SM",
+        "T19-SM-LIFECYCLE",
+        "Manufactured",
+        format!("{:?}", dev.lifecycle),
+        None,
+    );
 }
 
 fn run_psid_disambiguation_tests(ledger: &RigLedger) {
@@ -56,8 +63,20 @@ fn run_psid_disambiguation_tests(ledger: &RigLedger) {
     let bad_psid_res = dev.revert_with_psid("TARGET_SED_SN001", "INCORRECT_PSID");
     assert_eq!(bad_psid_res, PsidAuthResult::PsidRejected);
 
-    ledger.assert("T19-PSID", "T19-PSID-WRONGDEV", "true", matches!(wrong_dev_res, PsidAuthResult::WrongDevice { .. }).to_string(), None);
-    ledger.assert("T19-PSID", "T19-PSID-REJECTED", "PsidRejected", format!("{:?}", bad_psid_res), None);
+    ledger.assert(
+        "T19-PSID",
+        "T19-PSID-WRONGDEV",
+        "true",
+        matches!(wrong_dev_res, PsidAuthResult::WrongDevice { .. }).to_string(),
+        None,
+    );
+    ledger.assert(
+        "T19-PSID",
+        "T19-PSID-REJECTED",
+        "PsidRejected",
+        format!("{:?}", bad_psid_res),
+        None,
+    );
 }
 
 fn run_frame_bounds_tests(ledger: &RigLedger) {
@@ -77,7 +96,13 @@ fn run_frame_bounds_tests(ledger: &RigLedger) {
     assert!(err_sub.is_err());
     assert_eq!(err_sub.unwrap_err(), "SUBPACKET_LENGTH_EXCEEDS_PACKET");
 
-    ledger.assert("T19-FRAME", "T19-FRAME-NEST-BOUNDS", "true", err_packet.is_err().to_string(), None);
+    ledger.assert(
+        "T19-FRAME",
+        "T19-FRAME-NEST-BOUNDS",
+        "true",
+        err_packet.is_err().to_string(),
+        None,
+    );
 }
 
 fn run_state_attestation_tests(ledger: &RigLedger) {
@@ -90,5 +115,11 @@ fn run_state_attestation_tests(ledger: &RigLedger) {
     let attest = dev.get_post_revert_attestation().unwrap();
     assert_eq!(attest, "SPEC_INFERRED_STATE_ATTESTED_MEK_REGENERATED");
 
-    ledger.assert("T19-STATE", "T19-STATE-SPEC-INFERRED", "SPEC_INFERRED_STATE_ATTESTED_MEK_REGENERATED", attest, None);
+    ledger.assert(
+        "T19-STATE",
+        "T19-STATE-SPEC-INFERRED",
+        "SPEC_INFERRED_STATE_ATTESTED_MEK_REGENERATED",
+        attest,
+        None,
+    );
 }

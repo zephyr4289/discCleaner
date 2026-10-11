@@ -19,8 +19,6 @@ pub struct StreamVerifier {
     level: VerifyLevel,
     window_bytes: u64,
     logical_block_size: u32,
-    enable_sha256: bool,
-    enable_entropy: bool,
     blake3_hasher: blake3::Hasher,
     sha256_hasher: Option<Sha256>,
     entropy_calc: Option<EntropyCalculator>,
@@ -41,10 +39,13 @@ impl StreamVerifier {
             level,
             window_bytes,
             logical_block_size: logical_block_size.max(512),
-            enable_sha256,
-            enable_entropy,
+            // The hasher's presence encodes the flag; no redundant booleans.
             blake3_hasher: blake3::Hasher::new(),
-            sha256_hasher: if enable_sha256 { Some(Sha256::new()) } else { None },
+            sha256_hasher: if enable_sha256 {
+                Some(Sha256::new())
+            } else {
+                None
+            },
             entropy_calc: if enable_entropy {
                 Some(EntropyCalculator::new())
             } else {

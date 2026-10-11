@@ -1,14 +1,16 @@
-use crate::buffer_pool::{AlignedBuffer, BufferPool};
 use crate::sync_engine::SyncEngine;
 use crate::traits::{Engine, EngineCaps, EngineProgress, LbaSpan, PassOutcome, VerifySink};
-use dc_core::{DcError, PatternSource, WritePermit, ZeroPattern};
-use std::collections::BTreeMap;
+use dc_core::{DcError, PatternSource, WritePermit};
 use std::fs::File;
-use std::os::unix::io::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Instant;
 
+/// io_uring engine.
+///
+/// NOTE ON HONEST CAPS: the io_uring submission path is not wired yet; this
+/// engine currently delegates every operation to the synchronous engine.
+/// Its reported capabilities therefore still identify as the synchronous
+/// engine (`engine_name: "sync"`, `supports_io_uring: false`) — an engine
+/// must never advertise a capability it does not actually exercise, because
+/// operators and auditors make fast-path decisions from `EngineCaps`.
 pub struct UringEngine {
     sync_fallback: SyncEngine,
 }
@@ -20,32 +22,34 @@ impl UringEngine {
         supports_write_zeroes: bool,
         _qd: u32,
     ) -> Result<Self, std::io::Error> {
-        // Test io_uring availability via setup syscall or probe
+        // Probe io_uring availability. When the kernel (or a container
+        // seccomp policy) denies the subsystem, engine selection falls back
+        // to the synchronous engine on the SAME file — see
+        // `dc_io::create_engine` (fail-closed; never /dev/null).
         let is_uring_available = Self::probe_uring();
 
         if !is_uring_available {
-            tracing::info!("io_uring not available on this kernel/environment; initializing high-throughput SyncEngine");
+            tracing::info!(
+                "io_uring not available on this kernel/environment; \
+                 initializing high-throughput SyncEngine"
+            );
         } else {
             tracing::info!("io_uring kernel support detected; initializing UringEngine");
         }
 
-        let sync_fallback = SyncEngine::new(file, window_bytes, supports_write_zeroes)?;
+        let sync_fallback = SyncEngine::new(file, window_bytes, supports_write_zeroes)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         Ok(Self { sync_fallback })
     }
 
     fn probe_uring() -> bool {
         #[cfg(target_os = "linux")]
         {
-            #[cfg(target_arch = "x86_64")]
-            let sys_setup = 425;
-            #[cfg(target_arch = "aarch64")]
-            let sys_setup = 425;
-            #[cfg(target_arch = "arm")]
-            let sys_setup = 425;
-            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm")))]
-            let sys_setup = 425;
+            let sys_setup: libc::c_long = 425; // __NR_io_uring_setup
 
-            // Probe with 0 entries (should fail with EINVAL if syscall exists, or ENOSYS/EPERM if not supported)
+            // Probe with 0 entries: EINVAL means the syscall exists (proper
+            // probe with a real entry count happens on actual use), anything
+            // else (ENOSYS/EPERM/...) means the subsystem is unavailable.
             let mut p: [u8; 128] = [0u8; 128];
             let ret = unsafe { libc::syscall(sys_setup, 0, p.as_mut_ptr()) };
             if ret < 0 {
@@ -65,6 +69,7 @@ impl UringEngine {
 
 impl Engine for UringEngine {
     fn caps(&self) -> &EngineCaps {
+        // Deliberately delegates: see the struct-level honesty note.
         self.sync_fallback.caps()
     }
 

@@ -1,11 +1,8 @@
-use crate::signer::{verify_canonical_signature, OperatorKeyPair};
-use dc_core::{
-    DcError, DeviceIdentity, JournalChainSummary, SanitizationPlan, ToolBuild,
-};
+use crate::signer::{OperatorKeyPair, verify_canonical_signature};
+use dc_core::{DcError, DeviceIdentity, JournalChainSummary, SanitizationPlan, ToolBuild};
 use dc_verify::VerificationReport;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::Path;
 
 pub const VERIFICATION_SCHEME_DOC: &str = r#"scheme: chacha20-window-v1
 cipher: ChaCha20 as specified in RFC 8439 §2.4 — 256-bit key, 96-bit
@@ -69,11 +66,12 @@ pub struct OperatorDetails {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignatureDetails {
-    pub alg: String, // "Ed25519"
+    pub alg: String,   // "Ed25519"
     pub value: String, // Base64
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct UnsignedCertificate {
     pub schema: String,
     pub tool: ToolBuild,
@@ -88,6 +86,7 @@ pub struct UnsignedCertificate {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SanitizationCertificate {
     pub schema: String,
     pub tool: ToolBuild,
@@ -193,7 +192,11 @@ impl SanitizationCertificate {
         }
 
         let canonical_bytes = self.canonical_unsigned_bytes()?;
-        verify_canonical_signature(&self.operator.public_key_ed25519, &canonical_bytes, &sig.value)
+        verify_canonical_signature(
+            &self.operator.public_key_ed25519,
+            &canonical_bytes,
+            &sig.value,
+        )
     }
 
     /// Strict parser and anchor verification driver (§5 / Δ63 / Δ65).
@@ -236,7 +239,10 @@ impl SanitizationCertificate {
                 is_authenticated: false,
                 mode: "invalid".to_string(),
                 file_blake3,
-                error_detail: Some(format!("SCHEMA_VERSION_REFUSAL: Unsupported schema {}", cert.schema)),
+                error_detail: Some(format!(
+                    "SCHEMA_VERSION_REFUSAL: Unsupported schema {}",
+                    cert.schema
+                )),
             };
         }
 
@@ -300,7 +306,10 @@ impl SanitizationCertificate {
                 };
             }
         } else if let Some(keys) = trusted_keys_list {
-            if keys.iter().any(|k| k.trim() == cert.operator.public_key_ed25519) {
+            if keys
+                .iter()
+                .any(|k| k.trim() == cert.operator.public_key_ed25519)
+            {
                 is_authenticated = true;
             } else {
                 return CertVerificationResult {
@@ -308,7 +317,9 @@ impl SanitizationCertificate {
                     is_authenticated: false,
                     mode: "invalid".to_string(),
                     file_blake3,
-                    error_detail: Some("KEY_MISMATCH: Public key not in trusted keys list".to_string()),
+                    error_detail: Some(
+                        "KEY_MISMATCH: Public key not in trusted keys list".to_string(),
+                    ),
                 };
             }
         }
@@ -344,7 +355,7 @@ impl SanitizationCertificate {
         // Simple strict tokenizer to catch duplicate keys at any object depth
         let mut seen_keys_stack: Vec<HashSet<String>> = Vec::new();
         let mut chars = s.chars().peekable();
-        let mut depth = 0;
+        let mut depth: u32 = 0;
 
         while let Some(&c) = chars.peek() {
             match c {
@@ -365,7 +376,7 @@ impl SanitizationCertificate {
                     chars.next(); // consume opening quote
                     let mut key_str = String::new();
                     let mut escaped = false;
-                    while let Some(ch) = chars.next() {
+                    for ch in chars.by_ref() {
                         if escaped {
                             key_str.push(ch);
                             escaped = false;
@@ -387,12 +398,14 @@ impl SanitizationCertificate {
                         }
                     }
 
-                    if chars.peek() == Some(&':') {
-                        if let Some(current_scope) = seen_keys_stack.last_mut() {
-                            if !current_scope.insert(key_str.clone()) {
-                                return Err(format!("DUPLICATE_KEY: Duplicate key '{}' detected", key_str));
-                            }
-                        }
+                    if chars.peek() == Some(&':')
+                        && let Some(current_scope) = seen_keys_stack.last_mut()
+                        && !current_scope.insert(key_str.clone())
+                    {
+                        return Err(format!(
+                            "DUPLICATE_KEY: Duplicate key '{}' detected",
+                            key_str
+                        ));
                     }
                 }
                 _ => {
@@ -407,45 +420,104 @@ impl SanitizationCertificate {
     /// Render human-readable audit text summary.
     pub fn render_summary(&self) -> String {
         let mut lines = Vec::new();
-        lines.push("================================================================================".to_string());
+        lines.push(
+            "================================================================================"
+                .to_string(),
+        );
         lines.push("                    CERTIFICATE OF DATA SANITIZATION".to_string());
-        lines.push("================================================================================".to_string());
+        lines.push(
+            "================================================================================"
+                .to_string(),
+        );
         lines.push(format!("Schema:            {}", self.schema));
-        lines.push(format!("Tool:              {} v{} (Build: {})", self.tool.name, self.tool.version, self.tool.build_hash));
-        lines.push(format!("Device Model:      {}", self.device.stable.model.as_deref().unwrap_or("Unknown")));
-        lines.push(format!("Device Serial:     {}", self.device.stable.serial.as_deref().unwrap_or("Unknown")));
-        lines.push(format!("Device Bus / Size: {} / {} GiB ({:.2} GB)", self.device.stable.bus, self.device.stable.size_bytes / (1024 * 1024 * 1024), self.device.stable.size_bytes as f64 / 1_000_000_000.0));
+        lines.push(format!(
+            "Tool:              {} v{} (Build: {})",
+            self.tool.name, self.tool.version, self.tool.build_hash
+        ));
+        lines.push(format!(
+            "Device Model:      {}",
+            self.device.stable.model.as_deref().unwrap_or("Unknown")
+        ));
+        lines.push(format!(
+            "Device Serial:     {}",
+            self.device.stable.serial.as_deref().unwrap_or("Unknown")
+        ));
+        lines.push(format!(
+            "Device Bus / Size: {} / {} GiB ({:.2} GB)",
+            self.device.stable.bus,
+            self.device.stable.size_bytes / (1024 * 1024 * 1024),
+            self.device.stable.size_bytes as f64 / 1_000_000_000.0
+        ));
         lines.push(format!("Plan Hash:         {}", self.plan_hash));
-        lines.push(format!("Mechanism:         Logical Overwrite ({} passes)", self.execution.passes.len()));
+        lines.push(format!(
+            "Mechanism:         Logical Overwrite ({} passes)",
+            self.execution.passes.len()
+        ));
 
         if self.verification.mismatch_count > 0 {
-            lines.push(format!("VERIFICATION:      FAILED ({} mismatches)", self.verification.mismatch_count));
+            lines.push(format!(
+                "VERIFICATION:      FAILED ({} mismatches)",
+                self.verification.mismatch_count
+            ));
         } else {
-            lines.push(format!("Verification:      {} (Mismatches: 0)", self.verification.level));
+            lines.push(format!(
+                "Verification:      {} (Mismatches: 0)",
+                self.verification.level
+            ));
         }
 
-        lines.push(format!("Stream BLAKE3:     {}", self.verification.stream_hash_blake3));
+        lines.push(format!(
+            "Stream BLAKE3:     {}",
+            self.verification.stream_hash_blake3
+        ));
         lines.push(format!("Journal Chain:     {}", self.journal.chain_head));
 
         if !self.execution.failures.is_empty() {
-            lines.push(format!("Prior Failures:    {} recorded", self.execution.failures.len()));
+            lines.push(format!(
+                "Prior Failures:    {} recorded",
+                self.execution.failures.len()
+            ));
             for f in &self.execution.failures {
-                lines.push(format!("  - {} at {}: {}", f.code, f.at_utc, f.op.as_deref().unwrap_or("")));
+                lines.push(format!(
+                    "  - {} at {}: {}",
+                    f.code,
+                    f.at_utc,
+                    f.op.as_deref().unwrap_or("")
+                ));
             }
         }
 
         if !self.execution.interruptions.is_empty() {
-            lines.push(format!("Interruptions:     {} recorded", self.execution.interruptions.len()));
+            lines.push(format!(
+                "Interruptions:     {} recorded",
+                self.execution.interruptions.len()
+            ));
         }
 
         if let Some(note) = &self.plan.legacy_note {
             lines.push(format!("\n[!] LEGAL NOTICE:  {}", note));
         }
 
-        lines.push(format!("Operator PubKey:   {}", self.operator.public_key_ed25519));
-        lines.push(format!("Key Fingerprint:   {}", self.operator.key_fingerprint_blake3));
-        lines.push(format!("Signature Valid:   {}", if self.verify_signature().unwrap_or(false) { "VERIFIED (Ed25519)" } else { "INVALID OR UNSIGNED" }));
-        lines.push("================================================================================".to_string());
+        lines.push(format!(
+            "Operator PubKey:   {}",
+            self.operator.public_key_ed25519
+        ));
+        lines.push(format!(
+            "Key Fingerprint:   {}",
+            self.operator.key_fingerprint_blake3
+        ));
+        lines.push(format!(
+            "Signature Valid:   {}",
+            if self.verify_signature().unwrap_or(false) {
+                "VERIFIED (Ed25519)"
+            } else {
+                "INVALID OR UNSIGNED"
+            }
+        ));
+        lines.push(
+            "================================================================================"
+                .to_string(),
+        );
 
         lines.join("\n")
     }

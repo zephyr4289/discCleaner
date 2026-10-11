@@ -1,30 +1,100 @@
+pub mod approve;
+pub mod bootattest;
+pub mod evidence;
+pub mod fleet;
+pub mod init;
+pub mod key;
+pub mod stick_install;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use dc_cert::{
-    ExecutionDetails, ExecutionPassReport, FailureRecord, InterruptionRecord, OperatorKeyPair,
-    SanitizationCertificate,
+    AuthorizationSet, ExecutionDetails, ExecutionPassReport, FailureRecord, InterruptionRecord,
+    OperatorKeyPair, SanitizationCertificate,
 };
 use dc_core::{
-    create_pattern_source, AuditLogger, AuditOutcome, AuditRecord, BusType, DcError,
-    EngineTuning, FastPathPolicy, FsmOrchestrator, GuardianRefusal, JournalChainSummary,
-    JournalReader, JournalRecord, JournalWriter, LbaSpan, Pass, Pattern, PatternDescriptor,
-    SanitizationPlan, ToolBuild, VerifyLevel, ZeroPattern,
+    AuditLogger, AuditOutcome, AuditRecord, BusType, DcError, DeviceIdentity, EngineTuning,
+    FastPathPolicy, FsmOrchestrator, GuardianRefusal, JournalReader, JournalRecord, JournalWriter,
+    KernelIdentity, Pattern, PatternDescriptor, SanitizationPlan, StableIdentity, ToolBuild,
+    VerifyLevel, create_pattern_source,
 };
-use dc_io::{create_engine, SyncEngine, UringEngine};
+use dc_io::{LbaSpan, SyncEngine, UringEngine, create_engine, request_global_cancel};
+// `request_global_cancel` is consumed by the signal handler below and must
+// stay in the named-import list for async-signal-safety auditability.
 use dc_probe::{Guardian, GuardianFlags, InventoryScanner, LayerStackDetector};
 use dc_verify::StreamVerifier;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Instant;
+
+// ---------------------------------------------------------------------------
+// Signal handling (Δ87 / Δ83)
+// ---------------------------------------------------------------------------
+
+/// Set by the SIGINT/SIGTERM handler; consulted at every CLI boundary to
+/// decide between drain-and-journal vs. immediate pre-arm exit.
+static SIGNALS_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SIGNALS_RECEIVED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+extern "C" fn on_termination_signal(_sig: libc::c_int) {
+    // Async-signal-safe only: two atomic stores, nothing else.
+    SIGNALS_SEEN.store(true, std::sync::atomic::Ordering::SeqCst);
+    SIGNALS_RECEIVED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    request_global_cancel();
+}
+
+fn install_signal_handlers() {
+    unsafe {
+        // Cast the handler through a raw pointer to satisfy the
+        // fn-to-integer cast lint while keeping the same runtime behavior.
+        let handler = on_termination_signal as *const () as libc::sighandler_t;
+        let act = libc::sigaction {
+            sa_sigaction: handler,
+            sa_mask: std::mem::zeroed(),
+            // SA_RESTART keeps pre-boundary syscalls transparently resumable;
+            // the engines additionally retry EINTR as belt-and-braces.
+            sa_flags: libc::SA_RESTART,
+            #[cfg(target_os = "linux")]
+            sa_restorer: None,
+            #[cfg(not(target_os = "linux"))]
+            sa_restorer: std::mem::zeroed(),
+        };
+        libc::sigaction(libc::SIGINT, &act, std::ptr::null_mut());
+        libc::sigaction(libc::SIGTERM, &act, std::ptr::null_mut());
+    }
+}
+
+fn signal_was_seen() -> bool {
+    SIGNALS_SEEN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Deterministic signal-injection hook for test rigs (DC_SIGNAL_AT).
+///
+/// SECURITY: compiled only for debug builds and explicit fault-injection
+/// feature requests — release binaries contain no environment-variable-
+/// driven signal path.
+#[cfg(any(feature = "fault-injection", debug_assertions))]
+fn cli_signal_injection(event: &str) {
+    if let Ok(spec) = std::env::var("DC_SIGNAL_AT") {
+        let target = spec.split(':').next().unwrap_or("");
+        if target == event {
+            eprintln!("[SIGNAL_HOOK] Raising SIGINT at boundary: {}", event);
+            unsafe {
+                libc::kill(libc::getpid(), libc::SIGINT);
+            }
+        }
+    }
+}
+
+#[cfg(not(any(feature = "fault-injection", debug_assertions)))]
+fn cli_signal_injection(_event: &str) {}
 
 #[derive(Parser, Debug)]
 #[command(
     name = "diskcleaner",
     author = "Forensic Systems Engineering Team",
-    version = "0.1.0",
+    version = "0.4.0",
     about = "Military-grade storage sanitization and forensic verification suite",
     long_about = "Implements NIST SP 800-88 Rev 1, IEEE 2883-2022, and DoD media sanitization standards with deterministic cryptographic verification and tamper-evident audit logs."
 )]
@@ -61,6 +131,9 @@ pub enum Commands {
 
     /// Generate an Ed25519 operator signing keypair
     Keygen(KeygenArgs),
+
+    /// Two-officer Ed25519 countersignature approval of a compiled plan (2PI, Δ448)
+    Approve(ApproveArgs),
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,6 +266,23 @@ pub struct ExecuteArgs {
     /// Output directory for journal files [Spec Delta Δ3]
     #[arg(long)]
     pub journal_dir: Option<PathBuf>,
+
+    /// Stop BEFORE any destructive step or confirmation prompt: compile the
+    /// plan, run the Guardian, print exactly what WOULD be written, then exit
+    /// 0 without touching the device or creating a journal (REG-DRYRUN-BOUNDARY).
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Explicit 32-byte CSPRNG seed in hex (64 chars) for deterministic PRNG
+    /// passes (mirrors `dc plan --seed`)
+    #[arg(long)]
+    pub seed: Option<String>,
+
+    /// Path to a two-officer AuthorizationSet JSON (see `dc approve`); when
+    /// supplied, execution REQUIRES its countersignatures to verify before
+    /// arming (Δ448)
+    #[arg(long)]
+    pub auth_set: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -209,9 +299,58 @@ pub struct ResumeArgs {
     #[arg(long)]
     pub no_progress: bool,
 
+    /// Drive serial confirmation for scripted resume [Spec Delta Δ5]
+    #[arg(long)]
+    pub serial_confirm: Option<String>,
+
+    /// Allow targeting loopback virtual block devices on resume
+    #[arg(long)]
+    pub allow_loop: bool,
+
+    /// Override root / system disk protection on resume
+    #[arg(long)]
+    pub allow_system_disk: bool,
+
+    /// Allow overwriting disks with inactive filesystem/RAID signatures on resume
+    #[arg(long)]
+    pub allow_inactive_signatures: bool,
+
+    /// Allow overwriting retired LVM / RAID members on resume [Spec Delta Δ32]
+    #[arg(long)]
+    pub allow_member: bool,
+
     /// Output directory for certificate files
     #[arg(short, long, default_value = ".")]
     pub out_dir: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct ApproveArgs {
+    /// Path to the compiled Sanitization Plan JSON to countersign
+    #[arg(short, long)]
+    pub plan: PathBuf,
+
+    /// First officer's Ed25519 private key path
+    #[arg(short, long)]
+    pub key: PathBuf,
+
+    /// Second officer's Ed25519 private key path (two-person integrity)
+    #[arg(short, long)]
+    pub key2: Option<PathBuf>,
+
+    /// Mark the FIRST officer's signature as originating from a hardware
+    /// token (HSM/PIV) for custody-type derivation
+    #[arg(long)]
+    pub officer1_hardware: bool,
+
+    /// Mark the SECOND officer's signature as originating from a hardware
+    /// token (HSM/PIV) for custody-type derivation
+    #[arg(long)]
+    pub officer2_hardware: bool,
+
+    /// Output path for the AuthorizationSet JSON
+    #[arg(short, long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -301,6 +440,10 @@ pub struct KeygenArgs {
 pub fn entrypoint() -> ExitCode {
     tracing_subscriber::fmt::init();
 
+    // Fresh process: no stale cancellation state, termination handlers armed.
+    dc_io::reset_global_cancel();
+    install_signal_handlers();
+
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::from(0),
@@ -352,6 +495,10 @@ pub fn run(cli: Cli) -> Result<(), DcError> {
             cmd_keygen(args)?;
             Ok(())
         }
+        Commands::Approve(args) => {
+            cmd_approve(args)?;
+            Ok(())
+        }
     }
 }
 
@@ -387,7 +534,9 @@ fn cmd_list() {
 }
 
 fn cmd_check(args: CheckArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
-    let identity = InventoryScanner::probe_device(&args.target)?;
+    // Guardian-classified probe: a missing target refuses with exit 2
+    // (REG-CHECK-NONEXIST), not a raw I/O error.
+    let identity = InventoryScanner::probe_device_or_refuse(&args.target)?;
 
     let flags = GuardianFlags {
         allow_system_disk: args.allow_system_disk,
@@ -399,76 +548,98 @@ fn cmd_check(args: CheckArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcE
 
     match Guardian::evaluate(&args.target, &identity, &flags) {
         Ok(()) => {
-            println!("================================================================================");
+            println!(
+                "================================================================================"
+            );
             println!("                     GUARDIAN SAFETY PRE-FLIGHT CHECK");
-            println!("================================================================================");
+            println!(
+                "================================================================================"
+            );
             println!("Target Device:     {}", identity.dev_path);
-            println!("Target Model:      {}", identity.stable.model.as_deref().unwrap_or("-"));
-            println!("Target Serial:     {}", identity.stable.serial.as_deref().unwrap_or("-"));
-            println!("Capacity:          {} GiB", identity.stable.size_bytes / (1024 * 1024 * 1024));
+            println!(
+                "Target Model:      {}",
+                identity.stable.model.as_deref().unwrap_or("-")
+            );
+            println!(
+                "Target Serial:     {}",
+                identity.stable.serial.as_deref().unwrap_or("-")
+            );
+            println!(
+                "Capacity:          {} GiB",
+                identity.stable.size_bytes / (1024 * 1024 * 1024)
+            );
             println!("VERDICT:           CLEAN (Target is safe for sanitization)");
-            println!("================================================================================");
+            println!(
+                "================================================================================"
+            );
             Ok(())
         }
         Err(e) => {
-            if let Some(a) = audit {
-                if let DcError::Guardian(ref g) = e {
-                    let _ = a.log(&AuditRecord {
-                        timestamp_utc: chrono_now_iso(),
-                        argv_hash: "check".to_string(),
-                        target_path: Some(identity.dev_path.clone()),
-                        outcome: AuditOutcome::Refusal {
-                            code: g.code.to_string(),
-                            detail: g.detail.clone(),
-                        },
-                    });
-                }
+            if let Some(a) = audit
+                && let DcError::Guardian(ref g) = e
+            {
+                let _ = a.log(&AuditRecord {
+                    timestamp_utc: chrono_now_iso(),
+                    argv_hash: "check".to_string(),
+                    target_path: Some(identity.dev_path.clone()),
+                    outcome: AuditOutcome::Refusal {
+                        code: g.code.to_string(),
+                        detail: g.detail.clone(),
+                    },
+                });
             }
             if let DcError::Guardian(ref g) = e {
-                eprintln!("================================================================================");
+                eprintln!(
+                    "================================================================================"
+                );
                 eprintln!("                     GUARDIAN REFUSAL: [{}]", g.code);
-                eprintln!("================================================================================");
+                eprintln!(
+                    "================================================================================"
+                );
                 eprintln!("Target:  {}", identity.dev_path);
                 eprintln!("Detail:  {}", g.detail);
                 eprintln!("Hint:    {}", g.hint);
-                eprintln!("================================================================================");
+                eprintln!(
+                    "================================================================================"
+                );
             }
             Err(e)
         }
     }
 }
 
+impl ExecuteArgs {
+    /// Human-readable engine name for plan/dry-run output.
+    fn engine_default_name(&self) -> &'static str {
+        match self.engine {
+            EngineChoice::Auto => "auto (io_uring if available, else sync)",
+            EngineChoice::Uring => "uring",
+            EngineChoice::Sync => "sync",
+        }
+    }
+}
+
 fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
-    let identity = InventoryScanner::probe_device(&args.target)?;
+    // Argument validation FIRST — a usage error (bad seed/profile combo)
+    // must fail fast BEFORE any device is probed (fail-fast contract).
+    let explicit_seed = match args.seed {
+        Some(ref s) => parse_seed_hex(s, args.profile)?,
+        None => None,
+    };
+
+    // Guardian-classified probe (REG-CHECK-NONEXIST): a missing target is a
+    // Guardian refusal (exit 2), not a raw I/O error.
+    let identity = InventoryScanner::probe_device_or_refuse(&args.target)?;
     let fast_path = if args.no_write_zeroes {
         FastPathPolicy::ForbidWriteZeroes
     } else {
         FastPathPolicy::PreferWriteZeroes
     };
 
-    let explicit_seed = if let Some(ref s) = args.seed {
-        if args.profile == ProfileOption::ClearZero {
-            return Err(DcError::Usage(
-                "Cannot specify --seed for 'clear-zero' profile (no deterministic random pass)".to_string(),
-            ));
-        }
-        if s.len() != 64 {
-            return Err(DcError::Usage(
-                format!("Seed must be exactly 64 hex characters (32 bytes), got length {}", s.len()),
-            ));
-        }
-        let bytes = hex::decode(s).map_err(|e| {
-            DcError::Usage(format!("Invalid hex string in --seed: {}", e))
-        })?;
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
-        Some(arr)
-    } else {
-        None
-    };
-
     let plan = match args.profile {
-        ProfileOption::ClearZero => SanitizationPlan::clear_zero(identity.stable.clone(), fast_path),
+        ProfileOption::ClearZero => {
+            SanitizationPlan::clear_zero(identity.stable.clone(), fast_path)
+        }
         ProfileOption::ClearRandom => {
             SanitizationPlan::clear_random(identity.stable.clone(), explicit_seed, fast_path)?
         }
@@ -483,16 +654,31 @@ fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcErr
     println!("                     SANITIZATION PLAN SPECIFICATION");
     println!("================================================================================");
     println!("Target Path:       {}", identity.dev_path);
-    println!("Target Model:      {}", identity.stable.model.as_deref().unwrap_or("Unknown"));
-    println!("Target Serial:     {}", identity.stable.serial.as_deref().unwrap_or("Unknown"));
-    println!("Target Capacity:   {} GiB ({:.2} GB)", identity.stable.size_bytes / (1024 * 1024 * 1024), identity.stable.size_bytes as f64 / 1_000_000_000.0);
+    println!(
+        "Target Model:      {}",
+        identity.stable.model.as_deref().unwrap_or("Unknown")
+    );
+    println!(
+        "Target Serial:     {}",
+        identity.stable.serial.as_deref().unwrap_or("Unknown")
+    );
+    println!(
+        "Target Capacity:   {} GiB ({:.2} GB)",
+        identity.stable.size_bytes / (1024 * 1024 * 1024),
+        identity.stable.size_bytes as f64 / 1_000_000_000.0
+    );
     println!("Plan Schema:       {}", plan.plan_schema);
     println!("Plan Hash (BLAKE3):{}", plan_hash);
     println!("Verification:      {}", plan.verification);
 
-    if let dc_core::Mechanism::LogicalOverwrite { passes } = &plan.mechanism {
-        println!("Passes Count:      {}", passes.len());
-        for (i, p) in passes.iter().enumerate() {
+    // Mechanism is a single-variant enum today; destructure directly so the
+    // compiler keeps us honest when a second variant ever appears.
+    let dc_core::Mechanism::LogicalOverwrite {
+        passes: plan_passes,
+    } = &plan.mechanism;
+    if !plan_passes.is_empty() {
+        println!("Passes Count:      {}", plan_passes.len());
+        for (i, p) in plan_passes.iter().enumerate() {
             println!("  Pass {}: {}", i + 1, p.label);
         }
     }
@@ -520,18 +706,64 @@ fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcErr
     Ok(())
 }
 
-fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
-    let identity = InventoryScanner::probe_device(&args.target)?;
+/// Parse and validate the `--seed` hex argument shared by plan/execute.
+fn parse_seed_hex(seed: &str, profile: ProfileOption) -> Result<Option<[u8; 32]>, DcError> {
+    if profile == ProfileOption::ClearZero {
+        return Err(DcError::Usage(
+            "Cannot specify --seed for 'clear-zero' profile (no deterministic random pass)"
+                .to_string(),
+        ));
+    }
+    if seed.len() != 64 {
+        return Err(DcError::Usage(format!(
+            "Seed must be exactly 64 hex characters (32 bytes), got length {}",
+            seed.len()
+        )));
+    }
+    let bytes = hex::decode(seed)
+        .map_err(|e| DcError::Usage(format!("Invalid hex string in --seed: {}", e)))?;
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    Ok(Some(arr))
+}
 
-    // 0. Plan-to-Execute Binding Verification (Spec Delta Δ49)
+fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
+    // 0a. Argument validation FIRST (fail-fast before any hardware probing
+    // or destructive risk — a usage error must never be discovered after a
+    // device has been opened, locked, or the operator has typed a token).
+    let explicit_seed = match args.seed {
+        Some(ref s) => parse_seed_hex(s, args.profile)?,
+        None => None,
+    };
+
+    // 0a-bis. Δ178 (regression `REG-CONF-NONTTY`): an unattended (non-TTY)
+    // invocation without `--serial-confirm` must refuse BEFORE any hardware
+    // probing — an irreversible destructive command may never sit blocked
+    // on an interactive prompt nobody can answer. Dry runs are exempt
+    // (they are read-only rehearsals and are routinely run from CI).
+    let stdin_is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
+    if !stdin_is_tty && args.serial_confirm.is_none() && !args.dry_run {
+        return Err(DcError::Guardian(GuardianRefusal {
+            code: "NON_INTERACTIVE_CONFIRM_REQUIRED",
+            detail: "Refusing to run a destructive wipe from a non-interactive session \
+                     without an explicit confirmation token"
+                .to_string(),
+            hint: "Re-run with `--serial-confirm <SERIAL|LOOPNAME>` (see `dc check` output), \
+                   or run from an interactive terminal."
+                .to_string(),
+        }));
+    }
+
+    let identity = InventoryScanner::probe_device_or_refuse(&args.target)?;
+
+    // 0b. Plan-to-Execute Binding Verification (Spec Delta Δ49)
     if let Some(ref plan_path) = args.plan {
         let plan_content = std::fs::read_to_string(plan_path)?;
-        let plan_from_file: SanitizationPlan = serde_json::from_str(&plan_content).map_err(|e| {
-            DcError::JournalCorrupt {
+        let plan_from_file: SanitizationPlan =
+            serde_json::from_str(&plan_content).map_err(|e| DcError::JournalCorrupt {
                 record_index: 0,
                 reason: format!("PLAN_TAMPERED: Invalid JSON: {}", e),
-            }
-        })?;
+            })?;
 
         // Verify plan file hash
         let computed_hash = plan_from_file.compute_plan_hash()?;
@@ -545,7 +777,7 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         }
 
         // Check identity compatibility
-        if let Err(contradiction) = identity.stable.check_compatibility(&plan_from_file.target_identity) {
+        if let Err(contradiction) = identity.stable.check_compatibility(&plan_from_file.target) {
             eprintln!("[ERROR] IDENTITY_DRIFT against plan: {}", contradiction);
             if let Some(a) = audit {
                 let _ = a.log(&AuditRecord {
@@ -559,7 +791,7 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
                 });
             }
             return Err(DcError::IdentityDrift {
-                expected: plan_from_file.target_identity,
+                expected: plan_from_file.target,
                 observed: identity.stable,
             });
         }
@@ -575,29 +807,181 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
 
     // 1. Guardian Evaluation (Runs BEFORE confirmation prompt - Δ25)
     if let Err(e) = Guardian::evaluate(&args.target, &identity, &flags) {
-        if let Some(a) = audit {
-            if let DcError::Guardian(ref g) = e {
-                let _ = a.log(&AuditRecord {
-                    timestamp_utc: chrono_now_iso(),
-                    argv_hash: "execute".to_string(),
-                    target_path: Some(identity.dev_path.clone()),
-                    outcome: AuditOutcome::Refusal {
-                        code: g.code.to_string(),
-                        detail: g.detail.clone(),
-                    },
-                });
-            }
+        if let Some(a) = audit
+            && let DcError::Guardian(ref g) = e
+        {
+            let _ = a.log(&AuditRecord {
+                timestamp_utc: chrono_now_iso(),
+                argv_hash: "execute".to_string(),
+                target_path: Some(identity.dev_path.clone()),
+                outcome: AuditOutcome::Refusal {
+                    code: g.code.to_string(),
+                    detail: g.detail.clone(),
+                },
+            });
         }
         return Err(e);
     }
 
-    // 2. Interactive or Non-Interactive Confirmation Token [Spec Delta Δ5, Δ6, Δ47]
+    // 2. FSM and Plan Compilation
+    let fast_path = if args.no_write_zeroes {
+        FastPathPolicy::ForbidWriteZeroes
+    } else {
+        FastPathPolicy::PreferWriteZeroes
+    };
+
+    let plan = if let Some(ref plan_path) = args.plan {
+        let plan_content = std::fs::read_to_string(plan_path)?;
+        serde_json::from_str(&plan_content).map_err(|e| DcError::JournalCorrupt {
+            record_index: 0,
+            reason: format!("PLAN_TAMPERED: Invalid JSON: {}", e),
+        })?
+    } else {
+        match args.profile {
+            ProfileOption::ClearZero => {
+                SanitizationPlan::clear_zero(identity.stable.clone(), fast_path)
+            }
+            ProfileOption::ClearRandom => {
+                SanitizationPlan::clear_random(identity.stable.clone(), explicit_seed, fast_path)?
+            }
+            ProfileOption::LegacyDod3 => {
+                SanitizationPlan::legacy_dod3(identity.stable.clone(), explicit_seed, fast_path)?
+            }
+        }
+    };
+
+    let mut fsm = FsmOrchestrator::new();
+    let plan_hash = fsm.compile_plan(plan.clone())?;
+    fsm.approve_plan()?;
+
+    // 3. DRY-RUN BOUNDARY (REG-DRYRUN-BOUNDARY).
+    //
+    // A dry run exits HERE: after argument validation, Guardian evaluation and
+    // plan compilation — but BEFORE the confirmation prompt, the approval
+    // gate, hardware locking, journal creation, or any device write. The
+    // historical placement (after the confirmation prompt) made `dc execute
+    // --dry-run` hang on the interactive token prompt, which is exactly what
+    // a dry run must never do: it is a rehearsal, and rehearsals do not ask
+    // for irreversible confirmation.
+    if args.dry_run {
+        println!(
+            "================================================================================"
+        );
+        println!("                        DRY RUN — NO WRITES WILL BE PERFORMED");
+        println!(
+            "================================================================================"
+        );
+        println!("Target Device:     {}", identity.dev_path);
+        println!(
+            "Target Model:      {}",
+            identity.stable.model.as_deref().unwrap_or("Unknown")
+        );
+        println!(
+            "Target Serial:     {}",
+            identity.stable.serial.as_deref().unwrap_or("Unknown")
+        );
+        println!(
+            "Target Capacity:   {} GiB",
+            identity.stable.size_bytes / (1024 * 1024 * 1024)
+        );
+        println!("Plan Schema:       {}", plan.plan_schema);
+        println!("Plan Hash (BLAKE3):{}", plan_hash);
+        println!("Verification:      {}", plan.verification);
+        let dc_core::Mechanism::LogicalOverwrite {
+            passes: plan_passes,
+        } = &plan.mechanism;
+        if !plan_passes.is_empty() {
+            println!("Passes Count:      {}", plan_passes.len());
+            for (i, p) in plan_passes.iter().enumerate() {
+                println!("  Pass {}: {}", i + 1, p.label);
+            }
+        }
+        println!("Engine:            {}", args.engine_default_name());
+        println!(
+            "Fast Path:         {}",
+            if plan.fast_path == FastPathPolicy::PreferWriteZeroes {
+                "PreferWriteZeroes"
+            } else {
+                "ForbidWriteZeroes"
+            }
+        );
+        println!(
+            "================================================================================"
+        );
+        println!("Guardian verdict:  CLEAN (target is safe for sanitization)");
+        println!("DRY RUN COMPLETE: nothing was written, no journal was created.");
+        println!(
+            "================================================================================"
+        );
+
+        if let Some(a) = audit {
+            let _ = a.log(&AuditRecord {
+                timestamp_utc: chrono_now_iso(),
+                argv_hash: "execute-dry-run".to_string(),
+                target_path: Some(identity.dev_path),
+                outcome: AuditOutcome::PlanCompiled { plan_hash },
+            });
+        }
+        return Ok(());
+    }
+
+    // 4. Two-officer approval gate (Δ448). When an AuthorizationSet is
+    // supplied its Ed25519 countersignatures MUST verify against THIS
+    // plan's hash before arming is possible.
+    if let Some(ref auth_set_path) = args.auth_set {
+        let auth_json = std::fs::read_to_string(auth_set_path)?;
+        let auth_set: AuthorizationSet = serde_json::from_str(&auth_json).map_err(|e| {
+            DcError::Usage(format!(
+                "Invalid AuthorizationSet JSON '{}': {}",
+                auth_set_path.display(),
+                e
+            ))
+        })?;
+        match auth_set.verify_pre_arm_authorization(&plan_hash, true) {
+            Ok(custody) => {
+                println!(
+                    "[+] Two-person authorization verified (custody: {:?}).",
+                    custody
+                );
+            }
+            Err(reason) => {
+                if let Some(a) = audit {
+                    let _ = a.log(&AuditRecord {
+                        timestamp_utc: chrono_now_iso(),
+                        argv_hash: "execute".to_string(),
+                        target_path: Some(identity.dev_path.clone()),
+                        outcome: AuditOutcome::Refusal {
+                            code: "AUTHORIZATION_INCOMPLETE".to_string(),
+                            detail: format!("2PI gate refused: {}", reason),
+                        },
+                    });
+                }
+                return Err(DcError::Guardian(GuardianRefusal {
+                    code: "AUTHORIZATION_INCOMPLETE",
+                    detail: format!("Two-person authorization gate refused: {}", reason),
+                    hint: "Re-run `dc approve` with two distinct officer keys for this plan."
+                        .to_string(),
+                }));
+            }
+        }
+    }
+
+    // 5. Interactive or Non-Interactive Confirmation Token [Spec Delta Δ5, Δ6, Δ47]
     let expected_confirm_token = identity
         .stable
         .dm_uuid
         .clone()
         .or(identity.stable.serial.clone())
         .unwrap_or_else(|| identity.kernel_name.clone());
+
+    // B-PROMPT boundary (Δ87): a signal arriving while the operator is at
+    // the confirmation prompt must exit cleanly with NO journal created.
+    cli_signal_injection("prompt-wait");
+    if signal_was_seen() {
+        return Err(DcError::Interrupted {
+            completed_through: None,
+        });
+    }
 
     if let Some(ref provided) = args.serial_confirm {
         if provided != &expected_confirm_token {
@@ -624,15 +1008,24 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
     } else {
         println!("\n[WARNING] YOU ARE ABOUT TO PERMANENTLY AND IRREVERSIBLY WIPE:");
         println!("  Target Device:  {}", identity.dev_path);
-        println!("  Device Model:   {}", identity.stable.model.as_deref().unwrap_or("Unknown"));
+        println!(
+            "  Device Model:   {}",
+            identity.stable.model.as_deref().unwrap_or("Unknown")
+        );
         println!("  Confirm Token:  {}", expected_confirm_token);
-        println!("  Capacity:       {} GiB\n", identity.stable.size_bytes / (1024 * 1024 * 1024));
-        println!("Type the exact confirmation token '{}' to confirm execution:", expected_confirm_token);
+        println!(
+            "  Capacity:       {} GiB\n",
+            identity.stable.size_bytes / (1024 * 1024 * 1024)
+        );
+        println!(
+            "Type the exact confirmation token '{}' to confirm execution:",
+            expected_confirm_token
+        );
 
         let mut input = String::new();
         std::io::stdin()
             .read_line(&mut input)
-            .map_err(|e| DcError::StdIo(e))?;
+            .map_err(DcError::StdIo)?;
 
         if input.trim() != expected_confirm_token {
             if let Some(a) = audit {
@@ -651,32 +1044,21 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         }
     }
 
-    // 3. FSM and Plan Compilation
-    let mut fsm = FsmOrchestrator::new();
-    let fast_path = if args.no_write_zeroes {
-        FastPathPolicy::ForbidWriteZeroes
-    } else {
-        FastPathPolicy::PreferWriteZeroes
-    };
+    // B-PREARM boundary (Δ87): a signal arriving after confirmation but
+    // before arming must exit 3 with NO journal created (nothing has been
+    // promised to the journal chain yet, so there is nothing to resume).
+    cli_signal_injection("pre-arm");
+    if signal_was_seen() {
+        return Err(DcError::Interrupted {
+            completed_through: None,
+        });
+    }
 
-    let plan = match args.profile {
-        ProfileOption::ClearZero => SanitizationPlan::clear_zero(identity.stable.clone(), fast_path),
-        ProfileOption::ClearRandom => {
-            SanitizationPlan::clear_random(identity.stable.clone(), None, fast_path)?
-        }
-        ProfileOption::LegacyDod3 => {
-            SanitizationPlan::legacy_dod3(identity.stable.clone(), None, fast_path)?
-        }
-    };
-
-    let plan_hash = fsm.compile_plan(plan.clone())?;
-    fsm.approve_plan()?;
-
-    // 4. Arm and Lock Hardware (with O_EXCL and flock - Δ24)
+    // 6. Arm and Lock Hardware (with O_EXCL and flock - Δ24)
     let lock_handle = Guardian::arm_and_lock(&args.target, &identity.stable)?;
     fsm.arm()?;
 
-    // 5. Initialize Hash-Chained Journal [Spec Delta Δ16]
+    // 7. Initialize Hash-Chained Journal [Spec Delta Δ16]
     let timestamp_str = chrono_now_iso();
     let journal_dir = args.journal_dir.as_ref().unwrap_or(&args.out_dir);
     let journal_filename = format!(
@@ -692,19 +1074,23 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         EngineChoice::Sync => "sync",
     };
 
-    // 5. Setup Operator Key
+    // 8. Setup Operator Key
     let keypair = match &args.key {
         Some(k) => OperatorKeyPair::load_from_file(k)?,
         None => OperatorKeyPair::generate(),
     };
 
     let is_sealed = args.key.is_some();
-    let journal_uuid = format!("dcj-{}", timestamp_str.replace(':', "").replace('-', "").replace('T', "").replace('Z', ""));
+    let journal_uuid = format!("dcj-{}", timestamp_str.replace([':', '-', 'T', 'Z'], ""));
 
     let header_record = JournalRecord::Header {
         uuid: journal_uuid.clone(),
         sealed: is_sealed,
-        operator_pubkey: if is_sealed { Some(keypair.public_key_hex()) } else { None },
+        operator_pubkey: if is_sealed {
+            Some(keypair.public_key_hex())
+        } else {
+            None
+        },
         plan: plan.clone(),
         plan_hash: plan_hash.clone(),
         identity: identity.clone(),
@@ -741,14 +1127,18 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         None
     };
 
-    let mut journal = JournalWriter::create(&journal_path, header_record, signing_key)?;
+    let mut journal = JournalWriter::create_new(&journal_path, journal_uuid, signing_key)?;
+    journal.append(&header_record)?;
     journal.append(&JournalRecord::Armed {
         overrides,
-        locks_held: vec![format!("{}:{}", identity.kernel.major, identity.kernel.minor)],
+        locks_held: vec![format!(
+            "{}:{}",
+            identity.kernel.major, identity.kernel.minor
+        )],
         at: chrono_now_iso(),
     })?;
 
-    // 7. Engine Execution Loop
+    // 9. Engine Execution Loop
     let span = LbaSpan::new(
         identity.stable.size_bytes,
         identity.logical_block_size,
@@ -775,7 +1165,7 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
             plan.window_bytes as usize,
             supports_write_zeroes,
             64,
-        ),
+        )?,
     };
 
     let passes = match &plan.mechanism {
@@ -796,7 +1186,12 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         })?;
 
         if !args.no_progress {
-            println!("\n[>] Executing Pass {}/{}: {}", pass_idx + 1, passes.len(), pass.label);
+            println!(
+                "\n[>] Executing Pass {}/{}: {}",
+                pass_idx + 1,
+                passes.len(),
+                pass.label
+            );
         }
 
         let pb = if !args.no_progress {
@@ -820,19 +1215,45 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
                 }
             })
         } else {
-            engine.write_pass(&permit, pass_idx as u8, pat_source.as_ref(), &span, 0, &mut |p| {
-                if let Some(ref bar) = pb {
-                    bar.set_position(p.windows_done);
-                    bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
-                }
-            })
+            engine.write_pass(
+                &permit,
+                pass_idx as u8,
+                pat_source.as_ref(),
+                &span,
+                0,
+                &mut |p| {
+                    if let Some(ref bar) = pb {
+                        bar.set_position(p.windows_done);
+                        bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
+                    }
+                },
+            )
         };
 
         let outcome = match outcome_res {
             Ok(o) => o,
+            Err(DcError::Interrupted { completed_through }) => {
+                // Graceful drain (Δ87): a termination signal stops the engine
+                // at a window boundary; the committed prefix is journaled so
+                // `dc resume` can continue exactly where we stopped.
+                let (through_pass, through_window) = match completed_through {
+                    Some((p, w)) => (Some(p), Some(w)),
+                    None => (Some(pass_idx as u8), None),
+                };
+                let _ = journal.append(&JournalRecord::Interrupted {
+                    at: chrono_now_iso(),
+                    hint: "Graceful drain on termination signal".to_string(),
+                    completed_through_pass: through_pass,
+                    completed_through_window: through_window,
+                    signals_received: Some(
+                        SIGNALS_RECEIVED.load(std::sync::atomic::Ordering::SeqCst),
+                    ),
+                });
+                return Err(DcError::Interrupted { completed_through });
+            }
             Err(e) => {
                 let (errno, at_lba) = match &e {
-                    DcError::Io { errno, lba, .. } => (Some(*errno), Some(*lba)),
+                    DcError::Io { errno, at_lba, .. } => (Some(*errno), *at_lba),
                     DcError::StdIo(io_err) => (io_err.raw_os_error(), None),
                     _ => (None, None),
                 };
@@ -872,15 +1293,17 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
             pass: pass_idx as u8,
         })?;
 
-        let pass_throughput = (outcome.bytes_written as f64 / (1024.0 * 1024.0))
-            / (outcome.duration_ms as f64 / 1000.0).max(0.001);
+        // Honest per-pass throughput in KiB/s (u64), matching the
+        // ExecutionPassReport contract.
+        let elapsed_s = (outcome.duration_ms as f64 / 1000.0).max(0.001);
+        let throughput_kib_s = ((outcome.bytes_written as f64 / 1024.0) / elapsed_s) as u64;
 
         exec_passes.push(ExecutionPassReport {
             index: pass_idx as u8,
             pattern: pat_source.descriptor().name,
             fast_path_used: outcome.fast_path_used,
             windows_written: outcome.windows_written,
-            throughput_mib_s: pass_throughput,
+            throughput_kib_s,
         });
 
         // Flush media cache before moving to next pass or verify
@@ -891,7 +1314,7 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         })?;
     }
 
-    // 8. Verification Phase
+    // 10. Verification Phase
     fsm.begin_verify()?;
     if !args.no_progress {
         println!("\n[>] Performing 100% Full LBA Read-Back Verification & Stream Hashing...");
@@ -920,30 +1343,41 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
         true,
     );
 
-    if let Err(e) = engine.read_verify(
-        verify_pat_source.as_ref(),
-        &span,
-        &mut verifier,
-        &mut |p| {
-            if let Some(ref bar) = pb_verify {
-                bar.set_position(p.windows_done);
-                bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
+    if let Err(e) = engine.read_verify(verify_pat_source.as_ref(), &span, &mut verifier, &mut |p| {
+        if let Some(ref bar) = pb_verify {
+            bar.set_position(p.windows_done);
+            bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
+        }
+    }) {
+        match e {
+            DcError::Interrupted { completed_through } => {
+                let _ = journal.append(&JournalRecord::Interrupted {
+                    at: chrono_now_iso(),
+                    hint: "Graceful drain on termination signal during verification".to_string(),
+                    completed_through_pass: completed_through.map(|(p, _)| p),
+                    completed_through_window: completed_through.map(|(_, w)| w),
+                    signals_received: Some(
+                        SIGNALS_RECEIVED.load(std::sync::atomic::Ordering::SeqCst),
+                    ),
+                });
+                return Err(DcError::Interrupted { completed_through });
             }
-        },
-    ) {
-        let (errno, at_lba) = match &e {
-            DcError::Io { errno, lba, .. } => (Some(*errno), Some(*lba)),
-            DcError::StdIo(io_err) => (io_err.raw_os_error(), None),
-            _ => (None, None),
-        };
-        let _ = journal.append(&JournalRecord::Failed {
-            code: "EIO".to_string(),
-            errno,
-            op: Some("verify-read".to_string()),
-            at_lba,
-            detail: e.to_string(),
-        });
-        return Err(e);
+            e => {
+                let (errno, at_lba) = match &e {
+                    DcError::Io { errno, at_lba, .. } => (Some(*errno), *at_lba),
+                    DcError::StdIo(io_err) => (io_err.raw_os_error(), None),
+                    _ => (None, None),
+                };
+                let _ = journal.append(&JournalRecord::Failed {
+                    code: "EIO".to_string(),
+                    errno,
+                    op: Some("verify-read".to_string()),
+                    at_lba,
+                    detail: e.to_string(),
+                });
+                return Err(e);
+            }
+        }
     }
 
     if let Some(bar) = pb_verify {
@@ -977,13 +1411,20 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
     }
 
     fsm.certify()?;
+
+    // B-VICTORY / Victory-Lap boundary (Δ83): a signal landing AFTER the
+    // media has been fully written and verified completes normally — the
+    // destructive work is done and abandoning the certificate would only
+    // destroy evidence. The flag is deliberately NOT checked past this point.
+    cli_signal_injection("post-verify");
+
     let finished_time_str = chrono_now_iso();
     journal.append(&JournalRecord::Completed {
         at: finished_time_str.clone(),
         duration_mono_ms: exec_start_time.elapsed().as_millis() as u64,
     })?;
 
-    // 9. Generate & Sign Sanitization Certificate
+    // 11. Generate & Sign Sanitization Certificate
     let mut cert = SanitizationCertificate::new(
         plan,
         plan_hash,
@@ -1031,7 +1472,10 @@ fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result<(),
 }
 
 fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
-    println!("Reading and verifying journal chain: {}...", args.journal.display());
+    println!(
+        "Reading and verifying journal chain: {}...",
+        args.journal.display()
+    );
     let (records, summary) = JournalReader::read_and_verify_chain(&args.journal)?;
 
     if records.is_empty() {
@@ -1042,42 +1486,41 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
     }
 
     let last_record = records.last().unwrap();
-    match last_record {
-        JournalRecord::Completed { .. } => {
-            if let Some(a) = audit {
-                let _ = a.log(&AuditRecord {
-                    timestamp_utc: chrono_now_iso(),
-                    argv_hash: "resume".to_string(),
-                    target_path: None,
-                    outcome: AuditOutcome::Refusal {
-                        code: "JOURNAL_ALREADY_COMPLETE".to_string(),
-                        detail: "Attempted resume on already completed journal".to_string(),
-                    },
-                });
-            }
-            eprintln!("[ERROR] Journal is already completed. Refusing to overwrite.");
-            return Err(DcError::JournalCorrupt {
-                record_index: summary.record_count,
-                reason: "JOURNAL_ALREADY_COMPLETE".to_string(),
+    if let JournalRecord::Completed { .. } = last_record {
+        if let Some(a) = audit {
+            let _ = a.log(&AuditRecord {
+                timestamp_utc: chrono_now_iso(),
+                argv_hash: "resume".to_string(),
+                target_path: None,
+                outcome: AuditOutcome::Refusal {
+                    code: "JOURNAL_ALREADY_COMPLETE".to_string(),
+                    detail: "Attempted resume on already completed journal".to_string(),
+                },
             });
         }
-        JournalRecord::Aborted { .. } => {
-            return Err(DcError::JournalCorrupt {
-                record_index: summary.record_count,
-                reason: "JOURNAL_ABORTED".to_string(),
-            });
-        }
-        _ => {}
+        eprintln!("[ERROR] Journal is already completed. Refusing to overwrite.");
+        return Err(DcError::JournalCorrupt {
+            record_index: summary.record_count,
+            reason: "JOURNAL_ALREADY_COMPLETE".to_string(),
+        });
     }
 
     // Extract header
-    let (plan, plan_hash, identity) = records.iter().find_map(|r| match r {
-        JournalRecord::Header { plan, plan_hash, identity, .. } => Some((plan.clone(), plan_hash.clone(), identity.clone())),
-        _ => None,
-    }).ok_or_else(|| DcError::JournalCorrupt {
-        record_index: 0,
-        reason: "Missing Header record in journal".to_string(),
-    })?;
+    let (plan, plan_hash, identity) = records
+        .iter()
+        .find_map(|r| match r {
+            JournalRecord::Header {
+                plan,
+                plan_hash,
+                identity,
+                ..
+            } => Some((plan.clone(), plan_hash.clone(), identity.clone())),
+            _ => None,
+        })
+        .ok_or_else(|| DcError::JournalCorrupt {
+            record_index: 0,
+            reason: "Missing Header record in journal".to_string(),
+        })?;
 
     // Collect historical failures and interruptions
     let mut failures = Vec::new();
@@ -1092,7 +1535,9 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
                 last_pass_idx = *pass;
                 last_pass_committed_windows = 0;
             }
-            JournalRecord::RangeCommit { pass, num_windows, .. } => {
+            JournalRecord::RangeCommit {
+                pass, num_windows, ..
+            } => {
                 if *pass == last_pass_idx {
                     last_pass_committed_windows += num_windows;
                 }
@@ -1100,7 +1545,13 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
             JournalRecord::Flushed { .. } => {
                 verify_reached = true;
             }
-            JournalRecord::Failed { code, errno, op, at_lba, .. } => {
+            JournalRecord::Failed {
+                code,
+                errno,
+                op,
+                at_lba,
+                ..
+            } => {
                 failures.push(FailureRecord {
                     at_utc: chrono_now_iso(),
                     code: code.clone(),
@@ -1119,11 +1570,49 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         }
     }
 
-    if records.last().map(|r| !matches!(r, JournalRecord::Failed { .. } | JournalRecord::Interrupted { .. })).unwrap_or(false) {
+    if records
+        .last()
+        .map(|r| {
+            !matches!(
+                r,
+                JournalRecord::Failed { .. } | JournalRecord::Interrupted { .. }
+            )
+        })
+        .unwrap_or(false)
+    {
         interruptions.push(InterruptionRecord {
             at_utc: chrono_now_iso(),
             resumed_utc: chrono_now_iso(),
         });
+    }
+
+    // Re-run the Guardian on the LIVE device state before resuming: the
+    // world may have changed since the interruption (a filesystem could
+    // have been mounted, an md array assembled). Resume flags mirror the
+    // execute flags so scripted resumes stay non-interactive.
+    let live_identity = InventoryScanner::probe_device(Path::new(&identity.dev_path))?;
+    let flags = GuardianFlags {
+        allow_system_disk: args.allow_system_disk,
+        serial_confirm: args.serial_confirm.clone(),
+        allow_loop: args.allow_loop,
+        allow_inactive_signatures: args.allow_inactive_signatures,
+        allow_member: args.allow_member,
+    };
+    if let Err(e) = Guardian::evaluate(Path::new(&identity.dev_path), &live_identity, &flags) {
+        if let Some(a) = audit
+            && let DcError::Guardian(ref g) = e
+        {
+            let _ = a.log(&AuditRecord {
+                timestamp_utc: chrono_now_iso(),
+                argv_hash: "resume".to_string(),
+                target_path: Some(identity.dev_path.clone()),
+                outcome: AuditOutcome::Refusal {
+                    code: g.code.to_string(),
+                    detail: g.detail.clone(),
+                },
+            });
+        }
+        return Err(e);
     }
 
     // Arm and Lock Hardware
@@ -1146,16 +1635,18 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         }
     };
 
-    if summary.sealed {
-        if let Some(JournalRecord::Header { operator_pubkey: Some(ref expected_pk), .. }) = records.first() {
-            if &keypair.public_key_hex() != expected_pk {
-                return Err(DcError::CertSigning(format!(
-                    "Key mismatch for sealed journal! Expected key: {}, Provided: {}",
-                    expected_pk,
-                    keypair.public_key_hex()
-                )));
-            }
-        }
+    if summary.sealed
+        && let Some(JournalRecord::Header {
+            operator_pubkey: Some(expected_pk),
+            ..
+        }) = records.first()
+        && &keypair.public_key_hex() != expected_pk
+    {
+        return Err(DcError::CertSigning(format!(
+            "Key mismatch for sealed journal! Expected key: {}, Provided: {}",
+            expected_pk,
+            keypair.public_key_hex()
+        )));
     }
 
     let signing_key = if summary.sealed {
@@ -1164,7 +1655,7 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         None
     };
 
-    let mut journal = JournalWriter::resume_from_chain(
+    let mut journal = JournalWriter::open_for_resume(
         &args.journal,
         &summary.chain_head,
         summary.record_count,
@@ -1173,14 +1664,17 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         } else {
             None
         },
-        signing_key,
         summary.uuid.clone(),
         summary.sealed,
+        signing_key,
     )?;
 
     journal.append(&JournalRecord::Armed {
         overrides: vec![],
-        locks_held: vec![format!("{}:{}", identity.kernel.major, identity.kernel.minor)],
+        locks_held: vec![format!(
+            "{}:{}",
+            identity.kernel.major, identity.kernel.minor
+        )],
         at: chrono_now_iso(),
     })?;
 
@@ -1212,7 +1706,7 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         plan.window_bytes as usize,
         supports_write_zeroes,
         64,
-    );
+    )?;
 
     let passes = match &plan.mechanism {
         dc_core::Mechanism::LogicalOverwrite { passes } => passes.clone(),
@@ -1222,8 +1716,8 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
     let exec_start_time = Instant::now();
 
     if !verify_reached {
-        for pass_idx in last_pass_idx as usize..passes.len() {
-            let pass = &passes[pass_idx];
+        for (offset, pass) in passes.iter().enumerate().skip(last_pass_idx as usize) {
+            let pass_idx = last_pass_idx as usize + offset;
             let start_window = if pass_idx == last_pass_idx as usize {
                 last_pass_committed_windows
             } else {
@@ -1241,10 +1735,50 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
                 })?;
             }
 
-            let outcome = if matches!(pass.pattern, Pattern::Zero) && supports_write_zeroes {
-                engine.zero_pass(&permit, pass_idx as u8, &span, start_window, &mut |_| {})?
+            let outcome = match if matches!(pass.pattern, Pattern::Zero) && supports_write_zeroes {
+                engine.zero_pass(&permit, pass_idx as u8, &span, start_window, &mut |_| {})
             } else {
-                engine.write_pass(&permit, pass_idx as u8, pat_source.as_ref(), &span, start_window, &mut |_| {})?
+                engine.write_pass(
+                    &permit,
+                    pass_idx as u8,
+                    pat_source.as_ref(),
+                    &span,
+                    start_window,
+                    &mut |_| {},
+                )
+            } {
+                Ok(o) => o,
+                Err(DcError::Interrupted { completed_through }) => {
+                    let (through_pass, through_window) = match completed_through {
+                        Some((p, w)) => (Some(p), Some(w)),
+                        None => (Some(pass_idx as u8), None),
+                    };
+                    let _ = journal.append(&JournalRecord::Interrupted {
+                        at: chrono_now_iso(),
+                        hint: "Graceful drain on termination signal during resume".to_string(),
+                        completed_through_pass: through_pass,
+                        completed_through_window: through_window,
+                        signals_received: Some(
+                            SIGNALS_RECEIVED.load(std::sync::atomic::Ordering::SeqCst),
+                        ),
+                    });
+                    return Err(DcError::Interrupted { completed_through });
+                }
+                Err(e) => {
+                    let (errno, at_lba) = match &e {
+                        DcError::Io { errno, at_lba, .. } => (Some(*errno), *at_lba),
+                        DcError::StdIo(io_err) => (io_err.raw_os_error(), None),
+                        _ => (None, None),
+                    };
+                    let _ = journal.append(&JournalRecord::Failed {
+                        code: "EIO".to_string(),
+                        errno,
+                        op: Some("resume-write".to_string()),
+                        at_lba,
+                        detail: e.to_string(),
+                    });
+                    return Err(e);
+                }
             };
 
             journal.append(&JournalRecord::RangeCommit {
@@ -1263,12 +1797,16 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
                 pass: pass_idx as u8,
             })?;
 
+            // Honest per-pass throughput (KiB/s) computed from the outcome.
+            let elapsed_s = (outcome.duration_ms as f64 / 1000.0).max(0.001);
+            let throughput_kib_s = ((outcome.bytes_written as f64 / 1024.0) / elapsed_s) as u64;
+
             exec_passes.push(ExecutionPassReport {
                 index: pass_idx as u8,
                 pattern: pat_source.descriptor().name,
                 fast_path_used: outcome.fast_path_used,
-                windows_written: span.total_windows(),
-                throughput_mib_s: 1000.0,
+                windows_written: outcome.windows_written,
+                throughput_kib_s,
             });
         }
     }
@@ -1285,7 +1823,43 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         true,
     );
 
-    engine.read_verify(verify_pat_source.as_ref(), &span, &mut verifier, &mut |_| {})?;
+    if let Err(e) = engine.read_verify(
+        verify_pat_source.as_ref(),
+        &span,
+        &mut verifier,
+        &mut |_| {},
+    ) {
+        match e {
+            DcError::Interrupted { completed_through } => {
+                let _ = journal.append(&JournalRecord::Interrupted {
+                    at: chrono_now_iso(),
+                    hint: "Graceful drain on termination signal during resume verification"
+                        .to_string(),
+                    completed_through_pass: completed_through.map(|(p, _)| p),
+                    completed_through_window: completed_through.map(|(_, w)| w),
+                    signals_received: Some(
+                        SIGNALS_RECEIVED.load(std::sync::atomic::Ordering::SeqCst),
+                    ),
+                });
+                return Err(DcError::Interrupted { completed_through });
+            }
+            e => {
+                let (errno, at_lba) = match &e {
+                    DcError::Io { errno, at_lba, .. } => (Some(*errno), *at_lba),
+                    DcError::StdIo(io_err) => (io_err.raw_os_error(), None),
+                    _ => (None, None),
+                };
+                let _ = journal.append(&JournalRecord::Failed {
+                    code: "EIO".to_string(),
+                    errno,
+                    op: Some("resume-verify-read".to_string()),
+                    at_lba,
+                    detail: e.to_string(),
+                });
+                return Err(e);
+            }
+        }
+    }
     let verify_report = verifier.finalize();
 
     journal.append(&JournalRecord::Verify {
@@ -1327,7 +1901,11 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
 
     let cert_filename = format!(
         "{}.cert.json",
-        args.journal.file_name().unwrap().to_string_lossy().trim_end_matches(".dcj")
+        args.journal
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .trim_end_matches(".dcj")
     );
     let cert_path = args.out_dir.join(&cert_filename);
     let cert_json = serde_json::to_string_pretty(&cert)?;
@@ -1335,7 +1913,10 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
 
     if !args.no_progress {
         println!("\n{}", cert.render_summary());
-        println!("\n[+] Resumed Sanitization Successful. Certificate written to: {}", cert_path.display());
+        println!(
+            "\n[+] Resumed Sanitization Successful. Certificate written to: {}",
+            cert_path.display()
+        );
     }
 
     Ok(())
@@ -1343,17 +1924,29 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
 
 fn cmd_verify_standalone(args: VerifyArgs) -> Result<(), DcError> {
     if let Some(ref j_path) = args.journal {
-        println!("Re-verifying media directly from journal: {}", j_path.display());
+        println!(
+            "Re-verifying media directly from journal: {}",
+            j_path.display()
+        );
         let (records, _summary) = JournalReader::read_and_verify_chain(j_path)?;
-        let (plan, identity) = records.iter().find_map(|r| match r {
-            JournalRecord::Header { plan, identity, .. } => Some((plan.clone(), identity.clone())),
-            _ => None,
-        }).ok_or_else(|| DcError::JournalCorrupt {
-            record_index: 0,
-            reason: "Missing Header record in journal".to_string(),
-        })?;
+        let (plan, identity) = records
+            .iter()
+            .find_map(|r| match r {
+                JournalRecord::Header { plan, identity, .. } => {
+                    Some((plan.clone(), identity.clone()))
+                }
+                _ => None,
+            })
+            .ok_or_else(|| DcError::JournalCorrupt {
+                record_index: 0,
+                reason: "Missing Header record in journal".to_string(),
+            })?;
 
-        let target_path = args.target.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or(identity.dev_path.clone());
+        let target_path = args
+            .target
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(identity.dev_path.clone());
         let target_file = OpenOptions::new().read(true).open(&target_path)?;
 
         let span = LbaSpan::new(
@@ -1365,7 +1958,9 @@ fn cmd_verify_standalone(args: VerifyArgs) -> Result<(), DcError> {
         let passes = match &plan.mechanism {
             dc_core::Mechanism::LogicalOverwrite { passes } => passes,
         };
-        let last_pass = passes.last().ok_or_else(|| DcError::Usage("No passes in plan".to_string()))?;
+        let last_pass = passes
+            .last()
+            .ok_or_else(|| DcError::Usage("No passes in plan".to_string()))?;
         let pat_source = create_pattern_source(&last_pass.pattern);
 
         let mut verifier = StreamVerifier::new(
@@ -1376,24 +1971,26 @@ fn cmd_verify_standalone(args: VerifyArgs) -> Result<(), DcError> {
             true,
         );
 
-        let mut engine: Box<dyn dc_io::Engine> = create_engine(
-            target_file,
-            plan.window_bytes as usize,
-            false,
-            64,
-        );
+        let mut engine: Box<dyn dc_io::Engine> =
+            create_engine(target_file, plan.window_bytes as usize, false, 64)?;
         engine.read_verify(pat_source.as_ref(), &span, &mut verifier, &mut |_| {})?;
 
         let report = verifier.finalize();
         if report.mismatch_count > 0 {
-            eprintln!("[-] Verification FAILED with {} mismatching windows!", report.mismatch_count);
+            eprintln!(
+                "[-] Verification FAILED with {} mismatching windows!",
+                report.mismatch_count
+            );
             return Err(DcError::VerificationFailed {
                 mismatches: report.mismatch_count,
                 sample: report.first_mismatch_lbas,
             });
         }
 
-        println!("[+] Verification SUCCESSFUL: Whole-media matches pattern bit-for-bit (BLAKE3: {})", report.stream_hash_blake3);
+        println!(
+            "[+] Verification SUCCESSFUL: Whole-media matches pattern bit-for-bit (BLAKE3: {})",
+            report.stream_hash_blake3
+        );
         return Ok(());
     }
 
@@ -1403,13 +2000,17 @@ fn cmd_verify_standalone(args: VerifyArgs) -> Result<(), DcError> {
 
         println!("Validating certificate signature...");
         if !cert.verify_signature()? {
-            return Err(DcError::CertSigning("Certificate digital signature is INVALID or corrupted!".to_string()));
+            return Err(DcError::CertSigning(
+                "Certificate digital signature is INVALID or corrupted!".to_string(),
+            ));
         }
         println!("Certificate signature is valid (Ed25519 signed).");
         return Ok(());
     }
 
-    Err(DcError::Usage("Must specify either --journal <PATH> or --cert <PATH> to verify".to_string()))
+    Err(DcError::Usage(
+        "Must specify either --journal <PATH> or --cert <PATH> to verify".to_string(),
+    ))
 }
 
 fn cmd_cert(args: CertArgs) -> Result<(), DcError> {
@@ -1431,7 +2032,13 @@ fn cmd_cert(args: CertArgs) -> Result<(), DcError> {
 
             let trusted_list: Option<Vec<String>> = if let Some(ref tk_path) = trusted_keys {
                 let content = std::fs::read_to_string(tk_path)?;
-                Some(content.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                Some(
+                    content
+                        .lines()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                )
             } else {
                 None
             };
@@ -1447,19 +2054,25 @@ fn cmd_cert(args: CertArgs) -> Result<(), DcError> {
             println!("mode:        {}", res.mode);
 
             if !res.is_valid {
-                let err_msg = res.error_detail.unwrap_or_else(|| "Signature or format invalid".to_string());
+                let err_msg = res
+                    .error_detail
+                    .unwrap_or_else(|| "Signature or format invalid".to_string());
                 eprintln!("verdict:     INVALID ({})", err_msg);
                 return Err(DcError::CertInvalid(err_msg));
             }
 
             if require_anchor && !res.is_authenticated {
-                eprintln!("verdict:     ANCHOR_REQUIRED (Certificate signature is valid but unauthenticated)");
-                return Err(DcError::CertInvalid("ANCHOR_REQUIRED: Verification must be anchored".to_string()));
+                eprintln!(
+                    "verdict:     ANCHOR_REQUIRED (Certificate signature is valid but unauthenticated)"
+                );
+                return Err(DcError::CertInvalid(
+                    "ANCHOR_REQUIRED: Verification must be anchored".to_string(),
+                ));
             }
 
             // Journal Reconciliation (§5 / Δ40 / F6)
             if let Some(ref j_path) = journal {
-                let (records, j_summary) = JournalReader::read_and_verify_chain(j_path)?;
+                let (_records, j_summary) = JournalReader::read_and_verify_chain(j_path)?;
                 let cert: SanitizationCertificate = serde_json::from_slice(&raw_bytes)?;
 
                 if cert.journal.chain_head != j_summary.chain_head {
@@ -1478,16 +2091,29 @@ fn cmd_cert(args: CertArgs) -> Result<(), DcError> {
                 println!("journal:     RECONCILED ({})", j_path.display());
             }
 
-            println!("verdict:     VALID ({})", if res.is_authenticated { "AUTHENTICATED" } else { "INTEGRITY-ONLY" });
+            println!(
+                "verdict:     VALID ({})",
+                if res.is_authenticated {
+                    "AUTHENTICATED"
+                } else {
+                    "INTEGRITY-ONLY"
+                }
+            );
             Ok(())
         }
-        CertSubcommands::Reconstruct { journal, key, out_dir } => {
-            cmd_cert_reconstruct(&journal, key.as_deref(), &out_dir)
-        }
+        CertSubcommands::Reconstruct {
+            journal,
+            key,
+            out_dir,
+        } => cmd_cert_reconstruct(&journal, key.as_deref(), &out_dir),
     }
 }
 
-fn cmd_cert_reconstruct(journal_path: &Path, key_path: Option<&Path>, out_dir: &Path) -> Result<(), DcError> {
+fn cmd_cert_reconstruct(
+    journal_path: &Path,
+    key_path: Option<&Path>,
+    out_dir: &Path,
+) -> Result<(), DcError> {
     let (records, summary) = JournalReader::read_and_verify_chain(journal_path)?;
 
     let last_record = records.last().ok_or_else(|| DcError::JournalCorrupt {
@@ -1503,49 +2129,76 @@ fn cmd_cert_reconstruct(journal_path: &Path, key_path: Option<&Path>, out_dir: &
         });
     }
 
-    let (plan, plan_hash, identity, started_utc) = records.iter().find_map(|r| match r {
-        JournalRecord::Header { plan, plan_hash, identity, started_utc, .. } => {
-            Some((plan.clone(), plan_hash.clone(), identity.clone(), started_utc.clone()))
-        }
-        _ => None,
-    }).ok_or_else(|| DcError::JournalCorrupt {
-        record_index: 0,
-        reason: "Missing Header in journal".to_string(),
-    })?;
+    let (plan, plan_hash, identity, started_utc) = records
+        .iter()
+        .find_map(|r| match r {
+            JournalRecord::Header {
+                plan,
+                plan_hash,
+                identity,
+                started_utc,
+                ..
+            } => Some((
+                plan.clone(),
+                plan_hash.clone(),
+                identity.clone(),
+                started_utc.clone(),
+            )),
+            _ => None,
+        })
+        .ok_or_else(|| DcError::JournalCorrupt {
+            record_index: 0,
+            reason: "Missing Header in journal".to_string(),
+        })?;
 
-    let (finished_utc, duration_mono_ms) = records.iter().find_map(|r| match r {
-        JournalRecord::Completed { at, duration_mono_ms } => Some((at.clone(), *duration_mono_ms)),
-        _ => None,
-    }).unwrap_or_else(|| (chrono_now_iso(), 0));
+    let (finished_utc, duration_mono_ms) = records
+        .iter()
+        .find_map(|r| match r {
+            JournalRecord::Completed {
+                at,
+                duration_mono_ms,
+            } => Some((at.clone(), *duration_mono_ms)),
+            _ => None,
+        })
+        .unwrap_or_else(|| (chrono_now_iso(), 0));
 
-    let verify_report = records.iter().find_map(|r| match r {
-        JournalRecord::Verify {
-            windows_checked,
-            mismatch_count,
-            first_mismatch_lbas,
-            stream_hash_blake3,
-            stream_hash_sha256,
-            ..
-        } => Some(dc_verify::VerificationReport {
-            level: VerifyLevel::Full,
-            windows_checked: *windows_checked,
-            mismatch_count: *mismatch_count,
-            first_mismatch_lbas: first_mismatch_lbas.clone(),
-            stream_hash_blake3: stream_hash_blake3.clone(),
-            stream_hash_sha256: stream_hash_sha256.clone(),
-            entropy: None,
-        }),
-        _ => None,
-    }).ok_or_else(|| DcError::JournalCorrupt {
-        record_index: summary.record_count,
-        reason: "Missing Verify record in completed journal".to_string(),
-    })?;
+    let verify_report = records
+        .iter()
+        .find_map(|r| match r {
+            JournalRecord::Verify {
+                windows_checked,
+                mismatch_count,
+                first_mismatch_lbas,
+                stream_hash_blake3,
+                stream_hash_sha256,
+                ..
+            } => Some(dc_verify::VerificationReport {
+                level: VerifyLevel::Full,
+                windows_checked: *windows_checked,
+                mismatch_count: *mismatch_count,
+                first_mismatch_lbas: first_mismatch_lbas.clone(),
+                stream_hash_blake3: stream_hash_blake3.clone(),
+                stream_hash_sha256: stream_hash_sha256.clone(),
+                entropy: None,
+            }),
+            _ => None,
+        })
+        .ok_or_else(|| DcError::JournalCorrupt {
+            record_index: summary.record_count,
+            reason: "Missing Verify record in completed journal".to_string(),
+        })?;
 
     let mut failures = Vec::new();
     let mut interruptions = Vec::new();
     for r in &records {
         match r {
-            JournalRecord::Failed { code, errno, op, at_lba, .. } => {
+            JournalRecord::Failed {
+                code,
+                errno,
+                op,
+                at_lba,
+                ..
+            } => {
                 failures.push(FailureRecord {
                     at_utc: chrono_now_iso(),
                     code: code.clone(),
@@ -1591,13 +2244,20 @@ fn cmd_cert_reconstruct(journal_path: &Path, key_path: Option<&Path>, out_dir: &
 
     let cert_filename = format!(
         "{}.cert.json",
-        journal_path.file_name().unwrap().to_string_lossy().trim_end_matches(".dcj")
+        journal_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .trim_end_matches(".dcj")
     );
     let cert_path = out_dir.join(&cert_filename);
     let cert_json = serde_json::to_string_pretty(&cert)?;
     std::fs::write(&cert_path, cert_json)?;
 
-    println!("[+] Certificate reconstructed successfully: {}", cert_path.display());
+    println!(
+        "[+] Certificate reconstructed successfully: {}",
+        cert_path.display()
+    );
     Ok(())
 }
 
@@ -1607,7 +2267,81 @@ fn cmd_keygen(args: KeygenArgs) -> Result<(), DcError> {
     println!("[+] Generated operator Ed25519 keypair");
     println!("    Private Key File:    {}", args.out.display());
     println!("    Public Key (hex):    {}", keypair.public_key_hex());
-    println!("    Key Fingerprint:     {}", keypair.key_fingerprint_blake3());
+    println!(
+        "    Key Fingerprint:     {}",
+        keypair.key_fingerprint_blake3()
+    );
+    Ok(())
+}
+
+/// Two-officer countersignature approval of a compiled plan (Δ448).
+///
+/// Produces an `AuthorizationSet` JSON containing REAL Ed25519
+/// countersignatures over the plan hash (one per officer key), which
+/// `dc execute --auth-set <file>` then REQUIRES to verify before arming.
+fn cmd_approve(args: ApproveArgs) -> Result<(), DcError> {
+    let plan_content = std::fs::read_to_string(&args.plan)?;
+    let plan: SanitizationPlan = serde_json::from_str(&plan_content).map_err(|e| {
+        DcError::Usage(format!(
+            "Invalid plan JSON '{}': {}",
+            args.plan.display(),
+            e
+        ))
+    })?;
+    let plan_hash = plan.compute_plan_hash()?;
+
+    let officer1 = OperatorKeyPair::load_from_file(&args.key)?;
+
+    let mut auth_set = AuthorizationSet::new(&plan_hash);
+    auth_set.add_signature(approve::PlanApprover::countersign_plan(
+        &plan_hash,
+        &officer1,
+        args.officer1_hardware,
+    ));
+
+    if let Some(ref key2_path) = args.key2 {
+        let officer2 = OperatorKeyPair::load_from_file(key2_path)?;
+        auth_set.add_signature(approve::PlanApprover::countersign_plan(
+            &plan_hash,
+            &officer2,
+            args.officer2_hardware,
+        ));
+    } else {
+        eprintln!("[WARNING] Only ONE officer key supplied: the authorization set will NOT");
+        eprintln!("           satisfy the two-person-integrity gate of `dc execute --auth-set`.");
+    }
+
+    // Verify what we just built before writing it out: an approval file
+    // that does not verify is worse than useless.
+    let custody = auth_set
+        .verify_pre_arm_authorization(&plan_hash, true)
+        .map_err(|reason| {
+            DcError::CertSigning(format!(
+                "Generated authorization set failed self-verification: {}",
+                reason
+            ))
+        })?;
+
+    let out_path = args.out.clone().unwrap_or_else(|| {
+        let stem = args
+            .plan
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        PathBuf::from(format!("{}.auth.json", stem))
+    });
+
+    let json = serde_json::to_string_pretty(&auth_set)?;
+    std::fs::write(&out_path, json)?;
+
+    println!("[+] Plan approval recorded");
+    println!("    Plan:            {}", args.plan.display());
+    println!("    Plan Hash:       {}", plan_hash);
+    println!("    Officers:         {}", auth_set.signatures.len());
+    println!("    Distinct Keys:    {}", auth_set.distinct_key_count());
+    println!("    Custody Type:     {:?}", custody);
+    println!("    Output:           {}", out_path.display());
+    println!("\nUse with: dc execute --auth-set {}", out_path.display());
     Ok(())
 }
 
@@ -1620,10 +2354,20 @@ fn cmd_journal(args: JournalArgs) -> Result<(), DcError> {
     }
 }
 
-fn cmd_journal_selftest_sequence(flavor: &str, out: &Path, key_path: Option<&Path>) -> Result<(), DcError> {
+fn cmd_journal_selftest_sequence(
+    flavor: &str,
+    out: &Path,
+    key_path: Option<&Path>,
+) -> Result<(), DcError> {
     let keypair = match key_path {
         Some(k) => Some(OperatorKeyPair::load_from_file(k)?),
-        None => if flavor == "sealed" { Some(OperatorKeyPair::generate()) } else { None },
+        None => {
+            if flavor == "sealed" {
+                Some(OperatorKeyPair::generate())
+            } else {
+                None
+            }
+        }
     };
 
     let identity = DeviceIdentity {
@@ -1636,7 +2380,10 @@ fn cmd_journal_selftest_sequence(flavor: &str, out: &Path, key_path: Option<&Pat
             dm_name: None,
             dm_uuid: None,
         },
-        kernel: KernelIdentity { major: 259, minor: 0 },
+        kernel: KernelIdentity {
+            major: 259,
+            minor: 0,
+        },
         kernel_name: "nvme0n1".to_string(),
         dev_path: "/dev/nvme0n1".to_string(),
         logical_block_size: 512,
@@ -1644,7 +2391,11 @@ fn cmd_journal_selftest_sequence(flavor: &str, out: &Path, key_path: Option<&Pat
     };
 
     let plan = if flavor == "dod3" {
-        SanitizationPlan::legacy_dod3(identity.stable.clone(), None, FastPathPolicy::PreferWriteZeroes)?
+        SanitizationPlan::legacy_dod3(
+            identity.stable.clone(),
+            None,
+            FastPathPolicy::PreferWriteZeroes,
+        )?
     } else {
         SanitizationPlan::clear_zero(identity.stable.clone(), FastPathPolicy::PreferWriteZeroes)
     };
@@ -1673,7 +2424,8 @@ fn cmd_journal_selftest_sequence(flavor: &str, out: &Path, key_path: Option<&Pat
         started_utc: chrono_now_iso(),
     };
 
-    let mut writer = JournalWriter::create_new(out, "format-authentic-uuid-001".to_string(), signing_key)?;
+    let mut writer =
+        JournalWriter::create_new(out, "format-authentic-uuid-001".to_string(), signing_key)?;
     writer.append(&header)?;
     writer.append(&JournalRecord::Armed {
         overrides: vec!["allow-loop".to_string()],
@@ -1685,10 +2437,18 @@ fn cmd_journal_selftest_sequence(flavor: &str, out: &Path, key_path: Option<&Pat
         "clean" | "sealed" => {
             writer.append(&JournalRecord::BeginPass {
                 pass: 0,
-                pattern: PatternDescriptor { name: "Zero".to_string(), pattern: Pattern::Zero, description: "Zero".to_string() },
+                pattern: PatternDescriptor {
+                    name: "Zero".to_string(),
+                    pattern: Pattern::Zero,
+                    description: "Zero".to_string(),
+                },
                 window_bytes: 2 * 1024 * 1024,
             })?;
-            writer.append(&JournalRecord::RangeCommit { pass: 0, first_window: 0, num_windows: 32 })?;
+            writer.append(&JournalRecord::RangeCommit {
+                pass: 0,
+                first_window: 0,
+                num_windows: 32,
+            })?;
             writer.append(&JournalRecord::EndPass { pass: 0 })?;
             writer.append(&JournalRecord::Flushed { pass: 0 })?;
             writer.append(&JournalRecord::Verify {
@@ -1696,19 +2456,31 @@ fn cmd_journal_selftest_sequence(flavor: &str, out: &Path, key_path: Option<&Pat
                 windows_checked: 32,
                 mismatch_count: 0,
                 first_mismatch_lbas: vec![],
-                stream_hash_blake3: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+                stream_hash_blake3:
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
                 stream_hash_sha256: None,
                 fast_path_used: true,
             })?;
-            writer.append(&JournalRecord::Completed { at: chrono_now_iso(), duration_mono_ms: 15000 })?;
+            writer.append(&JournalRecord::Completed {
+                at: chrono_now_iso(),
+                duration_mono_ms: 15000,
+            })?;
         }
         "failed" => {
             writer.append(&JournalRecord::BeginPass {
                 pass: 0,
-                pattern: PatternDescriptor { name: "Zero".to_string(), pattern: Pattern::Zero, description: "Zero".to_string() },
+                pattern: PatternDescriptor {
+                    name: "Zero".to_string(),
+                    pattern: Pattern::Zero,
+                    description: "Zero".to_string(),
+                },
                 window_bytes: 2 * 1024 * 1024,
             })?;
-            writer.append(&JournalRecord::RangeCommit { pass: 0, first_window: 0, num_windows: 16 })?;
+            writer.append(&JournalRecord::RangeCommit {
+                pass: 0,
+                first_window: 0,
+                num_windows: 16,
+            })?;
             writer.append(&JournalRecord::Failed {
                 code: "EIO".to_string(),
                 errno: Some(5),
@@ -1720,10 +2492,18 @@ fn cmd_journal_selftest_sequence(flavor: &str, out: &Path, key_path: Option<&Pat
         "interrupted" => {
             writer.append(&JournalRecord::BeginPass {
                 pass: 0,
-                pattern: PatternDescriptor { name: "Zero".to_string(), pattern: Pattern::Zero, description: "Zero".to_string() },
+                pattern: PatternDescriptor {
+                    name: "Zero".to_string(),
+                    pattern: Pattern::Zero,
+                    description: "Zero".to_string(),
+                },
                 window_bytes: 2 * 1024 * 1024,
             })?;
-            writer.append(&JournalRecord::RangeCommit { pass: 0, first_window: 0, num_windows: 16 })?;
+            writer.append(&JournalRecord::RangeCommit {
+                pass: 0,
+                first_window: 0,
+                num_windows: 16,
+            })?;
             writer.append(&JournalRecord::Interrupted {
                 at: chrono_now_iso(),
                 hint: "Graceful drain".to_string(),
@@ -1736,10 +2516,18 @@ fn cmd_journal_selftest_sequence(flavor: &str, out: &Path, key_path: Option<&Pat
             for p in 0..3 {
                 writer.append(&JournalRecord::BeginPass {
                     pass: p,
-                    pattern: PatternDescriptor { name: format!("DoD Pass {}", p), pattern: Pattern::Zero, description: "DoD".to_string() },
+                    pattern: PatternDescriptor {
+                        name: format!("DoD Pass {}", p),
+                        pattern: Pattern::Zero,
+                        description: "DoD".to_string(),
+                    },
                     window_bytes: 2 * 1024 * 1024,
                 })?;
-                writer.append(&JournalRecord::RangeCommit { pass: p, first_window: 0, num_windows: 32 })?;
+                writer.append(&JournalRecord::RangeCommit {
+                    pass: p,
+                    first_window: 0,
+                    num_windows: 32,
+                })?;
                 writer.append(&JournalRecord::EndPass { pass: p })?;
                 writer.append(&JournalRecord::Flushed { pass: p })?;
             }
@@ -1748,16 +2536,24 @@ fn cmd_journal_selftest_sequence(flavor: &str, out: &Path, key_path: Option<&Pat
                 windows_checked: 32,
                 mismatch_count: 0,
                 first_mismatch_lbas: vec![],
-                stream_hash_blake3: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+                stream_hash_blake3:
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
                 stream_hash_sha256: None,
                 fast_path_used: false,
             })?;
-            writer.append(&JournalRecord::Completed { at: chrono_now_iso(), duration_mono_ms: 45000 })?;
+            writer.append(&JournalRecord::Completed {
+                at: chrono_now_iso(),
+                duration_mono_ms: 45000,
+            })?;
         }
         _ => {}
     }
 
-    println!("[+] Selftest sequence '{}' written to: {}", flavor, out.display());
+    println!(
+        "[+] Selftest sequence '{}' written to: {}",
+        flavor,
+        out.display()
+    );
     Ok(())
 }
 
@@ -1768,30 +2564,56 @@ fn cmd_journal_inspect(path: &Path) -> Result<(), DcError> {
     println!("                         JOURNAL INSPECTION REPORT");
     println!("================================================================================");
     println!("File:               {}", path.display());
-    println!("Verdict:            {}", if summary.discarded_tail_bytes > 0 { "TORN_TAIL (Recoverable Prefix)" } else { "VALID (Complete Chain)" });
+    println!(
+        "Verdict:            {}",
+        if summary.discarded_tail_bytes > 0 {
+            "TORN_TAIL (Recoverable Prefix)"
+        } else {
+            "VALID (Complete Chain)"
+        }
+    );
     println!("Record Count:       {}", summary.record_count);
     println!("Chain Head:         {}", summary.chain_head);
     println!("Discarded Tail:     {} bytes", summary.discarded_tail_bytes);
     println!("Journal UUID:       {}", summary.uuid);
     println!("Sealed (Signed):    {}", summary.sealed);
 
-    if let Some(first) = records.first() {
-        if let JournalRecord::Header { plan, identity, started_utc, .. } = first {
-            println!("Target Device:      {}", identity.dev_path);
-            println!("Target Model:       {}", identity.stable.model.as_deref().unwrap_or("-"));
-            println!("Target Serial:      {}", identity.stable.serial.as_deref().unwrap_or("-"));
-            println!("Started UTC:        {}", started_utc);
-            println!("Passes Planned:     {}", match &plan.mechanism { dc_core::Mechanism::LogicalOverwrite { passes } => passes.len() });
-        }
+    if let Some(first) = records.first()
+        && let JournalRecord::Header {
+            plan,
+            identity,
+            started_utc,
+            ..
+        } = first
+    {
+        println!("Target Device:      {}", identity.dev_path);
+        println!(
+            "Target Model:       {}",
+            identity.stable.model.as_deref().unwrap_or("-")
+        );
+        println!(
+            "Target Serial:      {}",
+            identity.stable.serial.as_deref().unwrap_or("-")
+        );
+        println!("Started UTC:        {}", started_utc);
+        println!(
+            "Passes Planned:     {}",
+            match &plan.mechanism {
+                dc_core::Mechanism::LogicalOverwrite { passes } => passes.len(),
+            }
+        );
     }
 
     if let Some(last) = records.last() {
-        println!("Terminal State:     {}", match last {
-            JournalRecord::Completed { .. } => "Completed",
-            JournalRecord::Interrupted { .. } => "Interrupted",
-            JournalRecord::Failed { .. } => "Failed",
-            _ => "Incomplete",
-        });
+        println!(
+            "Terminal State:     {}",
+            match last {
+                JournalRecord::Completed { .. } => "Completed",
+                JournalRecord::Interrupted { .. } => "Interrupted",
+                JournalRecord::Failed { .. } => "Failed",
+                _ => "Incomplete",
+            }
+        );
     }
 
     println!("================================================================================");

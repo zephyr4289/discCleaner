@@ -1,5 +1,5 @@
 use assert_cmd::Command;
-use dc_cert::{CertificateProjector, OperatorKeyPair, SanitizationCertificate};
+use dc_cert::{CertificateProjector, OperatorKeyPair};
 use dc_core::{AuditLogger, AuditOutcome, AuditRecord};
 use dc_testkit::RigLedger;
 use std::fs;
@@ -22,7 +22,10 @@ fn test_g6_cert_audit_matrix() {
     // 4. CERT-STRICT-REJECT: Strict Schema & Unknown Field Rejection (Δ169)
     run_cert_strict_tests(&ledger, temp_dir.path());
 
-    assert!(ledger.is_all_green(), "[G6-FAIL] Cert & Audit matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[G6-FAIL] Cert & Audit matrix contains failing assertions!"
+    );
     println!("\n[=== G6 CERTIFICATE & AUDIT MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -34,9 +37,12 @@ fn run_proj_identity_tests(ledger: &RigLedger, temp_dir: &Path) {
 
     // Generate clean driver journal
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-    cmd.arg("journal").arg("selftest-sequence")
-        .arg("--flavor").arg("clean")
-        .arg("--out").arg(&j_path);
+    cmd.arg("journal")
+        .arg("selftest-sequence")
+        .arg("--flavor")
+        .arg("clean")
+        .arg("--out")
+        .arg(&j_path);
     cmd.assert().code(0);
 
     // Project twice with same key
@@ -48,7 +54,13 @@ fn run_proj_identity_tests(ledger: &RigLedger, temp_dir: &Path) {
 
     // Assert bit-for-bit identical including Ed25519 signature (Δ163)
     let is_identical = cert1_json == cert2_json;
-    ledger.assert("G6-PROJECT", "PROJ-IDENTITY", "true", is_identical.to_string(), None);
+    ledger.assert(
+        "G6-PROJECT",
+        "PROJ-IDENTITY",
+        "true",
+        is_identical.to_string(),
+        None,
+    );
 }
 
 fn run_aud_chain_tests(ledger: &RigLedger, temp_dir: &Path) {
@@ -57,22 +69,28 @@ fn run_aud_chain_tests(ledger: &RigLedger, temp_dir: &Path) {
     let aud_path = temp_dir.join("test_audit.log");
     let mut logger = AuditLogger::open_or_create(&aud_path).unwrap();
 
-    logger.log(&AuditRecord {
-        timestamp_utc: "2026-08-28T20:00:00Z".to_string(),
-        argv_hash: "0000".to_string(),
-        target_path: Some("/dev/nvme0n1".to_string()),
-        outcome: AuditOutcome::PlanCompiled { plan_hash: "abcd1234".to_string() },
-    }).unwrap();
+    logger
+        .log(&AuditRecord {
+            timestamp_utc: "2026-08-28T20:00:00Z".to_string(),
+            argv_hash: "0000".to_string(),
+            target_path: Some("/dev/nvme0n1".to_string()),
+            outcome: AuditOutcome::PlanCompiled {
+                plan_hash: "abcd1234".to_string(),
+            },
+        })
+        .unwrap();
 
-    logger.log(&AuditRecord {
-        timestamp_utc: "2026-08-28T20:01:00Z".to_string(),
-        argv_hash: "0000".to_string(),
-        target_path: Some("/dev/nvme0n1".to_string()),
-        outcome: AuditOutcome::Executed {
-            journal_path: "/tmp/clean.dcj".to_string(),
-            chain_head: "ef012345".to_string(),
-        },
-    }).unwrap();
+    logger
+        .log(&AuditRecord {
+            timestamp_utc: "2026-08-28T20:01:00Z".to_string(),
+            argv_hash: "0000".to_string(),
+            target_path: Some("/dev/nvme0n1".to_string()),
+            outcome: AuditOutcome::Executed {
+                journal_path: "/tmp/clean.dcj".to_string(),
+                chain_head: "ef012345".to_string(),
+            },
+        })
+        .unwrap();
 
     let (count, head) = AuditLogger::verify_audit_file(&aud_path).unwrap();
     assert_eq!(count, 2);
@@ -82,7 +100,13 @@ fn run_aud_chain_tests(ledger: &RigLedger, temp_dir: &Path) {
     // Assert feeding audit log to journal reader fails with magic mismatch
     let j_res = dc_core::journal::JournalReader::read_and_verify_chain(&aud_path);
     assert!(j_res.is_err(), "DCJ1 parser must reject DCA1 audit files");
-    ledger.assert("G6-AUDIT", "AUD-MAGIC-SEPARATION", "true", j_res.is_err().to_string(), None);
+    ledger.assert(
+        "G6-AUDIT",
+        "AUD-MAGIC-SEPARATION",
+        "true",
+        j_res.is_err().to_string(),
+        None,
+    );
 }
 
 fn run_cert_reconcile_tests(ledger: &RigLedger, temp_dir: &Path) {
@@ -98,12 +122,21 @@ fn run_cert_reconcile_tests(ledger: &RigLedger, temp_dir: &Path) {
 
     // Verify cert with journal reconciliation
     let mut verify_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    verify_cmd.arg("cert").arg("verify")
+    verify_cmd
+        .arg("cert")
+        .arg("verify")
         .arg(&cert_path)
-        .arg("--journal").arg(&j_path);
+        .arg("--journal")
+        .arg(&j_path);
     verify_cmd.assert().code(0);
 
-    ledger.assert("G6-RECONCILE", "CERT-JOURNAL-RECONCILE", "true", "true", None);
+    ledger.assert(
+        "G6-RECONCILE",
+        "CERT-JOURNAL-RECONCILE",
+        "true",
+        "true",
+        None,
+    );
 }
 
 fn run_cert_strict_tests(ledger: &RigLedger, temp_dir: &Path) {

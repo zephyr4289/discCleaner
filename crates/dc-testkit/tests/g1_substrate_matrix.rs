@@ -1,9 +1,6 @@
 use assert_cmd::Command;
-use dc_testkit::{
-    Janitor, ProcessGuard, RigLedger, ToolSpawner,
-};
+use dc_testkit::{Janitor, RigLedger, ToolSpawner};
 use std::collections::BTreeMap;
-use std::path::Path;
 
 #[test]
 fn test_g1_substrate_matrix() {
@@ -21,7 +18,10 @@ fn test_g1_substrate_matrix() {
     // 4. SUB-JAN-IDEM: Janitor Idempotence (Δ101)
     run_sub_janitor_idempotence(&ledger);
 
-    assert!(ledger.is_all_green(), "[G1-FAIL] Substrate matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[G1-FAIL] Substrate matrix contains failing assertions!"
+    );
     println!("\n[=== G1 TESTKIT SUBSTRATE MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -52,29 +52,43 @@ fn run_sub_ledger_tests(ledger: &RigLedger) {
 fn run_sub_env_echo_tests(ledger: &RigLedger) {
     println!("\n[>>> SUB-ENV-ECHO: Testing Normative Spawn Environment Table (Δ99, Δ102) <<<]");
 
-    // Set a test DC_ variable in parent environment
-    std::env::set_var("DC_POISON_LEAK_TEST", "should_be_scrubbed");
+    // Set a test DC_ variable in parent environment.
+    // (unsafe: environment mutation is process-global; the test harness is
+    // single-threaded at this point.)
+    unsafe {
+        std::env::set_var("DC_POISON_LEAK_TEST", "should_be_scrubbed");
+    }
 
-    let mut cmd = Command::cargo_bin("dc-victim").unwrap();
+    let cmd = Command::cargo_bin("dc-victim").unwrap();
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Configure via ToolSpawner
-    let mut configured_cmd = ToolSpawner::prepare_command(
-        cmd.get_program().as_ref(),
-        temp_dir.path(),
-    );
+    let mut configured_cmd =
+        ToolSpawner::prepare_command(cmd.get_program().as_ref(), temp_dir.path());
     configured_cmd.arg("--echo-env");
 
-    let output = configured_cmd.output().expect("Failed to execute dc-victim");
+    let output = configured_cmd
+        .output()
+        .expect("Failed to execute dc-victim");
     assert!(output.status.success());
 
     let stdout_str = String::from_utf8_lossy(&output.stdout);
-    let env_map: BTreeMap<String, String> = serde_json::from_str(&stdout_str)
-        .expect("dc-victim --echo-env must output valid JSON");
+    let env_map: BTreeMap<String, String> =
+        serde_json::from_str(&stdout_str).expect("dc-victim --echo-env must output valid JSON");
 
     // 1. Assert DC_* variables are scrubbed (Δ99)
+    // REG-ENV-SCRUB-ASSERT: the expected value is "true" for `!has_dc_var`
+    // — scrubbing working yields has_dc_var == false, so !has_dc_var is
+    // true. (The historical expected value "false" inverted the check and
+    // could only pass when scrubbing FAILED.)
     let has_dc_var = env_map.keys().any(|k| k.starts_with("DC_"));
-    ledger.assert("G1-SPAWN", "SUB-ENV-SCRUB", "false", (!has_dc_var).to_string(), None);
+    ledger.assert(
+        "G1-SPAWN",
+        "SUB-ENV-SCRUB",
+        "true",
+        (!has_dc_var).to_string(),
+        None,
+    );
 
     // 2. Assert normative pinned environment variables (Δ99)
     let tz_ok = env_map.get("TZ").map(|s| s.as_str()) == Some("UTC");
@@ -83,9 +97,27 @@ fn run_sub_env_echo_tests(ledger: &RigLedger) {
     let lang_ok = env_map.get("LANG").map(|s| s.as_str()) == Some("C.UTF-8");
 
     ledger.assert("G1-SPAWN", "SUB-ENV-TZ", "true", tz_ok.to_string(), None);
-    ledger.assert("G1-SPAWN", "SUB-ENV-TERM", "true", term_ok.to_string(), None);
-    ledger.assert("G1-SPAWN", "SUB-ENV-NOCOLOR", "true", nocolor_ok.to_string(), None);
-    ledger.assert("G1-SPAWN", "SUB-ENV-LANG", "true", lang_ok.to_string(), None);
+    ledger.assert(
+        "G1-SPAWN",
+        "SUB-ENV-TERM",
+        "true",
+        term_ok.to_string(),
+        None,
+    );
+    ledger.assert(
+        "G1-SPAWN",
+        "SUB-ENV-NOCOLOR",
+        "true",
+        nocolor_ok.to_string(),
+        None,
+    );
+    ledger.assert(
+        "G1-SPAWN",
+        "SUB-ENV-LANG",
+        "true",
+        lang_ok.to_string(),
+        None,
+    );
 }
 
 fn run_sub_guard_reap_tests(ledger: &RigLedger) {
@@ -94,10 +126,8 @@ fn run_sub_guard_reap_tests(ledger: &RigLedger) {
     let cmd_victim = Command::cargo_bin("dc-victim").unwrap();
     let temp_dir = tempfile::tempdir().unwrap();
 
-    let mut configured_cmd = ToolSpawner::prepare_command(
-        cmd_victim.get_program().as_ref(),
-        temp_dir.path(),
-    );
+    let mut configured_cmd =
+        ToolSpawner::prepare_command(cmd_victim.get_program().as_ref(), temp_dir.path());
     configured_cmd.arg("--sleep-ms").arg("10000");
 
     let pid;
@@ -112,7 +142,13 @@ fn run_sub_guard_reap_tests(ledger: &RigLedger) {
 
     // After guard drop, child must be reaped
     let alive_after = unsafe { libc::kill(pid as i32, 0) == 0 };
-    ledger.assert("G1-SPAWN", "SUB-GUARD-REAP", "false", alive_after.to_string(), None);
+    ledger.assert(
+        "G1-SPAWN",
+        "SUB-GUARD-REAP",
+        "false",
+        alive_after.to_string(),
+        None,
+    );
 }
 
 fn run_sub_janitor_idempotence(ledger: &RigLedger) {

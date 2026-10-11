@@ -34,7 +34,8 @@ global {{
 
         let lvm_conf_path = system_dir.join("lvm.conf");
         let mut file = File::create(&lvm_conf_path).map_err(|e| e.to_string())?;
-        file.write_all(lvm_conf_content.as_bytes()).map_err(|e| e.to_string())?;
+        file.write_all(lvm_conf_content.as_bytes())
+            .map_err(|e| e.to_string())?;
 
         Ok(Self {
             system_dir,
@@ -68,7 +69,10 @@ global {{
 
     pub fn vgcreate(&self, vg_name: &str, dev_paths: &[&Path]) -> Result<(), String> {
         let mut args = vec!["vgcreate", "-y", "--systemid", &self.system_id, vg_name];
-        let p_strings: Vec<String> = dev_paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        let p_strings: Vec<String> = dev_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
         for p in &p_strings {
             args.push(p);
         }

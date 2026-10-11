@@ -32,7 +32,10 @@ impl ExclHolder {
             .open(target_path);
 
         match holder2_res {
-            Ok(_) => Err("O_EXCL secondary open SUCCEEDED unexpectedly (kernel lack claim semantics)".to_string()),
+            Ok(_) => Err(
+                "O_EXCL secondary open SUCCEEDED unexpectedly (kernel lack claim semantics)"
+                    .to_string(),
+            ),
             Err(e) if e.raw_os_error() == Some(libc::EBUSY) => {
                 // Expected EBUSY!
                 drop(holder1);

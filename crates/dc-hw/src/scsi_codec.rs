@@ -32,10 +32,15 @@ impl ScsiCodec {
     }
 
     /// Encode a 6-byte SCSI FORMAT UNIT CDB (Opcode 0x04 - SBC-3 §5.2).
+    ///
+    /// Byte 1: bit 7 IMMED, bit 4 FMTDATA, bit 3 CMPLIST, bits 2:0 Defect
+    /// List Format. FMTDATA=0 means NO parameter list follows; setting it
+    /// (as the old `0x10` constant did) obligates the initiator to transfer
+    /// a defect-list header the CDB never supplies, hanging the target.
     pub fn encode_format_unit(immed: bool) -> [u8; 6] {
         let mut cdb = [0u8; 6];
         cdb[0] = 0x04; // Opcode: FORMAT UNIT
-        cdb[1] = 0x10; // FmtData = 0, CmpList = 0, Defect List Format = 0
+        cdb[1] = 0x00; // FmtData = 0, CmpList = 0, Defect List Format = 0
         if immed {
             cdb[1] |= 0x80; // IMMED bit
         }
@@ -63,10 +68,11 @@ impl ScsiCodec {
             let asc = if raw.len() > 12 { raw[12] } else { 0 };
             let ascq = if raw.len() > 13 { raw[13] } else { 0 };
 
-            // Sense-key specific progress (SKSV bit 7 of byte 15)
+            // Sense-key specific progress (SKSV bit 7 of byte 15);
+            // round half-up so 0xFFFF/0x65536 reports 1000 permille.
             let progress_permille = if raw.len() >= 18 && (raw[15] & 0x80) != 0 {
                 let progress_raw = u16::from_be_bytes([raw[16], raw[17]]);
-                Some(((progress_raw as u64 * 1000) / 65536) as u16)
+                Some(((progress_raw as u64 * 1000 + 32768) / 65536) as u16)
             } else {
                 None
             };

@@ -48,10 +48,7 @@ impl ArchAgreementDriver {
                 "OVMF-dd",
                 "OVMF-installed",
             ],
-            TargetArch::Aarch64Musl => vec![
-                "edk2-AA64-dd",
-                "edk2-AA64-installed",
-            ],
+            TargetArch::Aarch64Musl => vec!["edk2-AA64-dd", "edk2-AA64-installed"],
         }
     }
 }

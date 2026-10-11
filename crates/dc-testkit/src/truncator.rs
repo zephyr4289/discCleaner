@@ -10,7 +10,7 @@ impl Truncator {
     /// Truncate at `offset` and append `zero_len` zero bytes (Δ91 zero-tail model).
     pub fn zero_tail(bytes: &[u8], offset: usize, zero_len: usize) -> Vec<u8> {
         let mut out = Self::truncate(bytes, offset);
-        out.extend(std::iter::repeat(0u8).take(zero_len));
+        out.extend(std::iter::repeat_n(0u8, zero_len));
         out
     }
 

@@ -61,8 +61,13 @@ impl PdfaDocument {
 
         for att in &self.attachments {
             out.extend_from_slice(
-                format!("%% EmbeddedFile: {} (size: {} bytes, mime: {})\n", att.filename, att.content.len(), att.mime)
-                    .as_bytes(),
+                format!(
+                    "%% EmbeddedFile: {} (size: {} bytes, mime: {})\n",
+                    att.filename,
+                    att.content.len(),
+                    att.mime
+                )
+                .as_bytes(),
             );
         }
 

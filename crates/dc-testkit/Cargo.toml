@@ -1,6 +1,6 @@
 [package]
 name = "dc-testkit"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2024"
 
 [[bin]]
@@ -22,5 +22,29 @@ tracing = { workspace = true }
 dc-core = { workspace = true }
 dc-cert = { workspace = true }
 dc-verify = { workspace = true }
+dc-hw = { workspace = true }
+dc-mmc = { workspace = true }
 chacha20 = { workspace = true }
 tempfile = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+
+# The rig OVERRIDES the workspace lint table entirely: test code follows
+# different rules (panics are failures, guard-clause depth is idiomatic in
+# forge code). Production crates inherit [workspace.lints]; this deviation
+# is deliberate and visible.
+[lints.clippy]
+# Guard-clause depth beats let-chain cleverness in forge code.
+collapsible_if = "allow"
+collapsible_match = "allow"
+# Rig fixtures legitimately use unwrap/expect: a panic IS the test failure.
+unwrap_used = "allow"
+expect_used = "allow"
+# Doc list indentation style in rig docs.
+doc_lazy_continuation = "allow"
+# Same design-level allows the workspace grants production crates (the rig
+# overrides the whole table, so they must be restated here).
+result_large_err = "allow"
+large_enum_variant = "allow"
+too_many_arguments = "allow"

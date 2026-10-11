@@ -1,8 +1,5 @@
 use assert_cmd::Command;
-use dc_testkit::{
-    DioProbe, Janitor, JournalForge, JournalOracle, LoopDevice, SentinelManager,
-};
-use ed25519_dalek::SigningKey;
+use dc_testkit::{DioProbe, Janitor, JournalForge, JournalOracle, LoopDevice, SentinelManager};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -54,7 +51,11 @@ fn test_t6_journal_tamper_matrix() {
     println!("\n[=== T6 JOURNAL TAMPER & FORGERY SUITE PASSED ALL MATRIX CELLS ===]\n");
 }
 
-fn stage_base_journal(scratch_dir: &Path, prefix: &str, sealed_key: Option<&Path>) -> (PathBuf, LoopDevice) {
+fn stage_base_journal(
+    scratch_dir: &Path,
+    prefix: &str,
+    sealed_key: Option<&Path>,
+) -> (PathBuf, LoopDevice) {
     let run_dir = scratch_dir.join(format!("{}_{}", prefix, std::process::id()));
     let _ = fs::create_dir_all(&run_dir);
     let backing = run_dir.join("backing.raw");
@@ -67,11 +68,15 @@ fn stage_base_journal(scratch_dir: &Path, prefix: &str, sealed_key: Option<&Path
 
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
     cmd.arg("execute")
-        .arg("--target").arg(&loop_dev.dev_path)
-        .arg("--profile").arg("clear-zero")
-        .arg("--serial-confirm").arg(format!("loop{}", loop_dev.minor))
+        .arg("--target")
+        .arg(&loop_dev.dev_path)
+        .arg("--profile")
+        .arg("clear-zero")
+        .arg("--serial-confirm")
+        .arg(format!("loop{}", loop_dev.minor))
         .arg("--allow-loop")
-        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--no-progress")
         .env("DC_CRASH_AT", "commit:2"); // Crash at commit #2 to leave incomplete journal
 
@@ -81,8 +86,8 @@ fn stage_base_journal(scratch_dir: &Path, prefix: &str, sealed_key: Option<&Path
 
     let _ = cmd.assert();
 
-    let journal_path = find_single_file_with_ext(&out_dir, "dcj")
-        .expect("Base journal not generated after crash");
+    let journal_path =
+        find_single_file_with_ext(&out_dir, "dcj").expect("Base journal not generated after crash");
 
     (journal_path, loop_dev)
 }
@@ -122,7 +127,8 @@ fn run_f1_naive_grid(scratch_dir: &Path) {
 
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
         cmd.arg("resume")
-            .arg("--journal").arg(&copy_path)
+            .arg("--journal")
+            .arg(&copy_path)
             .arg("--no-progress");
 
         cmd.assert().code(6);
@@ -142,7 +148,10 @@ fn run_f2_structural(scratch_dir: &Path) {
         JournalForge::splice_out_record(&copy, 1).unwrap();
 
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-        cmd.arg("resume").arg("--journal").arg(&copy).arg("--no-progress");
+        cmd.arg("resume")
+            .arg("--journal")
+            .arg(&copy)
+            .arg("--no-progress");
         cmd.assert().code(6);
         println!("  [✓] F2.splice: Splice-out middle record refused with exit code 6.");
     }
@@ -154,7 +163,10 @@ fn run_f2_structural(scratch_dir: &Path) {
         JournalForge::reorder_adjacent_records(&copy, 1).unwrap();
 
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-        cmd.arg("resume").arg("--journal").arg(&copy).arg("--no-progress");
+        cmd.arg("resume")
+            .arg("--journal")
+            .arg(&copy)
+            .arg("--no-progress");
         cmd.assert().code(6);
         println!("  [✓] F2.reorder: Reordered adjacent records refused with exit code 6.");
     }
@@ -174,9 +186,14 @@ fn run_f3_layer_forgeries(scratch_dir: &Path) {
     JournalForge::recompute_record_hash(&copy, 1).unwrap(); // Recomputed own hash!
 
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-    cmd.arg("resume").arg("--journal").arg(&copy).arg("--no-progress");
+    cmd.arg("resume")
+        .arg("--journal")
+        .arg(&copy)
+        .arg("--no-progress");
     cmd.assert().code(6);
-    println!("  [✓] F3.L2 PASSED: Middle record with recomputed self-hash caught by successor linkage.");
+    println!(
+        "  [✓] F3.L2 PASSED: Middle record with recomputed self-hash caught by successor linkage."
+    );
 }
 
 fn run_f4_capstone_attacks(scratch_dir: &Path) {
@@ -202,17 +219,24 @@ fn run_f4_capstone_attacks(scratch_dir: &Path) {
 
     let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
     cmd.arg("resume")
-        .arg("--journal").arg(&copy)
-        .arg("--key").arg(&key_path)
+        .arg("--journal")
+        .arg(&copy)
+        .arg("--key")
+        .arg(&key_path)
         .arg("--no-progress");
 
     cmd.assert().code(6);
-    println!("  [✓] F4.sealed PASSED: Pass-skip / hash cascade forge refused by Ed25519 signature.");
+    println!(
+        "  [✓] F4.sealed PASSED: Pass-skip / hash cascade forge refused by Ed25519 signature."
+    );
 
     // 2. Re-key attack with attack private key
     let attack_key_path = run_dir.join("attack.key");
     let mut attack_keygen = Command::cargo_bin("diskcleaner").unwrap();
-    attack_keygen.arg("keygen").arg("--out").arg(&attack_key_path);
+    attack_keygen
+        .arg("keygen")
+        .arg("--out")
+        .arg(&attack_key_path);
     attack_keygen.assert().code(0);
 
     let op_key = dc_cert::OperatorKeyPair::load_from_file(&attack_key_path).unwrap();
@@ -220,9 +244,12 @@ fn run_f4_capstone_attacks(scratch_dir: &Path) {
 
     // Resume with original operator key -> MUST REFUSE (key mismatch)
     let mut cmd_rekey = Command::cargo_bin("diskcleaner").unwrap();
-    cmd_rekey.arg("resume")
-        .arg("--journal").arg(&copy)
-        .arg("--key").arg(&key_path)
+    cmd_rekey
+        .arg("resume")
+        .arg("--journal")
+        .arg(&copy)
+        .arg("--key")
+        .arg(&key_path)
         .arg("--no-progress");
 
     cmd_rekey.assert().code(2);
@@ -240,7 +267,10 @@ fn run_f5_degenerate_shapes(scratch_dir: &Path) {
         fs::write(&empty_path, b"").unwrap();
 
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-        cmd.arg("resume").arg("--journal").arg(&empty_path).arg("--no-progress");
+        cmd.arg("resume")
+            .arg("--journal")
+            .arg(&empty_path)
+            .arg("--no-progress");
         cmd.assert().code(6);
         println!("  [✓] F5.empty: 0-byte journal refused with exit code 6.");
     }
@@ -255,9 +285,15 @@ fn run_f5_degenerate_shapes(scratch_dir: &Path) {
 
         let start = std::time::Instant::now();
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-        cmd.arg("resume").arg("--journal").arg(&dos_path).arg("--no-progress");
+        cmd.arg("resume")
+            .arg("--journal")
+            .arg(&dos_path)
+            .arg("--no-progress");
         cmd.assert().code(6);
-        assert!(start.elapsed().as_secs() < 2, "[F5-DOS] Parser hung on huge length!");
+        assert!(
+            start.elapsed().as_secs() < 2,
+            "[F5-DOS] Parser hung on huge length!"
+        );
         println!("  [✓] F5.dos: 4 GiB length bounded allocation refused in < 2s without OOM.");
     }
 }
@@ -276,15 +312,22 @@ fn run_f6_sealed_ops(scratch_dir: &Path) {
 
     // 1. Resume WITHOUT key on sealed journal -> MUST REFUSE (exit 1 / usage)
     let mut cmd_nokey = Command::cargo_bin("diskcleaner").unwrap();
-    cmd_nokey.arg("resume").arg("--journal").arg(&sealed_journal).arg("--no-progress");
+    cmd_nokey
+        .arg("resume")
+        .arg("--journal")
+        .arg(&sealed_journal)
+        .arg("--no-progress");
     cmd_nokey.assert().code(1);
     println!("  [✓] F6.nokey: Sealed journal resume refused when --key is missing.");
 
     // 2. Resume WITH valid key -> MUST COMPLETE cleanly (exit 0)
     let mut cmd_valid = Command::cargo_bin("diskcleaner").unwrap();
-    cmd_valid.arg("resume")
-        .arg("--journal").arg(&sealed_journal)
-        .arg("--key").arg(&key_path)
+    cmd_valid
+        .arg("resume")
+        .arg("--journal")
+        .arg(&sealed_journal)
+        .arg("--key")
+        .arg(&key_path)
         .arg("--no-progress");
     cmd_valid.assert().code(0);
     println!("  [✓] F6.valid: Sealed journal resumed and completed cleanly with valid key.");

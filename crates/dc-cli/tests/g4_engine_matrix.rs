@@ -1,7 +1,10 @@
-use dc_core::{FastPathPolicy, FixedPattern, FsmOrchestrator, LbaSpan, SanitizationPlan, StableIdentity, BusType};
+use dc_core::{
+    BusType, FastPathPolicy, FixedPattern, FsmOrchestrator, SanitizationPlan, StableIdentity,
+};
+use dc_io::Engine as _;
+use dc_io::LbaSpan;
 use dc_io::{CompletionTracker, SyncEngine, WindowGeometry, ZeroPath};
 use dc_testkit::RigLedger;
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use tempfile::NamedTempFile;
 
@@ -21,7 +24,10 @@ fn test_g4_engine_matrix() {
     // 4. ENG-WELD-EXEC: Direct-I/O Engine Execution & Verification
     run_eng_weld_exec_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[G4-FAIL] Engine matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[G4-FAIL] Engine matrix contains failing assertions!"
+    );
     println!("\n[=== G4 I/O ENGINE MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -32,10 +38,16 @@ fn run_eng_tracker_tests(ledger: &RigLedger) {
 
     // Out-of-order CQE arrival: 1, 3, 0, 2
     tracker.on_cqe(1);
-    assert!(!tracker.can_commit(), "Cannot commit when window 0 has not completed");
+    assert!(
+        !tracker.can_commit(),
+        "Cannot commit when window 0 has not completed"
+    );
 
     tracker.on_cqe(3);
-    assert!(!tracker.can_commit(), "Cannot commit when window 0 has not completed");
+    assert!(
+        !tracker.can_commit(),
+        "Cannot commit when window 0 has not completed"
+    );
 
     tracker.on_cqe(0);
     // Now windows 0 and 1 are contiguous!
@@ -51,7 +63,13 @@ fn run_eng_tracker_tests(ledger: &RigLedger) {
     assert_eq!(spec2.first_window, 2);
     assert_eq!(spec2.num_windows, 2); // [2, 4)
 
-    ledger.assert("G4-TRACKER", "ENG-TRACKER-CONTIG", "4", tracker.committed_watermark().to_string(), None);
+    ledger.assert(
+        "G4-TRACKER",
+        "ENG-TRACKER-CONTIG",
+        "4",
+        tracker.committed_watermark().to_string(),
+        None,
+    );
 }
 
 fn run_eng_arith_tests(ledger: &RigLedger) {
@@ -61,14 +79,26 @@ fn run_eng_arith_tests(ledger: &RigLedger) {
     let geom_exact = WindowGeometry::new(64 * 1024 * 1024, 512, 2 * 1024 * 1024).unwrap();
     assert_eq!(geom_exact.total_windows, 32);
     assert_eq!(geom_exact.short_window_bytes, None);
-    ledger.assert("G4-ARITH", "ENG-ARITH-EXACT", "32", geom_exact.total_windows.to_string(), None);
+    ledger.assert(
+        "G4-ARITH",
+        "ENG-ARITH-EXACT",
+        "32",
+        geom_exact.total_windows.to_string(),
+        None,
+    );
 
     // 2. Short final window (65 MiB total, 2 MiB window -> 33 windows, final is 1 MiB)
     let geom_short = WindowGeometry::new(65 * 1024 * 1024, 512, 2 * 1024 * 1024).unwrap();
     assert_eq!(geom_short.total_windows, 33);
     assert_eq!(geom_short.short_window_bytes, Some(1024 * 1024));
     assert_eq!(geom_short.window_len_bytes(32), 1024 * 1024);
-    ledger.assert("G4-ARITH", "ENG-SHORTWIN", "1048576", geom_short.short_window_bytes.unwrap().to_string(), None);
+    ledger.assert(
+        "G4-ARITH",
+        "ENG-SHORTWIN",
+        "1048576",
+        geom_short.short_window_bytes.unwrap().to_string(),
+        None,
+    );
 }
 
 fn run_eng_fastpath_tests(ledger: &RigLedger) {
@@ -84,8 +114,17 @@ fn run_eng_fastpath_tests(ledger: &RigLedger) {
         |_, _| {},
     );
 
-    assert!(res.is_err(), "ForbidWriteZeroes must reject fast path execution");
-    ledger.assert("G4-FASTPATH", "ENG-FASTPATH-POLICY", "true", res.is_err().to_string(), None);
+    assert!(
+        res.is_err(),
+        "ForbidWriteZeroes must reject fast path execution"
+    );
+    ledger.assert(
+        "G4-FASTPATH",
+        "ENG-FASTPATH-POLICY",
+        "true",
+        res.is_err().to_string(),
+        None,
+    );
 }
 
 fn run_eng_weld_exec_tests(ledger: &RigLedger) {
@@ -118,7 +157,9 @@ fn run_eng_weld_exec_tests(ledger: &RigLedger) {
     let permit = fsm.begin_pass(0).unwrap();
 
     let pat = FixedPattern { byte: 0x55 };
-    let outcome = engine.write_pass(&permit, 0, &pat, &span, 0, &mut |_| {}).unwrap();
+    let outcome = engine
+        .write_pass(&permit, 0, &pat, &span, 0, &mut |_| {})
+        .unwrap();
 
     assert_eq!(outcome.windows_written, 8);
     assert_eq!(outcome.bytes_written, size);
@@ -130,5 +171,11 @@ fn run_eng_weld_exec_tests(ledger: &RigLedger) {
     f.read_exact(&mut readback).unwrap();
     let all_match = readback.iter().all(|&b| b == 0x55);
 
-    ledger.assert("G4-EXEC", "ENG-MEDIA-MATCH", "true", all_match.to_string(), None);
+    ledger.assert(
+        "G4-EXEC",
+        "ENG-MEDIA-MATCH",
+        "true",
+        all_match.to_string(),
+        None,
+    );
 }

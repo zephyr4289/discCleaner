@@ -32,7 +32,8 @@ impl SigCraft {
             .open(target_path)
             .map_err(|e| e.to_string())?;
 
-        file.seek(SeekFrom::Start(4096)).map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::Start(4096))
+            .map_err(|e| e.to_string())?;
         let mut block = vec![0u8; 512];
         let magic: u32 = 0xa92b4efc;
         block[0..4].copy_from_slice(&magic.to_le_bytes());
@@ -50,7 +51,8 @@ impl SigCraft {
             .open(target_path)
             .map_err(|e| e.to_string())?;
 
-        file.seek(SeekFrom::Start(4086)).map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::Start(4086))
+            .map_err(|e| e.to_string())?;
         file.write_all(b"SWAPSPACE2").map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
         Ok(())
@@ -82,9 +84,11 @@ impl SigCraft {
             .open(target_path)
             .map_err(|e| e.to_string())?;
 
-        file.seek(SeekFrom::Start(1080)).map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::Start(1080))
+            .map_err(|e| e.to_string())?;
         let magic: u16 = 0xef53;
-        file.write_all(&magic.to_le_bytes()).map_err(|e| e.to_string())?;
+        file.write_all(&magic.to_le_bytes())
+            .map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
         Ok(())
     }

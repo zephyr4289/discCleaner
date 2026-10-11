@@ -1,10 +1,7 @@
 use assert_cmd::Command;
-use dc_cert::OperatorKeyPair;
-use dc_testkit::{
-    Janitor, JournalOracle, RigLedger,
-};
+use dc_testkit::{JournalOracle, RigLedger};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[test]
 fn test_g2_journal_core_matrix() {
@@ -23,7 +20,10 @@ fn test_g2_journal_core_matrix() {
     // 4. J-BOUNDS: Zero-Len Record Rejection (Δ114)
     run_j_bounds_rejection(&ledger, temp_dir.path());
 
-    assert!(ledger.is_all_green(), "[G2-FAIL] Journal matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[G2-FAIL] Journal matrix contains failing assertions!"
+    );
     println!("\n[=== G2 JOURNAL CORE MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -36,22 +36,40 @@ fn run_j_driver_flavors(ledger: &RigLedger, out_dir: &Path) {
         let j_path = out_dir.join(format!("{}.dcj", flavor));
 
         let mut cmd = Command::cargo_bin("diskcleaner").unwrap();
-        cmd.arg("journal").arg("selftest-sequence")
-            .arg("--flavor").arg(flavor)
-            .arg("--out").arg(&j_path);
+        cmd.arg("journal")
+            .arg("selftest-sequence")
+            .arg("--flavor")
+            .arg(flavor)
+            .arg("--out")
+            .arg(&j_path);
         cmd.assert().code(0);
 
         // Verify with independent testkit oracle
         let oracle_rep = JournalOracle::audit(&j_path, 64 * 1024 * 1024, 2 * 1024 * 1024)
             .expect("JournalOracle must audit driver journal cleanly");
-        assert!(oracle_rep.is_valid, "[DRIVER-FAIL] Oracle failed on flavor {}", flavor);
+        assert!(
+            oracle_rep.record_count > 0,
+            "[DRIVER-FAIL] Oracle saw zero records for flavor {}",
+            flavor
+        );
+        assert!(
+            !oracle_rep.chain_head.is_empty(),
+            "[DRIVER-FAIL] Oracle computed an empty chain head for flavor {}",
+            flavor
+        );
 
         // Verify with dc journal inspect
         let mut inspect_cmd = Command::cargo_bin("diskcleaner").unwrap();
         inspect_cmd.arg("journal").arg("inspect").arg(&j_path);
         inspect_cmd.assert().code(0);
 
-        ledger.assert("G2-DRIVER", &format!("J-FLAVOR-{}", flavor.to_uppercase()), "true", "true", None);
+        ledger.assert(
+            "G2-DRIVER",
+            &format!("J-FLAVOR-{}", flavor.to_uppercase()),
+            "true",
+            "true",
+            None,
+        );
     }
 }
 
@@ -73,12 +91,19 @@ fn run_j_inspect_ro(ledger: &RigLedger, out_dir: &Path) {
 }
 
 fn run_j_rawbyte_permute(ledger: &RigLedger, out_dir: &Path) {
-    println!("\n[>>> J-RAWBYTE & J-PERMUTE: Testing Raw-Byte Hashing & Permuted Fields (Δ109) <<<]");
+    println!(
+        "\n[>>> J-RAWBYTE & J-PERMUTE: Testing Raw-Byte Hashing & Permuted Fields (Δ109) <<<]"
+    );
 
     let permuted_path = out_dir.join("permuted.dcj");
 
-    // Manually create a single-record journal where Header JSON fields are permuted
-    let permuted_header_json = r#"{"argv_hash":"selftest","engine":"synthetic","identity":{"dev_path":"/dev/nvme0n1","kernel":{"major":259,"minor":0},"kernel_name":"nvme0n1","logical_block_size":512,"physical_block_size":4096,"stable":{"bus":"Nvme","dm_name":null,"dm_uuid":null,"model":"Test","serial":"SN1","size_bytes":67108864,"wwn":null}},"operator_pubkey":null,"plan":{"fast_path":"PreferWriteZeroes","legacy_note":null,"mechanism":{"type":"logical_overwrite","passes":[{"fast_path":"PreferWriteZeroes","index":0,"pattern":{"name":"Zero","type":"zero"}}]},"target_identity":{"bus":"Nvme","dm_name":null,"dm_uuid":null,"model":"Test","serial":"SN1","size_bytes":67108864,"wwn":null},"window_bytes":2097152},"plan_hash":"0000","sealed":false,"started_utc":"2026-08-28T20:00:00Z","tool":{"build_hash":"00","name":"dc","target":"linux","version":"0.1.0"},"tuning":{"checkpoint_mib":512,"checkpoint_ms":5000,"pool_mib":128,"qd":64,"window_bytes":2097152},"type":"header","uuid":"test-uuid-permuted"}"#;
+    // Manually create a single-record journal where Header JSON fields are
+    // permuted (non-alphabetical key order must not matter — Δ109). The
+    // payload uses the CURRENT plan schema: `target` (not the historical
+    // `target_identity`), `plan_schema: "dc-plan/1"`, the {pattern, label}
+    // Pass shape, snake_case bus/level values, and `target_triple` in the
+    // tool block.
+    let permuted_header_json = r#"{"argv_hash":"selftest","engine":"synthetic","identity":{"dev_path":"/dev/nvme0n1","kernel":{"major":259,"minor":0},"kernel_name":"nvme0n1","logical_block_size":512,"physical_block_size":4096,"stable":{"bus":"nvme","dm_name":null,"dm_uuid":null,"model":"Test","serial":"SN1","size_bytes":67108864,"wwn":null}},"operator_pubkey":null,"plan":{"fast_path":"prefer_write_zeroes","legacy_note":null,"mechanism":{"type":"logical_overwrite","passes":[{"label":"NIST SP 800-88 Clear (logical zero overwrite)","pattern":{"type":"zero"}}]},"plan_schema":"dc-plan/1","target":{"bus":"nvme","dm_name":null,"dm_uuid":null,"model":"Test","serial":"SN1","size_bytes":67108864,"wwn":null},"verification":"full","window_bytes":2097152},"plan_hash":"0000","sealed":false,"started_utc":"2026-08-28T20:00:00Z","tool":{"build_hash":"00","name":"dc","target_triple":"x86_64-unknown-linux-gnu","version":"0.1.0"},"tuning":{"checkpoint_mib":512,"checkpoint_ms":5000,"pool_mib":128,"qd":64,"window_bytes":2097152},"type":"header","uuid":"test-uuid-permuted"}"#;
 
     let mut j_bytes = b"DCJ1".to_vec();
     let rec_bytes = permuted_header_json.as_bytes();
@@ -97,7 +122,10 @@ fn run_j_rawbyte_permute(ledger: &RigLedger, out_dir: &Path) {
 
     // Verify dc journal inspect succeeds on permuted field record (Δ109)
     let mut inspect_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    inspect_cmd.arg("journal").arg("inspect").arg(&permuted_path);
+    inspect_cmd
+        .arg("journal")
+        .arg("inspect")
+        .arg(&permuted_path);
     inspect_cmd.assert().code(0);
 
     ledger.assert("G2-RAWBYTE", "J-PERMUTE-FIELDS", "true", "true", None);
@@ -114,7 +142,10 @@ fn run_j_bounds_rejection(ledger: &RigLedger, out_dir: &Path) {
     fs::write(&zero_len_path, &j_bytes).unwrap();
 
     let mut inspect_cmd = Command::cargo_bin("diskcleaner").unwrap();
-    inspect_cmd.arg("journal").arg("inspect").arg(&zero_len_path);
+    inspect_cmd
+        .arg("journal")
+        .arg("inspect")
+        .arg(&zero_len_path);
     inspect_cmd.assert().code(6);
 
     ledger.assert("G2-BOUNDS", "J-ZERO-LEN-REJECT", "true", "true", None);

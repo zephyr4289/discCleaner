@@ -15,7 +15,10 @@ fn test_m1_2_identity_matrix() {
     // 3. NVME-HEALTH-UNITS: SMART / Health Log Unit Decodes (Δ252)
     run_health_units_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[M1.2-FAIL] Identity & Health matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[M1.2-FAIL] Identity & Health matrix contains failing assertions!"
+    );
     println!("\n[=== MILESTONE M1.2 IDENTITY & HEALTH MATRIX PASSED ALL CELLS ===]\n");
 }
 
@@ -50,8 +53,17 @@ fn run_identify_decoders_tests(ledger: &RigLedger) {
 
     let ns = NvmeCodec::decode_identify_namespace(&raw_ns).unwrap();
     assert_eq!(ns.nsze, nsze);
-    assert_eq!(ns.nguid, Some("002538b5915049380000000000000001".to_string()));
-    ledger.assert("M1.2-ID", "NVME-ID-NS", "002538b5915049380000000000000001", ns.nguid.unwrap(), None);
+    assert_eq!(
+        ns.nguid,
+        Some("002538b5915049380000000000000001".to_string())
+    );
+    ledger.assert(
+        "M1.2-ID",
+        "NVME-ID-NS",
+        "002538b5915049380000000000000001",
+        ns.nguid.unwrap(),
+        None,
+    );
 }
 
 fn run_token_precedence_tests(ledger: &RigLedger) {
@@ -85,16 +97,16 @@ fn run_token_precedence_tests(ledger: &RigLedger) {
     );
     assert_eq!(tok_sn_ns, "S6B0NJ0W:n2");
 
-    let tok_dev = IdentityComparator::derive_confirmation_token(
-        None,
-        None,
-        None,
-        None,
-        "nvme0n1",
-    );
+    let tok_dev = IdentityComparator::derive_confirmation_token(None, None, None, None, "nvme0n1");
     assert_eq!(tok_dev, "nvme0n1");
 
-    ledger.assert("M1.2-TOKEN", "NVME-ID-TOKEN-NS", "S6B0NJ0W:n2", tok_sn_ns, None);
+    ledger.assert(
+        "M1.2-TOKEN",
+        "NVME-ID-TOKEN-NS",
+        "S6B0NJ0W:n2",
+        tok_sn_ns,
+        None,
+    );
 }
 
 fn run_health_units_tests(ledger: &RigLedger) {
@@ -104,7 +116,7 @@ fn run_health_units_tests(ledger: &RigLedger) {
     raw_health[0] = 0x00; // Critical warning = 0 (healthy)
     raw_health[1..3].copy_from_slice(&312u16.to_le_bytes()); // 312 Kelvin = 39 °C
     raw_health[3] = 100; // 100% available spare
-    raw_health[5] = 10;  // 10% percentage used
+    raw_health[5] = 10; // 10% percentage used
 
     let data_units_written: u128 = 4_000_000; // 4 million × 1,000 × 512B = ~2 TB
     raw_health[48..64].copy_from_slice(&data_units_written.to_le_bytes());
@@ -114,5 +126,11 @@ fn run_health_units_tests(ledger: &RigLedger) {
     assert_eq!(health.data_units_written, 4_000_000);
     assert_eq!(health.percentage_used, 10);
 
-    ledger.assert("M1.2-HEALTH", "NVME-HEALTH-UNITS", "312", health.temperature_kelvin.to_string(), None);
+    ledger.assert(
+        "M1.2-HEALTH",
+        "NVME-HEALTH-UNITS",
+        "312",
+        health.temperature_kelvin.to_string(),
+        None,
+    );
 }

@@ -1,6 +1,5 @@
 //! Golden PRNG vectors & invariants verifier
 
-use crate::chacha_ref::ChaCha20Ref;
 use crate::cleanroom::CleanroomPRNG;
 
 pub struct GoldenVectors;
@@ -38,7 +37,9 @@ impl GoldenVectors {
         CleanroomPRNG::fill_window(&seed, 1u64 << 32, &mut buf_w2_32);
 
         if buf_w0 == buf_w2_32 {
-            return Err("V-PAIRS FAILURE: w=0 and w=2^32 produced identical keystream!".to_string());
+            return Err(
+                "V-PAIRS FAILURE: w=0 and w=2^32 produced identical keystream!".to_string(),
+            );
         }
 
         let mut buf_w1 = [0u8; 64];
@@ -48,7 +49,9 @@ impl GoldenVectors {
         CleanroomPRNG::fill_window(&seed, (1u64 << 32) + 1, &mut buf_w2_32_plus_1);
 
         if buf_w1 == buf_w2_32_plus_1 {
-            return Err("V-PAIRS FAILURE: w=1 and w=2^32+1 produced identical keystream!".to_string());
+            return Err(
+                "V-PAIRS FAILURE: w=1 and w=2^32+1 produced identical keystream!".to_string(),
+            );
         }
 
         Ok(())

@@ -1,5 +1,4 @@
 use crate::dm::{DmDevice, TableLine};
-use std::path::Path;
 
 pub struct RebindChoreographer;
 

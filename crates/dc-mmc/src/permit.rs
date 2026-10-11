@@ -27,10 +27,7 @@ pub struct ConfigTxnGuard<'a> {
 }
 
 impl<'a> ConfigTxnGuard<'a> {
-    pub fn new(
-        permit: &'a ConfigTransactionPermit,
-        current_config: &'a mut u8,
-    ) -> Self {
+    pub fn new(permit: &'a ConfigTransactionPermit, current_config: &'a mut u8) -> Self {
         let original = *current_config;
         Self {
             permit,

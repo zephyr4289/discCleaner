@@ -6,7 +6,8 @@ pub struct AuditOracle;
 
 impl AuditOracle {
     pub fn parse_and_validate(path: &Path) -> Result<Vec<serde_json::Value>, String> {
-        let mut file = File::open(path).map_err(|e| format!("Failed to open audit log {}: {}", path.display(), e))?;
+        let mut file = File::open(path)
+            .map_err(|e| format!("Failed to open audit log {}: {}", path.display(), e))?;
 
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)

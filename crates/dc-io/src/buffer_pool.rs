@@ -1,6 +1,11 @@
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
+/// Total bytes a single BufferPool will ever allocate before refusing.
+/// The pool backs I/O windows (2 MiB by default, a few hundred MiB at most
+/// via EngineTuning.pool_mib); anything larger is a misconfiguration.
+const POOL_TOTAL_HARD_CAP: usize = 4 * 1024 * 1024 * 1024; // 4 GiB
+
 pub struct AlignedBuffer {
     ptr: NonNull<u8>,
     len: usize,
@@ -12,9 +17,25 @@ unsafe impl Sync for AlignedBuffer {}
 
 impl AlignedBuffer {
     pub fn allocate(size: usize, alignment: usize) -> Result<Self, std::io::Error> {
+        if size == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "zero-sized aligned buffer requested",
+            ));
+        }
         let alignment = alignment.max(4096);
-        // Ensure size is multiple of alignment
-        let capacity = (size + alignment - 1) & !(alignment - 1);
+        // Round the capacity up to `alignment`; on overflow (size near
+        // usize::MAX) refuse instead of wrapping to a tiny allocation
+        // (regression REG-BUFFERPOOL-OVERFLOW).
+        let capacity = size
+            .checked_add(alignment - 1)
+            .and_then(|v| v.checked_sub(v % alignment))
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "requested buffer size overflows addressable capacity",
+                )
+            })?;
 
         let mut raw_ptr: *mut libc::c_void = std::ptr::null_mut();
         let ret = unsafe { libc::posix_memalign(&mut raw_ptr, alignment, capacity) };
@@ -81,6 +102,24 @@ pub struct BufferPool {
 
 impl BufferPool {
     pub fn new(count: usize, buffer_size: usize) -> Result<Self, std::io::Error> {
+        // Bound the TOTAL pool footprint before allocating anything: a
+        // corrupt count/size pair must fail loudly, not OOM the box.
+        let total = count.checked_mul(buffer_size).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "buffer pool dimensions overflow usize",
+            )
+        })?;
+        if total > POOL_TOTAL_HARD_CAP {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "buffer pool total {} exceeds the {} byte hard cap",
+                    total, POOL_TOTAL_HARD_CAP
+                ),
+            ));
+        }
+
         let mut buffers = Vec::with_capacity(count);
         for _ in 0..count {
             buffers.push(AlignedBuffer::allocate(buffer_size, 4096)?);

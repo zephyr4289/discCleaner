@@ -14,7 +14,7 @@ impl ScaleOracle {
         window_bytes: u64,
     ) -> Result<bool, String> {
         let mut file = File::open(dev_path).map_err(|e| e.to_string())?;
-        let total_windows = (total_size_bytes + window_bytes - 1) / window_bytes;
+        let total_windows = total_size_bytes.div_ceil(window_bytes);
 
         // Pick 64 stratified windows including first, last, middle, and boundaries
         let mut sample_indices = Vec::new();
@@ -39,13 +39,16 @@ impl ScaleOracle {
             CleanroomPRNG::fill_window(seed, w, &mut expected_buf[..win_len]);
 
             // Read device actual
-            file.seek(SeekFrom::Start(win_start)).map_err(|e| e.to_string())?;
-            file.read_exact(&mut actual_buf[..win_len]).map_err(|e| e.to_string())?;
+            file.seek(SeekFrom::Start(win_start))
+                .map_err(|e| e.to_string())?;
+            file.read_exact(&mut actual_buf[..win_len])
+                .map_err(|e| e.to_string())?;
 
             if expected_buf[..win_len] != actual_buf[..win_len] {
                 return Err(format!(
                     "ScaleOracle stratified mismatch at window #{} (LBA offset {})",
-                    w, win_start / 512
+                    w,
+                    win_start / 512
                 ));
             }
         }

@@ -1,5 +1,4 @@
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
 pub struct ProcessGuard {

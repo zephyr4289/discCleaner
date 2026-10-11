@@ -1,5 +1,5 @@
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use std::fs;
 use std::path::Path;
@@ -22,7 +22,7 @@ impl CertOracle {
     pub fn parse_and_validate(
         path: &Path,
         expected_chain_head: &str,
-        wz_max: u64,
+        _wz_max: u64,
     ) -> Result<CertOracleReport, String> {
         let content = fs::read_to_string(path)
             .map_err(|e| format!("Failed to read certificate {}: {}", path.display(), e))?;
@@ -40,11 +40,14 @@ impl CertOracle {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing signature value".to_string())?;
 
+        // Owned early: `root` is mutated below when the signature field is
+        // stripped, so any borrow into it must not outlive that mutation.
         let pubkey_hex = root
             .get("operator")
             .and_then(|o| o.get("public_key_ed25519"))
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "Missing operator public_key_ed25519".to_string())?;
+            .ok_or_else(|| "Missing operator public_key_ed25519".to_string())?
+            .to_string();
 
         let plan_hash_stored = root
             .get("plan_hash")
@@ -94,12 +97,12 @@ impl CertOracle {
             obj.remove("signature");
         }
 
-        let canonical_bytes = serde_jcs::to_vec(&root)
-            .map_err(|e| format!("JCS canonicalization failed: {}", e))?;
+        let canonical_bytes =
+            serde_jcs::to_vec(&root).map_err(|e| format!("JCS canonicalization failed: {}", e))?;
 
         // 2. Validate Ed25519 signature
-        let pubkey_bytes = hex::decode(pubkey_hex)
-            .map_err(|e| format!("Invalid pubkey hex: {}", e))?;
+        let pubkey_bytes =
+            hex::decode(pubkey_hex).map_err(|e| format!("Invalid pubkey hex: {}", e))?;
         if pubkey_bytes.len() != 32 {
             return Err("Public key is not 32 bytes".to_string());
         }
@@ -119,15 +122,17 @@ impl CertOracle {
         let signature = Signature::from_bytes(&sig_arr);
 
         if verifying_key.verify(&canonical_bytes, &signature).is_err() {
-            return Err("Ed25519 signature verification FAILED over canonical JCS bytes".to_string());
+            return Err(
+                "Ed25519 signature verification FAILED over canonical JCS bytes".to_string(),
+            );
         }
 
         // 3. Assert plan hash matches BLAKE3(JCS(plan))
         let plan_obj = root
             .get("plan")
             .ok_or_else(|| "Missing plan in cert".to_string())?;
-        let plan_canonical = serde_jcs::to_vec(plan_obj)
-            .map_err(|e| format!("Plan JCS failed: {}", e))?;
+        let plan_canonical =
+            serde_jcs::to_vec(plan_obj).map_err(|e| format!("Plan JCS failed: {}", e))?;
         let computed_plan_hash = blake3::hash(&plan_canonical).to_hex().to_string();
         if computed_plan_hash != plan_hash_stored {
             return Err(format!(

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManifestDrive {
@@ -62,7 +62,8 @@ impl EnduranceLedger {
         if used_fraction >= 0.80 {
             return Err(format!(
                 "ENDURANCE_GATE_REFUSAL: Drive '{}' has consumed {:.1}% of rated TBW! Refusing to wear sacrificial drive further.",
-                self.serial, used_fraction * 100.0
+                self.serial,
+                used_fraction * 100.0
             ));
         }
 

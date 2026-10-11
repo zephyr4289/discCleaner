@@ -1,13 +1,15 @@
 use crate::buffer_pool::AlignedBuffer;
 use crate::traits::{Engine, EngineCaps, EngineProgress, LbaSpan, PassOutcome, VerifySink};
-use dc_core::{check_cqe_or_verify_crash, DcError, PatternSource, WritePermit, ZeroPattern};
+#[cfg(any(feature = "fault-injection", debug_assertions))]
+use dc_core::check_cqe_or_verify_crash;
+use dc_core::{DcError, PatternSource, WritePermit, ZeroPattern};
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-const BLKZEROOUT: libc::c_ulong = 0x1277;
+use crate::{BLKZEROOUT_IOCTL, is_global_cancel_requested};
 
 pub struct SyncEngine {
     file: File,
@@ -27,13 +29,21 @@ impl SyncEngine {
             file,
             buffer,
             caps: EngineCaps {
-                queue_depth: 1,
+                engine_name: "sync",
+                supports_io_uring: false,
                 supports_write_zeroes,
                 max_write_zeroes_bytes: 2 * 1024 * 1024 * 1024, // 2 GiB chunking
-                is_uring: false,
+                max_qd: 1,
+                window_bytes: window_bytes as u64,
             },
             cancel_flag: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// True when either this engine or the whole process was asked to stop.
+    #[inline]
+    fn cancelled(&self) -> bool {
+        self.cancel_flag.load(Ordering::Relaxed) || is_global_cancel_requested()
     }
 }
 
@@ -64,7 +74,7 @@ impl Engine for SyncEngine {
         let mut bytes_written_in_pass = 0u64;
 
         for w in start_window..total_windows {
-            if self.cancel_flag.load(Ordering::Relaxed) {
+            if self.cancelled() {
                 return Err(DcError::Interrupted {
                     completed_through: Some((pass_index, w.saturating_sub(1))),
                 });
@@ -91,18 +101,31 @@ impl Engine for SyncEngine {
                     )
                 };
 
-                if ret <= 0 {
+                if ret < 0 {
                     let err = std::io::Error::last_os_error();
+                    // A signal (e.g. our own SIGINT drain handler) can abort
+                    // the syscall with EINTR; the write simply resumes.
+                    if err.raw_os_error() == Some(libc::EINTR) {
+                        continue;
+                    }
                     return Err(DcError::Io {
                         op: "pwrite",
                         errno: err.raw_os_error().unwrap_or(5),
                         at_lba: Some(offset / span.logical_block_size as u64),
                     });
                 }
+                if ret == 0 {
+                    return Err(DcError::Io {
+                        op: "pwrite",
+                        errno: 5,
+                        at_lba: Some((offset + written as u64) / span.logical_block_size as u64),
+                    });
+                }
                 written += ret as usize;
             }
 
             bytes_written_in_pass += len as u64;
+            #[cfg(any(feature = "fault-injection", debug_assertions))]
             check_cqe_or_verify_crash("cqe", w + 1);
 
             if last_prog_time.elapsed().as_millis() >= 250 || w + 1 == total_windows {
@@ -148,7 +171,7 @@ impl Engine for SyncEngine {
             let mut total_zeroed = 0u64;
 
             while current_offset < total_bytes {
-                if self.cancel_flag.load(Ordering::Relaxed) {
+                if self.cancelled() {
                     let completed_window = current_offset / span.window_bytes;
                     return Err(DcError::Interrupted {
                         completed_through: Some((pass_index, completed_window.saturating_sub(1))),
@@ -159,19 +182,30 @@ impl Engine for SyncEngine {
                 let this_chunk = remaining.min(chunk_size);
                 let range = [current_offset, this_chunk];
 
-                let ret = unsafe { libc::ioctl(fd, BLKZEROOUT, &range) };
+                let ret = unsafe { libc::ioctl(fd, BLKZEROOUT_IOCTL, &range) };
                 if ret != 0 {
                     // BLKZEROOUT failed, fallback to software write_pass
-                    tracing::warn!("BLKZEROOUT failed with errno {}, falling back to buffer write", std::io::Error::last_os_error());
+                    tracing::warn!(
+                        "BLKZEROOUT failed with errno {}, falling back to buffer write",
+                        std::io::Error::last_os_error()
+                    );
                     let zero_pat = ZeroPattern;
                     let remaining_start_window = current_offset / span.window_bytes;
-                    return self.write_pass(permit, pass_index, &zero_pat, span, remaining_start_window, prog);
+                    return self.write_pass(
+                        permit,
+                        pass_index,
+                        &zero_pat,
+                        span,
+                        remaining_start_window,
+                        prog,
+                    );
                 }
 
                 current_offset += this_chunk;
                 total_zeroed += this_chunk;
 
-                let windows_done = (current_offset + span.window_bytes - 1) / span.window_bytes;
+                let windows_done = current_offset.div_ceil(span.window_bytes);
+                #[cfg(any(feature = "fault-injection", debug_assertions))]
                 check_cqe_or_verify_crash("cqe", windows_done);
 
                 if last_prog_time.elapsed().as_millis() >= 250 || current_offset >= total_bytes {
@@ -222,7 +256,7 @@ impl Engine for SyncEngine {
         let mut bytes_verified = 0u64;
 
         for w in 0..total_windows {
-            if self.cancel_flag.load(Ordering::Relaxed) {
+            if self.cancelled() {
                 return Err(DcError::Interrupted {
                     completed_through: None,
                 });
@@ -245,12 +279,22 @@ impl Engine for SyncEngine {
                     )
                 };
 
-                if ret <= 0 {
+                if ret < 0 {
                     let err = std::io::Error::last_os_error();
+                    if err.raw_os_error() == Some(libc::EINTR) {
+                        continue;
+                    }
                     return Err(DcError::Io {
                         op: "pread",
                         errno: err.raw_os_error().unwrap_or(5),
                         at_lba: Some(offset / span.logical_block_size as u64),
+                    });
+                }
+                if ret == 0 {
+                    return Err(DcError::Io {
+                        op: "pread",
+                        errno: 5,
+                        at_lba: Some((offset + read_bytes as u64) / span.logical_block_size as u64),
                     });
                 }
                 read_bytes += ret as usize;
@@ -264,6 +308,7 @@ impl Engine for SyncEngine {
             sink.on_window(w, is_valid, slice)?;
 
             bytes_verified += len as u64;
+            #[cfg(any(feature = "fault-injection", debug_assertions))]
             check_cqe_or_verify_crash("verify-read", w + 1);
 
             if last_prog_time.elapsed().as_millis() >= 250 || w + 1 == total_windows {

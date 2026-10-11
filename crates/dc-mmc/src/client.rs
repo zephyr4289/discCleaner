@@ -1,3 +1,4 @@
+use crate::access::MmcAccessClass;
 use crate::confirm::TwoAxisConfirmation;
 use crate::permit::{ConfigTransactionPermit, ConfigTxnGuard};
 use dc_nvme::PurgePermit;
@@ -11,11 +12,11 @@ pub struct MmcPurgeExecutionSummary {
 }
 
 pub struct MmcPurgeClient {
-    pub access_class: dc_testkit::MmcAccessClass,
+    pub access_class: MmcAccessClass,
 }
 
 impl MmcPurgeClient {
-    pub fn new(access_class: dc_testkit::MmcAccessClass) -> Self {
+    pub fn new(access_class: MmcAccessClass) -> Self {
         Self { access_class }
     }
 

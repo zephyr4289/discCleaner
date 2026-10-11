@@ -1,8 +1,9 @@
+use crate::BLKZEROOUT_IOCTL;
 use dc_core::FastPathPolicy;
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const DEFAULT_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB chunk (Δ136)
 
@@ -19,7 +20,9 @@ impl ZeroPath {
         mut on_chunk_done: impl FnMut(u64, u64),
     ) -> Result<u64, String> {
         if policy == FastPathPolicy::ForbidWriteZeroes || !supports_write_zeroes {
-            return Err("Fast-path write-zeroes disabled by policy or unsupported by kernel".to_string());
+            return Err(
+                "Fast-path write-zeroes disabled by policy or unsupported by kernel".to_string(),
+            );
         }
 
         let chunk_size = DEFAULT_CHUNK_BYTES.min(total_size);
@@ -27,10 +30,10 @@ impl ZeroPath {
 
         while current_offset < total_size {
             // Check cancellation before each chunk (Δ142)
-            if let Some(cancel) = cancel_token {
-                if cancel.load(Ordering::Relaxed) {
-                    return Ok(current_offset);
-                }
+            if let Some(cancel) = cancel_token
+                && cancel.load(Ordering::Relaxed)
+            {
+                return Ok(current_offset);
             }
 
             let len = (total_size - current_offset).min(chunk_size);
@@ -38,14 +41,24 @@ impl ZeroPath {
             // Execute BLKZEROOUT ioctl
             #[cfg(target_os = "linux")]
             {
-                let range = [current_offset as u64, len as u64];
-                const BLKZEROOUT: libc::c_ulong = 0x1277;
+                let range = [current_offset, len];
                 let fd = file.as_raw_fd();
-                let ret = unsafe { libc::ioctl(fd, BLKZEROOUT, range.as_ptr()) };
+                let ret = unsafe { libc::ioctl(fd, BLKZEROOUT_IOCTL, range.as_ptr()) };
                 if ret != 0 {
                     let err = std::io::Error::last_os_error();
-                    return Err(format!("BLKZEROOUT failed at offset {}: {}", current_offset, err));
+                    return Err(format!(
+                        "BLKZEROOUT failed at offset {}: {}",
+                        current_offset, err
+                    ));
                 }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                // Fail-closed: never report fast-path zeroing as performed on
+                // platforms where the ioctl does not exist.
+                return Err(
+                    "BLKZEROOUT fast path is Linux-only; refusing to fake completion".to_string(),
+                );
             }
 
             current_offset += len;

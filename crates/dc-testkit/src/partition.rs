@@ -3,8 +3,13 @@ use dc_core::JOURNAL_MAGIC;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PredictedOutcome {
     CorruptMagic,
-    Boundary { complete_records: usize },
-    TornTail { complete_records: usize, discarded_bytes: usize },
+    Boundary {
+        complete_records: usize,
+    },
+    TornTail {
+        complete_records: usize,
+        discarded_bytes: usize,
+    },
 }
 
 pub struct PartitionOracle;
@@ -67,7 +72,11 @@ impl PartitionOracle {
                 break;
             }
 
-            let len = u32::from_le_bytes(bytes[current_offset..current_offset + 4].try_into().unwrap()) as usize;
+            let len = u32::from_le_bytes(
+                bytes[current_offset..current_offset + 4]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
             let rec_total_len = 4 + len + 32;
 
             if current_offset + rec_total_len <= offset {

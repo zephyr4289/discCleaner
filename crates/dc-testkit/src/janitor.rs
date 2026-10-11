@@ -33,7 +33,7 @@ impl Janitor {
         reclaimed
     }
 
-    pub fn sweep_active_swaps(scratch_prefix: &Path) -> Vec<String> {
+    pub fn sweep_active_swaps(_scratch_prefix: &Path) -> Vec<String> {
         let mut reclaimed = Vec::new();
         if let Ok(content) = fs::read_to_string("/proc/swaps") {
             for line in content.lines().skip(1) {
@@ -66,7 +66,7 @@ impl Janitor {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with("dct5-") {
                     let _ = Command::new("vgchange")
-                        .args(&["-an", &name])
+                        .args(["-an", name.as_str()])
                         .output();
                     reclaimed.push(format!("vgchange -an:{}", name));
                 }
@@ -85,13 +85,17 @@ impl Janitor {
         if let Ok(entries) = fs::read_dir(mapper_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("dc-t2-") || name.starts_with("dc-t4-") || name.starts_with("dct5-") {
+                if name.starts_with("dc-t2-")
+                    || name.starts_with("dc-t4-")
+                    || name.starts_with("dct5-")
+                {
                     if let Ok(ctl) = File::open("/dev/mapper/control") {
                         let mut req = crate::dm::DmIoctl::default();
                         let bytes = name.as_bytes();
                         let len = bytes.len().min(127);
                         req.name[..len].copy_from_slice(&bytes[..len]);
-                        let _ = unsafe { libc::ioctl(ctl.as_raw_fd(), DM_DEV_REMOVE_CMD, &mut req) };
+                        let _ =
+                            unsafe { libc::ioctl(ctl.as_raw_fd(), DM_DEV_REMOVE_CMD, &mut req) };
                         reclaimed.push(format!("dm:{}", name));
                     }
                 }

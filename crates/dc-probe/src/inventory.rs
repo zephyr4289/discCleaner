@@ -1,4 +1,4 @@
-use dc_core::{BusType, DeviceIdentity, KernelIdentity, StableIdentity};
+use dc_core::{BusType, DcError, DeviceIdentity, GuardianRefusal, KernelIdentity, StableIdentity};
 use std::fs::{self, File};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
@@ -42,6 +42,31 @@ impl InventoryScanner {
         list
     }
 
+    /// Probe a single device path, classifying a missing target as a
+    /// GUARDIAN refusal (exit code 2) instead of a raw I/O error (exit 1).
+    ///
+    /// Rationale (regression `REG-CHECK-NONEXIST`): the spec treats "target
+    /// does not exist" as a Guardian-class pre-flight verdict — the operator
+    /// picked an invalid target — not as a runtime I/O failure. Centralizing
+    /// the mapping here keeps `check`, `plan` and `execute` consistent.
+    pub fn probe_device_or_refuse(path: &Path) -> Result<DeviceIdentity, DcError> {
+        match fs::metadata(path) {
+            Ok(_) => Self::probe_device(path).map_err(DcError::StdIo),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(DcError::Guardian(GuardianRefusal {
+                    code: "TARGET_NOT_FOUND",
+                    detail: format!(
+                        "Target device '{}' does not exist in this namespace",
+                        path.display()
+                    ),
+                    hint: "Verify the device path (e.g. /dev/sda, /dev/nvme0n1) and re-run."
+                        .to_string(),
+                }))
+            }
+            Err(e) => Err(DcError::StdIo(e)),
+        }
+    }
+
     /// Probe a single device path (e.g. `/dev/sda`, `/dev/nvme0n1`, `/dev/mapper/foo`, `/dev/dm-0`).
     pub fn probe_device(path: &Path) -> Result<DeviceIdentity, std::io::Error> {
         let metadata = fs::metadata(path)?;
@@ -50,8 +75,8 @@ impl InventoryScanner {
         let (major, minor) = if file_type.is_block_device() {
             use std::os::unix::fs::MetadataExt;
             let rdev = metadata.rdev();
-            let maj = unsafe { libc::major(rdev) };
-            let min = unsafe { libc::minor(rdev) };
+            let maj = libc::major(rdev);
+            let min = libc::minor(rdev);
             (maj, min)
         } else if file_type.is_file() {
             (0, 0)
@@ -212,6 +237,9 @@ impl InventoryScanner {
     }
 
     pub fn read_trimmed_string(path: &Path) -> Option<String> {
-        fs::read_to_string(path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 }

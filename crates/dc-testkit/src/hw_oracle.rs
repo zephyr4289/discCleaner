@@ -1,6 +1,6 @@
 /// Independent second-lineage hardware codec oracle (Δ224).
-/// Hand-transcribed from NVM Express Base 2.0d, ATA8-ACS 6a, and SPC-4 37 without importing dc-hw.
-
+/// Hand-transcribed from NVM Express Base 2.0d, ATA8-ACS 6a, and SPC-4 37
+/// without importing dc-hw.
 pub struct HwOracle;
 
 impl HwOracle {

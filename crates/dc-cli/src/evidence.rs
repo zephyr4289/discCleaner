@@ -4,7 +4,10 @@ pub struct EvidenceVerbs;
 
 impl EvidenceVerbs {
     /// Classify trust anchor verification verdict into the 3-outcome taxonomy (Δ439).
-    pub fn evaluate_tsa_verdict(has_root_in_bundle: bool, signature_valid_at_t: bool) -> &'static str {
+    pub fn evaluate_tsa_verdict(
+        has_root_in_bundle: bool,
+        signature_valid_at_t: bool,
+    ) -> &'static str {
         if !has_root_in_bundle {
             "UNKNOWN_AUTHORITY"
         } else if signature_valid_at_t {

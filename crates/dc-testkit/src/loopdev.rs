@@ -1,5 +1,4 @@
 use std::fs::{self, File, OpenOptions};
-use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +7,7 @@ const LOOP_CTL_REMOVE: libc::c_ulong = 0x4C81;
 const LOOP_SET_FD: libc::c_ulong = 0x4C00;
 const LOOP_CLR_FD: libc::c_ulong = 0x4C01;
 const LOOP_SET_STATUS64: libc::c_ulong = 0x4C04;
+#[allow(dead_code)] // kept for future loop ioctl rigs
 const LOOP_GET_STATUS64: libc::c_ulong = 0x4C05;
 const LOOP_SET_BLOCK_SIZE: libc::c_ulong = 0x4C08;
 const LOOP_CONFIGURE: libc::c_ulong = 0x4C0A;
@@ -83,11 +83,15 @@ impl LoopDevice {
             // mknod /dev/loopN (major 7, minor N)
             let c_dev = std::ffi::CString::new(dev_path.to_string_lossy().as_bytes())
                 .map_err(|e| e.to_string())?;
-            let dev_t = unsafe { libc::makedev(7, minor as u32) };
+            let dev_t = libc::makedev(7, minor as u32);
             let ret = unsafe { libc::mknod(c_dev.as_ptr(), libc::S_IFBLK | 0o600, dev_t) };
             if ret != 0 {
                 unsafe { libc::ioctl(ctl_fd, LOOP_CTL_REMOVE, minor) };
-                return Err(format!("mknod failed for {}: {}", dev_path.display(), std::io::Error::last_os_error()));
+                return Err(format!(
+                    "mknod failed for {}: {}",
+                    dev_path.display(),
+                    std::io::Error::last_os_error()
+                ));
             }
             created_node = true;
         }
@@ -120,7 +124,10 @@ impl LoopDevice {
             let set_fd_ret = unsafe { libc::ioctl(loop_fd, LOOP_SET_FD, backing_fd) };
             if set_fd_ret != 0 {
                 Self::cleanup_minor(minor, &dev_path, created_node);
-                return Err(format!("LOOP_SET_FD failed: {}", std::io::Error::last_os_error()));
+                return Err(format!(
+                    "LOOP_SET_FD failed: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
 
             let mut info: LoopInfo64 = unsafe { std::mem::zeroed() };
@@ -129,7 +136,10 @@ impl LoopDevice {
             if status_ret != 0 {
                 let _ = unsafe { libc::ioctl(loop_fd, LOOP_CLR_FD, 0) };
                 Self::cleanup_minor(minor, &dev_path, created_node);
-                return Err(format!("LOOP_SET_STATUS64 failed: {}", std::io::Error::last_os_error()));
+                return Err(format!(
+                    "LOOP_SET_STATUS64 failed: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
 
             if requested_lbs > 512 {
@@ -188,7 +198,11 @@ impl LoopDevice {
 
 impl Drop for LoopDevice {
     fn drop(&mut self) {
-        if let Ok(loop_file) = OpenOptions::new().read(true).write(true).open(&self.dev_path) {
+        if let Ok(loop_file) = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.dev_path)
+        {
             let _ = unsafe { libc::ioctl(loop_file.as_raw_fd(), LOOP_CLR_FD, 0) };
         }
         let _ = fs::remove_file(&self.backing_path);

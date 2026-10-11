@@ -16,7 +16,10 @@ fn test_t16_bridge_matrix() {
     // 3. ESTATE-BUDGET-GATE: Asset Lifecycle & Budget Gates (Δ302)
     run_estate_budget_tests(&ledger);
 
-    assert!(ledger.is_all_green(), "[T16-FAIL] Bridge Matrix contains failing assertions!");
+    assert!(
+        ledger.is_all_green(),
+        "[T16-FAIL] Bridge Matrix contains failing assertions!"
+    );
     println!("\n[=== PHASE T16 BRIDGE MATRIX & MENAGERIE PASSED ALL CELLS ===]\n");
 }
 
@@ -51,8 +54,17 @@ fn run_matrix_chain_tests(ledger: &RigLedger) {
     );
 
     assert_eq!(matrix.entries.len(), 2);
-    assert!(matrix.verify_chain(), "Bridge matrix hash chain must be cryptographically valid!");
-    ledger.assert("T16-MATRIX", "MATRIX-CHAIN", "true", matrix.verify_chain().to_string(), None);
+    assert!(
+        matrix.verify_chain(),
+        "Bridge matrix hash chain must be cryptographically valid!"
+    );
+    ledger.assert(
+        "T16-MATRIX",
+        "MATRIX-CHAIN",
+        "true",
+        matrix.verify_chain().to_string(),
+        None,
+    );
 }
 
 fn run_capmask_tests(ledger: &RigLedger) {
@@ -67,8 +79,17 @@ fn run_capmask_tests(ledger: &RigLedger) {
         ObservationChannel::DualPath,
     );
 
-    assert!(cap_res.is_err(), "Must detect CAPACITY_MASK lie via dual-path!");
-    ledger.assert("T16-BATTERY", "BATTERY-CAPMASK", "true", cap_res.is_err().to_string(), None);
+    assert!(
+        cap_res.is_err(),
+        "Must detect CAPACITY_MASK lie via dual-path!"
+    );
+    ledger.assert(
+        "T16-BATTERY",
+        "BATTERY-CAPMASK",
+        "true",
+        cap_res.is_err().to_string(),
+        None,
+    );
 }
 
 fn run_estate_budget_tests(ledger: &RigLedger) {
@@ -79,7 +100,7 @@ fn run_estate_budget_tests(ledger: &RigLedger) {
         serial: "S6B0NJ0W123456X".to_string(),
         model: "Samsung 990 PRO 2TB".to_string(),
         sacrificial: true,
-        tbw_budget_gb: 1200, // 1200 TBW
+        tbw_budget_gb: 1200,   // 1200 TBW
         tbw_consumed_gb: 1100, // 1100 TBW already consumed
         retired: false,
     });
@@ -87,11 +108,20 @@ fn run_estate_budget_tests(ledger: &RigLedger) {
     // Attempting a 200 TBW campaign exceeds budget (1100 + 200 = 1300 > 1200) -> Refused!
     let auth_fail = estate.authorize_campaign("S6B0NJ0W123456X", 200);
     assert!(auth_fail.is_err());
-    assert_eq!(auth_fail.unwrap_err(), "ESTATE_BUDGET_EXCEEDED_UNAFFORDABLE");
+    assert_eq!(
+        auth_fail.unwrap_err(),
+        "ESTATE_BUDGET_EXCEEDED_UNAFFORDABLE"
+    );
 
     // Attempting a 50 TBW campaign is within budget -> Authorized!
     let auth_ok = estate.authorize_campaign("S6B0NJ0W123456X", 50);
     assert!(auth_ok.is_ok());
 
-    ledger.assert("T16-ESTATE", "ESTATE-BUDGET-GATE", "true", auth_fail.is_err().to_string(), None);
+    ledger.assert(
+        "T16-ESTATE",
+        "ESTATE-BUDGET-GATE",
+        "true",
+        auth_fail.is_err().to_string(),
+        None,
+    );
 }

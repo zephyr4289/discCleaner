@@ -72,13 +72,25 @@ impl KeyringRegistry {
             .ok_or("KEY_UNKNOWN_IN_REGISTRY")?;
 
         // 1. If key was revoked, check if signature was generated post-revocation
-        if let Some(rev_t) = entry.revoked_at_utc {
-            if signed_at_utc >= rev_t {
-                return Ok("SUSPECT_REVOKED_KEY");
-            }
+        if let Some(rev_t) = entry.revoked_at_utc
+            && signed_at_utc >= rev_t
+        {
+            return Ok("SUSPECT_REVOKED_KEY");
         }
 
-        // 2. Check if key was active at signed time
+        // 2. Δ450 (regression `REG-KEYRING-SUPERSEDED`): a bilateral rotation
+        //    supersedes the old key at time T. Signatures made at-or-after T
+        //    are suspect — only signatures anchored in the key's active
+        //    window before rotation stand. Historically this check was
+        //    missing entirely, so a rotated-away key kept authorizing
+        //    indefinitely.
+        if let Some(sup_t) = entry.superseded_at_utc
+            && signed_at_utc >= sup_t
+        {
+            return Ok("SUSPECT_SUPERSEDED_KEY");
+        }
+
+        // 3. Check if key was active at signed time
         if signed_at_utc < entry.active_from_utc {
             return Err("SIGNATURE_PRIOR_TO_KEY_ACTIVATION");
         }
