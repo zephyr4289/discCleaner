@@ -90,6 +90,41 @@ pub fn parse_verify_flag(spec: &str) -> Result<VerifyLevel, String> {
     Ok(VerifyLevel::Sampled { stride })
 }
 
+/// DEFENSE PROFILE ENFORCEMENT GATE (v0.6.0, REG-DEFENSE-SAMPLING-REFUSED).
+///
+/// Rejects `--verify sample:N` / `--verify none` for defense-mandated profiles
+/// (DoD 5220.22-M & ECE, CERT-In/GoI, CSE ITSG-06, BSI VSITR) BEFORE any
+/// device is probed, armed, or written. Defense authorities (NSA/CSS Policy
+/// 9-12 practice, DoD 5220.22-M CE requirements, GoI classified-media
+/// handling) mandate 100% post-sanitization read-back; a defense wipe whose
+/// evidence rests on a 1-in-N sample is not certifiable. The caller maps the
+/// returned error to `DcError::Usage` → exit code 8.
+pub fn enforce_verification_policy(
+    profile: &dc_core::SanitizationProfile,
+    level: &VerifyLevel,
+) -> Result<(), String> {
+    if !profile.requires_full_verification() {
+        return Ok(());
+    }
+    match level {
+        VerifyLevel::Full => Ok(()),
+        VerifyLevel::Sampled { stride } => Err(format!(
+            "defense profile '{}' mandates 100% verification (DoD 5220.22-M / \
+             NSA-CSS Policy 9-12 practice, GoI classified-media handling): \
+             --verify sample:{} is not permitted; re-run with --verify full \
+             or a commercial profile (nist-clear) if sampling is intended",
+            profile.display_name(),
+            stride
+        )),
+        VerifyLevel::None => Err(format!(
+            "defense profile '{}' mandates 100% verification (DoD 5220.22-M / \
+             NSA-CSS Policy 9-12 practice, GoI classified-media handling): \
+             --verify none is not permitted; re-run with --verify full",
+            profile.display_name()
+        )),
+    }
+}
+
 /// Render the `dc profiles` catalog table (machine-stable column layout).
 pub fn render_catalog() -> String {
     let mut out = String::new();
@@ -110,7 +145,9 @@ pub fn render_catalog() -> String {
     ));
     for p in SanitizationProfile::CATALOG {
         let name = profile_slug(p);
-        let notes = if !p.flash_suitable() {
+        let notes = if p.requires_full_verification() {
+            "DEFENSE: full verification mandated"
+        } else if !p.flash_suitable() {
             "legacy: HDD-era; avoid on SSD"
         } else if p.legacy_note().is_some() {
             "legacy: contractual use only"
@@ -129,11 +166,18 @@ pub fn render_catalog() -> String {
     out.push_str(
         "================================================================================\n",
     );
-    out.push_str(
+    out.push_str(&format!(
         "Verification levels: full = 100% LBA read-back | sample:N = deterministic 1-in-N\n\
          window sampling (NIST SP 800-88 Rev.1 permits sampled verification of the final\n\
-         pass) | none = no read-back. Hardware purges (dc purge) are controller-attested.\n",
-    );
+         pass) | none = no read-back. Hardware purges (dc purge) are controller-attested.\n\
+         Defense profiles ({} out of {}) REQUIRE full verification: --verify sample:N or\n\
+         --verify none are rejected with exit code 8 before any device is armed.\n",
+        SanitizationProfile::CATALOG
+            .iter()
+            .filter(|p| p.requires_full_verification())
+            .count(),
+        SanitizationProfile::CATALOG.len()
+    ));
     out
 }
 
@@ -257,5 +301,59 @@ mod tests {
         assert!(parse_seed_hex("abcd", ProfileOption::CertinGoi).is_err());
         let ok = parse_seed_hex(&"42".repeat(32), ProfileOption::CertinGoi).unwrap();
         assert_eq!(ok, Some([0x42u8; 32]));
+    }
+
+    #[test]
+    fn defense_profile_gate_refuses_sampling_and_none() {
+        // REG-DEFENSE-SAMPLING-REFUSED: defense profiles never accept
+        // sampling or verification opt-out.
+        for defense in [
+            ProfileOption::Dod5220_22M,
+            ProfileOption::Dod5220_22MEce,
+            ProfileOption::CertinGoi,
+            ProfileOption::CsecItsg06,
+            ProfileOption::BsiVsitr,
+        ] {
+            let p = defense.to_profile();
+            for spec in ["sample:4", "sample:64", "none"] {
+                let level = parse_verify_flag(spec).unwrap();
+                let refusal = enforce_verification_policy(&p, &level)
+                    .expect_err("defense profile must refuse lowered verification");
+                assert!(
+                    refusal.contains("mandates 100% verification"),
+                    "refusal must state the mandate: got '{}'",
+                    refusal
+                );
+            }
+            // full verification is the only accepted level.
+            assert!(enforce_verification_policy(&p, &VerifyLevel::Full).is_ok());
+        }
+        // Commercial NIST profiles may sample (NIST SP 800-88 Rev.1 App. D).
+        for commercial in [
+            ProfileOption::NistClear,
+            ProfileOption::NistClearRandom,
+            ProfileOption::Schneier,
+            ProfileOption::Gutmann,
+        ] {
+            let p = commercial.to_profile();
+            for spec in ["sample:4", "none"] {
+                let level = parse_verify_flag(spec).unwrap();
+                assert!(enforce_verification_policy(&p, &level).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn catalog_discloses_defense_verification_mandate() {
+        let table = render_catalog();
+        assert!(
+            table.contains("DEFENSE: full verification mandated"),
+            "catalog must mark defense profiles"
+        );
+        assert!(table.contains("rejected with exit code 8"));
+        // Every defense profile slug is marked.
+        for slug in ["dod-5220.22m", "certin-goi", "csec-itsg-06", "bsi-vsitr"] {
+            assert!(table.contains(slug));
+        }
     }
 }

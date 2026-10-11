@@ -63,3 +63,26 @@ pinned defects with `REG-*` identifiers). Lit-style driver:
 Every new path keeps the fail-closed discipline: batch aborts leave zero
 journals, purge refusals never fabricate evidence, and all guards are pinned
 in `r900_regression_guards.rs` + `t14_fleet_parallel_matrix.rs`.
+
+
+## v0.6.0 — universal purge dispatch, defense policy gate, G-List audit
+
+- **`dc purge` is bus-universal**: one verb dispatches to the NVMe admin
+  ioctl transport, the SATA/SAT SG_IO ladder (dc-ata), or the SAS SG_IO
+  ladder (dc-scsi); loop/virtio/DM/file targets are refused fail-closed
+  with `PURGE_TRANSPORT_UNSUPPORTED`. The pre-0.6.0 `PURGE_NVME_ONLY`
+  refusal is retired (REG-PURGE-UNIVERSAL-DISPATCH). Mechanism menu:
+  `auto | sanitize-crypto | sanitize-block | format-crypto |
+  security-erase-enhanced | security-erase-normal | format-unit`
+  (bus-validated).
+- **Defense profile enforcement gate**: `--verify sample:N` / `none` on
+  defense profiles (DoD 5220.22-M & ECE, CERT-In/GoI, CSE ITSG-06, BSI
+  VSITR) exits 8 BEFORE any device is probed or armed — in `execute` and
+  in `plan` compilations (REG-DEFENSE-SAMPLING-REFUSED).
+- **G-List audit**: SMART attr 0x05 (SATA), READ DEFECT DATA grown list
+  (SAS), NVMe health log 0x02 media errors — nonzero counts on logical
+  overwrites emit a `DEFENSE_WARNING` into the SIGNED certificate
+  payload (stripping it invalidates the signature).
+- **ISO 19005-3 archival copy**: every `execute` and `purge` run also
+  writes `<stem>.pdf` — a true PDF/A-3b document embedding
+  `certificate.json` and `journal.dcj` unfiltered.
