@@ -1,6 +1,6 @@
 [package]
 name = "dc-hw"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "Pure hardware protocol codecs (NVMe, ATA, SCSI) for diskcleaner"
 
@@ -10,6 +10,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 hex = { workspace = true }
 blake3 = { workspace = true }
+libc = { workspace = true }
 
 [lints]
 workspace = true
