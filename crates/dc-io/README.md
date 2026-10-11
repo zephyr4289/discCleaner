@@ -45,3 +45,12 @@ cancel flag at every window boundary and convert it into
 `cargo test -p dc-io --lib` — 10 tests (overflow math, pool caps, INV2,
 geometry, plus an end-to-end write/verify over a temp file). Integration:
 `dc-cli/tests/g4_engine_matrix`, `t11_interrupt_matrix`.
+
+## v0.5.0 — sampled verification stride
+
+`Engine::read_verify` now takes a `stride` parameter implementing NIST SP
+800-88 sampled verification: windows whose index is not divisible by
+`stride` are skipped **entirely** — no read, no compare, no hash — which is
+where the wall-clock saving comes from (verified by
+`REG-VERIFY-STRIDE`). `stride == 1` is full verification.
+`LbaSpan::window_is_sampled(w, stride)` is the single sampling oracle.

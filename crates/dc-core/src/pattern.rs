@@ -23,6 +23,13 @@ pub enum Pattern {
     Fixed {
         byte: u8,
     },
+    /// Repeating little-endian 4-byte word (e.g. 0x92492492 -> [0x92,0x49,0x24,0x92]).
+    /// Required by MFM/RLL-era legacy passes such as Gutmann; trailing
+    /// partial windows are filled with the leading sub-word.
+    FixedWord {
+        #[serde(with = "hex_serde_4")]
+        bytes: [u8; 4],
+    },
     DeterministicRandom {
         scheme: PrngScheme,
         #[serde(with = "hex_serde")]
@@ -53,6 +60,34 @@ mod hex_serde {
             )));
         }
         let mut arr = [0u8; 32];
+        arr.copy_from_slice(&vec);
+        Ok(arr)
+    }
+}
+
+mod hex_serde_4 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8; 4], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&hex::encode(bytes))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 4], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let vec = hex::decode(&s).map_err(serde::de::Error::custom)?;
+        if vec.len() != 4 {
+            return Err(serde::de::Error::custom(format!(
+                "expected 4 bytes hex, got {}",
+                vec.len()
+            )));
+        }
+        let mut arr = [0u8; 4];
         arr.copy_from_slice(&vec);
         Ok(arr)
     }
@@ -120,6 +155,30 @@ impl PatternSource for FixedPattern {
     }
 }
 
+pub struct FixedWordPattern {
+    pub bytes: [u8; 4],
+}
+
+impl PatternSource for FixedWordPattern {
+    fn fill(&self, _w: u64, buf: &mut [u8]) {
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = self.bytes[i & 3];
+        }
+    }
+
+    fn descriptor(&self) -> PatternDescriptor {
+        PatternDescriptor {
+            name: format!("FixedWord(0x{})", hex::encode(self.bytes)),
+            pattern: Pattern::FixedWord { bytes: self.bytes },
+            description: format!("Repeating 4-byte word {}", hex::encode(self.bytes)),
+        }
+    }
+
+    fn window_invariant(&self) -> bool {
+        true
+    }
+}
+
 pub struct ChaCha20Pattern {
     pub seed: [u8; 32],
 }
@@ -171,6 +230,7 @@ pub fn create_pattern_source(pattern: &Pattern) -> Box<dyn PatternSource> {
     match pattern {
         Pattern::Zero => Box::new(ZeroPattern),
         Pattern::Fixed { byte } => Box::new(FixedPattern { byte: *byte }),
+        Pattern::FixedWord { bytes } => Box::new(FixedWordPattern { bytes: *bytes }),
         Pattern::DeterministicRandom { scheme, seed } => match scheme {
             PrngScheme::ChaCha20WindowV1 => Box::new(ChaCha20Pattern::new(*seed)),
         },
