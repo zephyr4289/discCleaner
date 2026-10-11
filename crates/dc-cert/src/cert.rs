@@ -137,6 +137,12 @@ pub struct UnsignedCertificate {
     /// SMART/health snapshot captured after the sanitization ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_post: Option<HealthSnapshotEvidence>,
+    /// Mandatory defense advisories disclosed to the certificate consumer
+    /// (v0.6.0, REG-SMART-GLIST-DISCLOSURE). Carried inside the signed
+    /// payload: an advisory cannot be stripped from a certificate without
+    /// breaking the Ed25519 signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defense_warnings: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -162,6 +168,10 @@ pub struct SanitizationCertificate {
     /// SMART/health snapshot captured after the sanitization ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_post: Option<HealthSnapshotEvidence>,
+    /// Mandatory defense advisories (e.g. reallocated-sector / G-List
+    /// disclosure on logical overwrites). Covered by the signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defense_warnings: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -202,6 +212,7 @@ impl SanitizationCertificate {
             purge: None,
             health_pre: None,
             health_post: None,
+            defense_warnings: None,
         }
     }
 
@@ -222,6 +233,17 @@ impl SanitizationCertificate {
         self
     }
 
+    /// Attach mandatory defense advisories (v0.6.0). The warnings travel
+    /// inside the signed payload; stripping them invalidates the signature.
+    pub fn with_defense_warnings(mut self, warnings: Vec<String>) -> Self {
+        if warnings.is_empty() {
+            self.defense_warnings = None;
+        } else {
+            self.defense_warnings = Some(warnings);
+        }
+        self
+    }
+
     /// Extract unsigned payload for canonical JCS serialization.
     pub fn unsigned_payload(&self) -> UnsignedCertificate {
         UnsignedCertificate {
@@ -238,6 +260,7 @@ impl SanitizationCertificate {
             purge: self.purge.clone(),
             health_pre: self.health_pre.clone(),
             health_post: self.health_post.clone(),
+            defense_warnings: self.defense_warnings.clone(),
         }
     }
 
@@ -569,6 +592,12 @@ impl SanitizationCertificate {
                 "Health (pre/post): {}% / {}% used, media errors {} -> {}",
                 pre.percentage_used, post.percentage_used, pre.media_errors, post.media_errors
             ));
+        }
+        // Defense advisories are always rendered, never silently dropped.
+        if let Some(warnings) = &self.defense_warnings {
+            for w in warnings {
+                lines.push(format!("DEFENSE_WARNING:   {}", w));
+            }
         }
 
         if self.verification.mismatch_count > 0 {

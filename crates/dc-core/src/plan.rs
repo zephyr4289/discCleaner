@@ -335,6 +335,32 @@ impl SanitizationProfile {
         VerifyLevel::Full
     }
 
+    /// DEFENSE PROFILE ENFORCEMENT GATE (v0.6.0).
+    ///
+    /// Profiles mandated by defense/government authorities require 100%
+    /// post-wipe read-back verification:
+    /// - US DoD 5220.22-M / ECE (superseded pass matrices, but the 100%
+    ///   verification mandate lives on in NSA/CSS Policy 9-12 practice),
+    /// - CERT-In / GoI media disposal directions,
+    /// - CSE ITSG-06 (Canada),
+    /// - BSI VSITR (Germany).
+    ///
+    /// When this returns `true`, the CLI MUST refuse `--verify sample:N` and
+    /// `--verify none` with a usage error (exit code 8) BEFORE any device is
+    /// armed. Only commercial NIST SP 800-88 Clear profiles may lower the
+    /// verification level. Sampling the final pass remains permissible for
+    /// non-classified, commercial media under NIST SP 800-88 Rev.1 App. D.
+    pub fn requires_full_verification(&self) -> bool {
+        matches!(
+            self,
+            Self::Dod5220_22M
+                | Self::Dod5220_22MEce
+                | Self::CertinGoi
+                | Self::CsecItsg06
+                | Self::BsiVsitr
+        )
+    }
+
     /// Whether the profile is suitable for flash/SSD/NVMe media without the
     /// flash-aware caveats (wear, write amplification, FTL remapping).
     pub fn flash_suitable(&self) -> bool {
@@ -801,5 +827,44 @@ mod profile_tests {
         let j = serde_json::to_string(&pat).unwrap();
         let back: Pattern = serde_json::from_str(&j).unwrap();
         assert_eq!(pat, back);
+    }
+
+    #[test]
+    fn defense_profiles_require_full_verification() {
+        // REG-DEFENSE-SAMPLING-REFUSED (core invariant): every defense /
+        // government-mandated profile mandates 100% verification.
+        for defense in [
+            SanitizationProfile::Dod5220_22M,
+            SanitizationProfile::Dod5220_22MEce,
+            SanitizationProfile::CertinGoi,
+            SanitizationProfile::CsecItsg06,
+            SanitizationProfile::BsiVsitr,
+        ] {
+            assert!(
+                defense.requires_full_verification(),
+                "{:?} must require full verification",
+                defense
+            );
+        }
+        // Commercial NIST SP 800-88 Clear profiles may sample.
+        for commercial in [
+            SanitizationProfile::NistClear,
+            SanitizationProfile::NistClearRandom,
+            SanitizationProfile::Schneier,
+            SanitizationProfile::Gutmann,
+        ] {
+            assert!(
+                !commercial.requires_full_verification(),
+                "{:?} is not a defense profile and may lower verification",
+                commercial
+            );
+        }
+        // The gate is a superset check, not a total ordering: Schneier /
+        // Gutmann are non-government practices and stay sampleable.
+        assert!(
+            !SanitizationProfile::CATALOG
+                .iter()
+                .all(|p| p.requires_full_verification())
+        );
     }
 }
