@@ -45,6 +45,9 @@ impl RecipeExtractor {
                                 }
                             }
                         }
+                        // Hardware-purge plans carry no logical passes; the
+                        // recipe synthesizer only applies to overwrite runs.
+                        dc_core::Mechanism::HardwarePurge { .. } => {}
                     }
                 }
                 JournalRecord::Verify {

@@ -54,3 +54,19 @@ manifest approvals (separate domains).
 separation, fingerprint spoofing, temporal key semantics, keyfile modes,
 strict parser). Integration: `g6_cert_audit_matrix`, `t9_cert_matrix`,
 `m2_4_custody_matrix`.
+
+## v0.5.0 — hardware purge evidence & health snapshots
+
+`SanitizationCertificate` gained three optional, signature-covered fields
+(serde `default` — old certificates remain loadable and verifiable):
+
+- `purge: Option<PurgeCertificateEvidence>` — executed mechanism,
+  controller-rejected fallbacks, completion provenance
+  (`sanitize-status-log` / `blocking-format-return`), progress permille,
+  read-back expectation, controller device.
+- `health_pre` / `health_post: Option<HealthSnapshotEvidence>` — SMART/health
+  wear counters captured around the run; diverging counters evidence the
+  certificate names the same physical drive end-to-end.
+
+`render_summary()` prints the purge evidence line and health deltas for
+`dc purge` certificates.

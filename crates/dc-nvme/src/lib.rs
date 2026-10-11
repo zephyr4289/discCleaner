@@ -1,8 +1,12 @@
+pub mod linux_admin;
 pub mod permit;
+pub mod probe;
 pub mod purge;
 pub mod transport;
 
+pub use linux_admin::{controller_char_dev_for, data_len_for, LinuxNvmeAdmin};
 pub use permit::PurgePermit;
+pub use probe::{attest_capabilities, identify_controller, read_health, HealthSnapshot};
 pub use purge::{
     CompletionEvidence, MechanismFallback, NvmePurgeClient, PurgeExecutionSummary, PurgeMechanism,
 };

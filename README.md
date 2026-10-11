@@ -1,6 +1,6 @@
 # diskCleaner (`dc`)
 
-[![Version](https://img.shields.io/badge/version-v0.4.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
+[![Version](https://img.shields.io/badge/version-v0.5.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64--musl-blueviolet.svg)](https://github.com/zephyr4289/discCleaner)
 [![Standards](https://img.shields.io/badge/standards-NIST%20SP%20800--88%20%7C%20IEEE%202883--2022-orange.svg)](diskCleaner.md)
@@ -11,11 +11,11 @@
 `dc` is a self-contained, statically linked, zero-dependency storage sanitization suite engineered for NVMe, SATA, SAS/SCSI, USB-bridged (SAT), eMMC/UFS, TCG Opal self-encrypting (SED), and Host-Managed SMR/ZNS storage. It executes **NIST SP 800-88 Rev 1** Clear and Purge operations, issuing cryptographically signed, third-party-verifiable evidence packages that survive crashes, power loss, and adversarial cross-examination.
 
 ```
-Version       : v0.4.0 (Hardened Release: security audit + LLVM-style test pyramid)
+Version       : v0.5.0 (Fleet Release: parallel wipe · standards matrix · hardware purge)
 Target Triples: x86_64-unknown-linux-musl · aarch64-unknown-linux-musl
 Runtime Deps  : Zero external binaries, zero dynamic libraries
 Crates        : 15 modular workspace crates (22,600+ Rust LOC)
-Tests         : 80 unit tests + 50 integration suites + 20 pinned regression guards
+Tests         : 90+ unit tests + 50 integration suites + 26 pinned regression guards
 Test Driver   : python3 tests/run_tests.py (lit-style discovery, parallel, PASS/FAIL/UNSUPPORTED)
 Verification  : Ed25519 + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3 Archival Embedding
 ```
@@ -189,6 +189,25 @@ dc cert verify cert.json --journal run.dcj
 
 # Generate deterministic archival PDF/A-3 report with embedded JSON
 dc report --cert cert.json --out report.pdf
+```
+
+### 7. Fleet-Grade Operations (v0.5.0)
+```bash
+# Full sanitization standards catalog (tender/procurement reference)
+dc profiles
+
+# Parallel multi-device wipe: N devices, one command, one all-or-nothing
+# precheck, one token confirmation, one summary — per-device journal+cert
+dc execute --target /dev/sda --target /dev/sdb --target /dev/nvme0n1 \
+           --profile certin-goi --verify sample:64
+
+# Controller-attested hardware purge (NIST 800-88 Purge in seconds):
+# Sanitize crypto-erase -> block-erase -> Format-NVM fallback ladder,
+# SMART/health pre+post embedded in the signed certificate
+dc purge --target /dev/nvme0n1
+
+# Bake-off evidence: production-engine throughput + per-profile ETA table
+dc bench --file /scratch/bench.raw --size-mib 2048 --ref-gib 4000
 ```
 
 ---

@@ -102,10 +102,12 @@ impl Engine for UringEngine {
         &mut self,
         pat: &dyn PatternSource,
         span: &LbaSpan,
+        stride: u64,
         sink: &mut dyn VerifySink,
         prog: &mut dyn FnMut(EngineProgress),
     ) -> Result<(), DcError> {
-        self.sync_fallback.read_verify(pat, span, sink, prog)
+        self.sync_fallback
+            .read_verify(pat, span, stride, sink, prog)
     }
 
     fn flush(&mut self, permit: &WritePermit) -> Result<(), DcError> {

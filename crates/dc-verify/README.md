@@ -33,3 +33,11 @@ certificate embedding.
 order-sensitive stream hashes, optional SHA-256 parity with `sha2`, entropy
 bounds). Integration: `t8_prng_matrix` (cleanroom reproduction),
 `g5_reproduction_matrix`.
+
+## v0.5.0 — sampling-aware verification reports
+
+`StreamVerifier` reports the `VerifyLevel` it actually ran
+(`Full` / `Sampled { stride }` / `None`); the certificate carries the same
+level, so a sampled run is certified as sampled — never silently upgraded
+to "full". `dc_core::VerifyLevel::{short_tag, from_short_tag}` provide the
+machine-stable journal encoding (`full` | `none` | `sample:N`).

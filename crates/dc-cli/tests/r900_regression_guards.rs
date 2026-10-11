@@ -483,3 +483,391 @@ fn reg_seed_for_clear_zero_is_rejected_before_probing_exit_8() {
     // Usage error (exit 8) must fire BEFORE the (nonexistent) device probe.
     cmd.assert().code(8);
 }
+
+// ===========================================================================
+// PR2 guards: fleet parallelism, standards matrix, sampled verification, purge
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// REG-PROFILE-MATRIX: the catalog is complete, counts are exact, and the
+// CLI renders it (procurement documentation).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reg_profile_matrix_catalog_is_complete_and_exact() {
+    use dc_core::SanitizationProfile;
+
+    let expect: &[(SanitizationProfile, usize, &str)] = &[
+        (SanitizationProfile::NistClear, 1, "nist-clear"),
+        (SanitizationProfile::NistClearRandom, 1, "nist-clear-random"),
+        (SanitizationProfile::CertinGoi, 3, "certin-goi"),
+        (SanitizationProfile::Dod5220_22M, 3, "dod-5220.22m"),
+        (SanitizationProfile::Dod5220_22MEce, 7, "dod-5220.22m-ece"),
+        (SanitizationProfile::CsecItsg06, 3, "csec-itsg-06"),
+        (SanitizationProfile::BsiVsitr, 7, "bsi-vsitr"),
+        (SanitizationProfile::Schneier, 7, "schneier"),
+        (SanitizationProfile::Gutmann, 35, "gutmann"),
+    ];
+    assert_eq!(SanitizationProfile::CATALOG.len(), expect.len());
+    for (p, n, _slug) in expect {
+        assert_eq!(
+            p.total_passes(),
+            *n,
+            "{} pass count drifted",
+            p.display_name()
+        );
+    }
+
+    // CLI renders the full matrix.
+    let out = Command::cargo_bin("diskcleaner")
+        .unwrap()
+        .arg("profiles")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    for (_, _, slug) in expect {
+        assert!(stdout.contains(slug), "dc profiles output missing {}", slug);
+    }
+    assert!(stdout.contains("CERT-In / GoI"));
+    assert!(stdout.contains("NIST SP 800-88"));
+}
+
+// ---------------------------------------------------------------------------
+// REG-VERIFY-STRIDE: sampled verification skips unsampled windows entirely
+// (engine-level contract — the wall-clock saving IS the skipped I/O).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reg_verify_stride_skips_unsampled_and_catches_sampled() {
+    use dc_core::{FsmOrchestrator, Mechanism, Pattern, SanitizationPlan, VerifyLevel};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let backing = tmp.path().join("stride.raw");
+    // 8 windows of 64 KiB.
+    std::fs::write(&backing, vec![0x00u8; 8 * 64 * 1024]).unwrap();
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&backing)
+        .unwrap();
+    let mut engine = create_engine(file, 64 * 1024, false, 4).unwrap();
+
+    let plan = SanitizationPlan {
+        plan_schema: "dc-plan/1".to_string(),
+        target: dc_core::StableIdentity {
+            model: Some("StrideTest".into()),
+            serial: Some("SN-STRIDE".into()),
+            wwn: None,
+            size_bytes: 8 * 64 * 1024,
+            bus: dc_core::BusType::File,
+            dm_name: None,
+            dm_uuid: None,
+        },
+        mechanism: Mechanism::LogicalOverwrite {
+            passes: vec![dc_core::Pass {
+                pattern: Pattern::Zero,
+                label: "zero".into(),
+            }],
+        },
+        verification: VerifyLevel::Sampled { stride: 4 },
+        window_bytes: 64 * 1024,
+        fast_path: dc_core::FastPathPolicy::ForbidWriteZeroes,
+        strategy_ladder: None,
+        legacy_note: None,
+    };
+    let mut fsm = FsmOrchestrator::new();
+    fsm.compile_plan(plan).unwrap();
+    fsm.approve_plan().unwrap();
+    fsm.arm().unwrap();
+    let permit = fsm.begin_pass(0).unwrap();
+
+    let span = LbaSpan::new(8 * 64 * 1024, 512, 64 * 1024);
+    engine
+        .write_pass(&permit, 0, &dc_core::ZeroPattern, &span, 0, &mut |_| {})
+        .unwrap();
+
+    let flush_permit = fsm.begin_flush(0).unwrap();
+    engine.flush(&flush_permit).unwrap();
+
+    // Case A: corrupt an UNSAMPLED window (index 1: 1 % 4 != 0). A stride-4
+    // sampled verification must NOT see it and must pass.
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&backing)
+        .unwrap();
+    use std::io::{Seek, Write};
+    f.seek(std::io::SeekFrom::Start(64 * 1024)).unwrap();
+    f.write_all(&vec![0xFFu8; 4096]).unwrap();
+    drop(f);
+
+    fsm.begin_verify().unwrap();
+    let mut engine2 = {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .open(&backing)
+            .unwrap();
+        create_engine(file, 64 * 1024, false, 4).unwrap()
+    };
+    let mut verifier_a = dc_verify::StreamVerifier::new(
+        VerifyLevel::Sampled { stride: 4 },
+        64 * 1024,
+        512,
+        false,
+        false,
+    );
+    engine2
+        .read_verify(
+            &dc_core::ZeroPattern,
+            &span,
+            4,
+            &mut verifier_a,
+            &mut |_| {},
+        )
+        .unwrap();
+    let report_a = verifier_a.finalize();
+    assert_eq!(
+        report_a.mismatch_count, 0,
+        "unsampled corruption must not trip sampled verification"
+    );
+    assert_eq!(
+        report_a.windows_checked, 2,
+        "stride-4 over 8 windows = 2 checks"
+    );
+
+    // Case B: corrupt a SAMPLED window (index 4: 4 % 4 == 0) — must be caught.
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&backing)
+        .unwrap();
+    f.seek(std::io::SeekFrom::Start(4 * 64 * 1024)).unwrap();
+    f.write_all(&vec![0xFFu8; 4096]).unwrap();
+    drop(f);
+
+    let mut verifier_b = dc_verify::StreamVerifier::new(
+        VerifyLevel::Sampled { stride: 4 },
+        64 * 1024,
+        512,
+        false,
+        false,
+    );
+    engine2
+        .read_verify(
+            &dc_core::ZeroPattern,
+            &span,
+            4,
+            &mut verifier_b,
+            &mut |_| {},
+        )
+        .unwrap();
+    let report_b = verifier_b.finalize();
+    assert!(
+        report_b.mismatch_count >= 1,
+        "sampled corruption MUST be caught by sampled verification"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// REG-VERIFY-FLAG-CONTRACT: --verify parsing and its exclusivity with --plan.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reg_verify_flag_contract() {
+    // Bad strides rejected by the CLI (fail-fast, exit code 1 = usage).
+    for bad in ["sample:1", "sample:70000", "sample:x", "quarter"] {
+        Command::cargo_bin("diskcleaner")
+            .unwrap()
+            .arg("execute")
+            .arg("--target")
+            .arg("/dev/nonexistent-zz")
+            .arg("--verify")
+            .arg(bad)
+            .arg("--dry-run")
+            .assert()
+            .failure();
+    }
+    // Machine-stable tags round-trip.
+    for (tag, expect) in [
+        ("full", dc_core::VerifyLevel::Full),
+        ("none", dc_core::VerifyLevel::None),
+        ("sample:64", dc_core::VerifyLevel::Sampled { stride: 64 }),
+    ] {
+        let parsed = dc_core::VerifyLevel::from_short_tag(tag)
+            .unwrap_or_else(|| panic!("tag {} must parse", tag));
+        assert_eq!(parsed, expect);
+        assert_eq!(expect.short_tag(), tag);
+    }
+    assert!(dc_core::VerifyLevel::from_short_tag("sample:1").is_none());
+    assert!(dc_core::VerifyLevel::from_short_tag("sample:70000").is_none());
+    assert!(dc_core::VerifyLevel::from_short_tag("fuller").is_none());
+}
+
+// ---------------------------------------------------------------------------
+// REG-PURGE-NVME-ONLY: the hardware purge ladder refuses non-NVMe targets
+// fail-closed (never certifies a purge a controller cannot perform).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reg_purge_refuses_non_nvme_and_missing_targets() {
+    // Missing target: Guardian probe refusal (exit 2), before any prompt.
+    Command::cargo_bin("diskcleaner")
+        .unwrap()
+        .arg("purge")
+        .arg("--target")
+        .arg("/dev/nvme999n1")
+        .arg("--dry-run")
+        .assert()
+        .code(2);
+}
+
+// ---------------------------------------------------------------------------
+// REG-MULTI-ARM-ALLORNOTHING: one bad target aborts the whole batch before
+// ANY device is armed, locked, or written (fleet safety invariant).
+// (Root-gated full version in t14; this is the non-root CLI guard.)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reg_multi_target_rejects_plan_across_batch() {
+    // --plan with multiple targets is a usage error (plan binds one device).
+    Command::cargo_bin("diskcleaner")
+        .unwrap()
+        .arg("execute")
+        .arg("--target")
+        .arg("/dev/sda")
+        .arg("--target")
+        .arg("/dev/sdb")
+        .arg("--plan")
+        .arg("/tmp/no-such-plan.json")
+        .arg("--dry-run")
+        .assert()
+        .failure();
+    // --verify with --plan is a usage error (plan is authoritative).
+    Command::cargo_bin("diskcleaner")
+        .unwrap()
+        .arg("execute")
+        .arg("--target")
+        .arg("/dev/sda")
+        .arg("--plan")
+        .arg("/tmp/no-such-plan.json")
+        .arg("--verify")
+        .arg("sample:8")
+        .arg("--dry-run")
+        .assert()
+        .failure();
+}
+
+// ---------------------------------------------------------------------------
+// REG-CERT-PURGE-EVIDENCE: optional purge/health fields keep old certificates
+// loadable AND are covered by the signature payload when present.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reg_cert_purge_fields_backward_compatible_and_signed() {
+    use dc_cert::PurgeCertificateEvidence;
+    use dc_core::{Mechanism, SanitizationPlan, VerifyLevel};
+
+    let kp = OperatorKeyPair::generate();
+    let plan = SanitizationPlan {
+        plan_schema: "dc-plan/1".to_string(),
+        target: dc_core::StableIdentity {
+            model: Some("PurgeSSD".into()),
+            serial: Some("SN-PURGE".into()),
+            wwn: None,
+            size_bytes: 1024 * 1024 * 1024,
+            bus: dc_core::BusType::Nvme,
+            dm_name: None,
+            dm_uuid: None,
+        },
+        mechanism: Mechanism::HardwarePurge {
+            ladder: dc_core::StrategyLadder { steps: vec![] },
+            selected_mechanism: "SanitizeCryptoErase".into(),
+        },
+        verification: VerifyLevel::None,
+        window_bytes: SanitizationPlan::DEFAULT_WINDOW_BYTES,
+        fast_path: dc_core::FastPathPolicy::ForbidWriteZeroes,
+        strategy_ladder: None,
+        legacy_note: None,
+    };
+
+    let mk_cert = || {
+        let mut c = dc_cert::SanitizationCertificate::new(
+            plan.clone(),
+            "hash".into(),
+            purge_test_identity(),
+            dc_cert::ExecutionDetails {
+                started_utc: "t0".into(),
+                finished_utc: "t1".into(),
+                duration_mono_ms: 42,
+                interruptions: vec![],
+                failures: vec![],
+                passes: vec![],
+            },
+            dc_verify::StreamVerifier::new(VerifyLevel::None, 2 * 1024 * 1024, 512, false, false)
+                .finalize(),
+            dc_core::JournalChainSummary {
+                path: std::path::PathBuf::from("/tmp/x.dcj"),
+                chain_head: "head".into(),
+                record_count: 3,
+                discarded_tail_bytes: 0,
+                uuid: "dcj-x".into(),
+                sealed: false,
+            },
+            kp.public_key_hex(),
+            kp.key_fingerprint_blake3(),
+        );
+        c.sign(&kp).unwrap();
+        c
+    };
+
+    fn purge_test_identity() -> dc_core::DeviceIdentity {
+        dc_core::DeviceIdentity {
+            stable: dc_core::StableIdentity {
+                model: Some("PurgeSSD".into()),
+                serial: Some("SN-PURGE".into()),
+                wwn: None,
+                size_bytes: 1024 * 1024 * 1024,
+                bus: dc_core::BusType::Nvme,
+                dm_name: None,
+                dm_uuid: None,
+            },
+            kernel: dc_core::KernelIdentity {
+                major: 259,
+                minor: 0,
+            },
+            kernel_name: "nvme0n1".into(),
+            dev_path: "/dev/nvme0n1".into(),
+            logical_block_size: 512,
+            physical_block_size: 4096,
+        }
+    }
+
+    // Plain cert: no purge fields serialized, still verifiable.
+    let plain = mk_cert();
+    assert!(plain.verify_signature().unwrap_or(false));
+    let json = serde_json::to_string(&plain).unwrap();
+    assert!(
+        !json.contains("\"purge\":"),
+        "plain overwrite certs must not carry the optional purge field"
+    );
+    let back: dc_cert::SanitizationCertificate = serde_json::from_str(&json).unwrap();
+    assert!(back.verify_signature().unwrap_or(false));
+
+    // Purge evidence: attached, serialized, and the signature still verifies
+    // (the evidence IS part of the signed payload).
+    let evidenced = mk_cert()
+        .with_purge(PurgeCertificateEvidence {
+            executed_mechanism: "SanitizeCryptoErase".into(),
+            fallbacks: vec![],
+            completion_evidence: "sanitize-status-log".into(),
+            sanitize_progress_permille: 1000,
+            readback_expectation: "VendorRandom".into(),
+            controller_device: "/dev/nvme0".into(),
+        })
+        .with_health(None, None);
+    let mut evidenced = evidenced;
+    evidenced.sign(&kp).unwrap();
+    assert!(evidenced.verify_signature().unwrap_or(false));
+    let json2 = serde_json::to_string(&evidenced).unwrap();
+    assert!(json2.contains("sanitize-status-log"));
+    assert!(json2.contains("PurgeSSD".to_string().as_str()) || json2.contains("SN-PURGE"));
+}

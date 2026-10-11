@@ -239,11 +239,13 @@ impl Engine for SyncEngine {
         &mut self,
         pat: &dyn PatternSource,
         span: &LbaSpan,
+        stride: u64,
         sink: &mut dyn VerifySink,
         prog: &mut dyn FnMut(EngineProgress),
     ) -> Result<(), DcError> {
         let fd = self.file.as_raw_fd();
         let total_windows = span.total_windows();
+        let stride = stride.max(1);
         let mut expected_buf = AlignedBuffer::allocate(span.window_bytes as usize, 4096)?;
         let is_invariant = pat.window_invariant();
 
@@ -260,6 +262,12 @@ impl Engine for SyncEngine {
                 return Err(DcError::Interrupted {
                     completed_through: None,
                 });
+            }
+
+            // Sampled verification (NIST SP 800-88): unsampled windows are
+            // never read — the wall-clock saving IS the skipped I/O.
+            if !span.window_is_sampled(w, stride) {
+                continue;
             }
 
             let (offset, len) = span.window_byte_range(w);

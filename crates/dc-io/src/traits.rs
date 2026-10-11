@@ -18,6 +18,12 @@ impl LbaSpan {
         }
     }
 
+    /// Whether window `w` is inside a 1-in-`stride` deterministic sample.
+    /// `stride <= 1` selects every window (full verification).
+    pub fn window_is_sampled(&self, w: u64, stride: u64) -> bool {
+        stride <= 1 || w.is_multiple_of(stride)
+    }
+
     /// Ceiling division of total bytes by window bytes (overflow-safe).
     pub fn total_windows(&self) -> u64 {
         if self.window_bytes == 0 {
@@ -94,10 +100,18 @@ pub trait Engine: Send {
         prog: &mut dyn FnMut(EngineProgress),
     ) -> Result<PassOutcome, DcError>;
 
+    /// Read-back verification.
+    ///
+    /// `stride` implements NIST SP 800-88 sampled verification: when
+    /// `stride > 1`, windows whose index is not divisible by `stride` are
+    /// SKIPPED ENTIRELY — not read, not compared, not hashed — which is where
+    /// the wall-clock saving comes from. `stride == 1` is full verification.
+    /// The certificate must record the stride actually applied.
     fn read_verify(
         &mut self,
         pat: &dyn PatternSource,
         span: &LbaSpan,
+        stride: u64,
         sink: &mut dyn VerifySink,
         prog: &mut dyn FnMut(EngineProgress),
     ) -> Result<(), DcError>;

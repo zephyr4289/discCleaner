@@ -17,7 +17,11 @@ pure data structures, cryptography, and protocol invariants.
 
 ## Module map
 
-- `plan.rs` — plan schema (`dc-plan/1`), profiles (clear-zero / clear-random / legacy-dod3)
+- `plan.rs` — plan schema (`dc-plan/1`), the standards profile catalog
+  (`SanitizationProfile`: NIST 800-88 Clear ×2, CERT-In/GoI, DoD 5220.22-M
+  +ECE, CSE ITSG-06, BSI VSITR, Schneier, Gutmann) with pure pass matrices,
+  `VerifyLevel::Sampled` (NIST 800-88 sampled verification), and the
+  `HardwarePurge` mechanism
 - `pattern.rs` — deterministic pattern sources (ChaCha20-window-v1; see
   `docs/reproduction/chacha20-window-v1.txt`, the normative reproduction contract)
 - `journal.rs` — DCJ1 reader/writer, sealed signatures, crash-hook injection
@@ -50,3 +54,27 @@ and the FSM permit model. Integration coverage: `dc-cli/tests/g2_*`, `t11_*`,
 
 No hardware crates, no I/O engines. Depends only on serialization
 (serde/serde_jcs), cryptography (blake3, ed25519-dalek, chacha20), and libc.
+
+## Standards profile catalog (v0.5.0)
+
+`SanitizationProfile::CATALOG` is the single source of truth for profile →
+pass-matrix translation; the CLI option and `dc profiles` render from it, so
+the catalog can never drift from what executes.
+
+| Profile | Passes | Standard reference | Flash-suitable |
+|---|---|---|---|
+| `nist-clear` | 1 (zero) | NIST SP 800-88r1 §4.3 Clear | yes |
+| `nist-clear-random` | 1 (CSPRNG) | NIST SP 800-88r1 §4.3 Clear | yes |
+| `certin-goi` | 3 (00/FF/CSPRNG) | CERT-In / GoI media sanitisation practice | yes |
+| `dod-5220.22m` | 3 | US DoD 5220.22-M (superseded) | yes |
+| `dod-5220.22m-ece` | 7 | US DoD 5220.22-M ECE (superseded) | no |
+| `csec-itsg-06` | 3 | CSE ITSG-06 (Canada) | yes |
+| `bsi-vsitr` | 7 | BSI VSITR (Germany) | yes |
+| `schneier` | 7 | Schneier (1996) | yes |
+| `gutmann` | 35 | Gutmann (1996) — legacy, contractual use only | no |
+
+Legacy profiles carry a `legacy_note` that is surfaced in the plan, journal,
+and certificate. `VerifyLevel` supports `Full`, `Sampled { stride }`
+(deterministic 1-in-N window sampling — the engine skips unsampled windows'
+I/O entirely) and `None`, with machine-stable `short_tag()` round-trips for
+journal/certifacte records.

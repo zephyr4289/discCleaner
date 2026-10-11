@@ -31,10 +31,12 @@ pub use journal::{
 };
 pub use orchestrator::{Orchestrator, OrchestratorEffect, OrchestratorState};
 pub use pattern::{
-    ChaCha20Pattern, FixedPattern, Pattern, PatternDescriptor, PatternSource, PrngScheme,
-    ZeroPattern, create_pattern_source,
+    ChaCha20Pattern, FixedPattern, FixedWordPattern, Pattern, PatternDescriptor, PatternSource,
+    PrngScheme, ZeroPattern, create_pattern_source,
 };
-pub use plan::{FastPathPolicy, Mechanism, Pass, SanitizationPlan, VerifyLevel};
+pub use plan::{
+    FastPathPolicy, Mechanism, Pass, SanitizationPlan, SanitizationProfile, VerifyLevel,
+};
 pub use strategy::{
     AttestedCapabilities, DeviceTransportClass, MechanismStep, StrategyCompiler, StrategyLadder,
 };
