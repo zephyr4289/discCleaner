@@ -36,6 +36,26 @@ pub struct NvmeIdentifyController {
     pub fr: String,
     pub ieee: [u8; 3],
     pub nn: u32,
+    /// OACS — Admin Command Attributes (offset 256-257). Bit 1 = Format NVM.
+    pub oacs: u16,
+    /// SANICAP byte 0 (offset 331): bit 2 = crypto-erase sanitize (CES),
+    /// bit 1 = block-erase sanitize (BES), bit 0 = overwrite sanitize (OWS).
+    pub sanicap: u8,
+}
+
+impl NvmeIdentifyController {
+    /// OACS bit 1: controller supports the Format NVM admin command.
+    pub fn supports_format_nvm(&self) -> bool {
+        self.oacs & 0x0002 != 0
+    }
+    /// SANICAP.CES: Sanitize (Crypto Erase) supported.
+    pub fn supports_sanitize_crypto(&self) -> bool {
+        self.sanicap & 0x04 != 0
+    }
+    /// SANICAP.BES: Sanitize (Block Erase) supported.
+    pub fn supports_sanitize_block(&self) -> bool {
+        self.sanicap & 0x02 != 0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +132,46 @@ impl NvmeCodec {
         cmd
     }
 
+    /// Encode a generic 64-byte NVMe Get Log Page Admin Command (Opcode 0x02).
+    /// `num_bytes` is the payload length in bytes (multiple of 4); the codec
+    /// converts it to the NUMDL 0-based dword count in CDW10[31:16].
+    pub fn encode_get_log_page(log_id: u8, num_bytes: u16) -> [u8; 64] {
+        let mut cmd = [0u8; 64];
+        cmd[0] = 0x02; // Opcode: Get Log Page
+        cmd[4..8].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // NSID: 0xFFFFFFFF (Global)
+
+        let numd = ((num_bytes / 4) as u32).saturating_sub(1); // 0-based dword count
+        let cdw10: u32 = ((log_id as u32) & 0xFF) | (numd << 16);
+        cmd[40..44].copy_from_slice(&cdw10.to_le_bytes()); // CDW10
+
+        cmd
+    }
+
+    /// Encode a Get Log Page command for the SMART / Health log (LID 0x02).
+    pub fn encode_get_health_log() -> [u8; 64] {
+        Self::encode_get_log_page(0x02, 512)
+    }
+
+    /// Encode an Identify Controller command (Opcode 0x06, CNS 0x01).
+    pub fn encode_identify_controller() -> [u8; 64] {
+        let mut cmd = [0u8; 64];
+        cmd[0] = 0x06; // Opcode: Identify
+        cmd[4..8].copy_from_slice(&0x00000000u32.to_le_bytes()); // NSID 0
+        let cdw10: u32 = 0x0001; // CNS 0x01 = Identify Controller
+        cmd[40..44].copy_from_slice(&cdw10.to_le_bytes());
+        cmd
+    }
+
+    /// Encode an Identify Namespace command (Opcode 0x06, CNS 0x00, NSID).
+    pub fn encode_identify_namespace(nsid: u32) -> [u8; 64] {
+        let mut cmd = [0u8; 64];
+        cmd[0] = 0x06; // Opcode: Identify
+        cmd[4..8].copy_from_slice(&nsid.to_le_bytes());
+        let cdw10: u32 = 0x0000; // CNS 0x00 = Identify Namespace
+        cmd[40..44].copy_from_slice(&cdw10.to_le_bytes());
+        cmd
+    }
+
     /// Decode NVMe Sanitize Status Log 0x81 (512-byte payload).
     pub fn decode_sanitize_status_log(payload: &[u8]) -> Result<NvmeSanitizeStatus, String> {
         if payload.len() < 8 {
@@ -153,6 +213,8 @@ impl NvmeCodec {
         let fr = String::from_utf8_lossy(&payload[64..72]).trim().to_string();
         let ieee = [payload[73], payload[74], payload[75]];
         let nn = u32::from_le_bytes([payload[516], payload[517], payload[518], payload[519]]);
+        let oacs = u16::from_le_bytes([payload[256], payload[257]]);
+        let sanicap = payload[331] & 0x07;
 
         Ok(NvmeIdentifyController {
             vid,
@@ -162,6 +224,8 @@ impl NvmeCodec {
             fr,
             ieee,
             nn,
+            oacs,
+            sanicap,
         })
     }
 

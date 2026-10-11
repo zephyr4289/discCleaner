@@ -70,6 +70,51 @@ pub struct SignatureDetails {
     pub value: String, // Base64
 }
 
+/// Controller-attested hardware purge evidence (NVMe Sanitize / Format NVM
+/// cryptographic erase). Embedded into certificates produced by `dc purge`;
+/// absent for logical-overwrite runs. Values mirror `dc-nvme`'s execution
+/// summary so the certificate is self-contained evidence.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PurgeCertificateEvidence {
+    /// Mechanism that actually executed (after controller fallbacks).
+    pub executed_mechanism: String,
+    /// Mechanisms the controller rejected before the executed one.
+    pub fallbacks: Vec<PurgeFallbackRecord>,
+    /// How completion was observed: "sanitize-status-log" (Log 0x81 SSTAT)
+    /// or "blocking-format-return" (non-IMMED Format NVM admin return).
+    pub completion_evidence: String,
+    /// Sanitize progress in permille at terminal state (1000 = completed).
+    pub sanitize_progress_permille: u16,
+    /// Controller-attested read-back expectation: "Zeros" (verifiable) or
+    /// "VendorRandom" (controller-attested only, no read-back possible).
+    pub readback_expectation: String,
+    /// Controller character device used for admin passthrough.
+    pub controller_device: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PurgeFallbackRecord {
+    pub from: String,
+    pub to: String,
+    pub reason: String,
+}
+
+/// Drive health snapshot embedded before/after sanitization. Diverging
+/// wear/error counters between the two snapshots evidence that the
+/// certificate names the same physical drive throughout the run.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HealthSnapshotEvidence {
+    pub critical_warning: u8,
+    pub temperature_celsius: i32,
+    pub available_spare_percent: u8,
+    pub percentage_used: u8,
+    pub media_errors: u128,
+    pub power_cycles: u128,
+    pub power_on_hours: u128,
+    pub data_units_written: u128,
+    pub captured_via: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct UnsignedCertificate {
@@ -83,6 +128,15 @@ pub struct UnsignedCertificate {
     pub verification: VerificationReport,
     pub journal: JournalChainSummary,
     pub operator: OperatorDetails,
+    /// Present only for controller-attested hardware purges (`dc purge`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purge: Option<PurgeCertificateEvidence>,
+    /// SMART/health snapshot captured before the sanitization ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_pre: Option<HealthSnapshotEvidence>,
+    /// SMART/health snapshot captured after the sanitization ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_post: Option<HealthSnapshotEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -99,6 +153,15 @@ pub struct SanitizationCertificate {
     pub journal: JournalChainSummary,
     pub operator: OperatorDetails,
     pub signature: Option<SignatureDetails>,
+    /// Present only for controller-attested hardware purges (`dc purge`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purge: Option<PurgeCertificateEvidence>,
+    /// SMART/health snapshot captured before the sanitization ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_pre: Option<HealthSnapshotEvidence>,
+    /// SMART/health snapshot captured after the sanitization ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_post: Option<HealthSnapshotEvidence>,
 }
 
 #[derive(Clone, Debug)]
@@ -136,7 +199,27 @@ impl SanitizationCertificate {
                 public_key_ed25519: operator_pubkey,
             },
             signature: None,
+            purge: None,
+            health_pre: None,
+            health_post: None,
         }
+    }
+
+    /// Attach controller-attested purge evidence (called by `dc purge`).
+    pub fn with_purge(mut self, evidence: PurgeCertificateEvidence) -> Self {
+        self.purge = Some(evidence);
+        self
+    }
+
+    /// Attach pre/post drive-health snapshots (evidence of identity).
+    pub fn with_health(
+        mut self,
+        pre: Option<HealthSnapshotEvidence>,
+        post: Option<HealthSnapshotEvidence>,
+    ) -> Self {
+        self.health_pre = pre;
+        self.health_post = post;
+        self
     }
 
     /// Extract unsigned payload for canonical JCS serialization.
@@ -152,6 +235,9 @@ impl SanitizationCertificate {
             verification: self.verification.clone(),
             journal: self.journal.clone(),
             operator: self.operator.clone(),
+            purge: self.purge.clone(),
+            health_pre: self.health_pre.clone(),
+            health_post: self.health_post.clone(),
         }
     }
 
@@ -449,10 +535,41 @@ impl SanitizationCertificate {
             self.device.stable.size_bytes as f64 / 1_000_000_000.0
         ));
         lines.push(format!("Plan Hash:         {}", self.plan_hash));
-        lines.push(format!(
-            "Mechanism:         Logical Overwrite ({} passes)",
-            self.execution.passes.len()
-        ));
+        match &self.plan.mechanism {
+            dc_core::Mechanism::LogicalOverwrite { passes } => {
+                lines.push(format!(
+                    "Mechanism:         Logical Overwrite ({} passes)",
+                    passes.len()
+                ));
+            }
+            dc_core::Mechanism::HardwarePurge {
+                selected_mechanism, ..
+            } => {
+                lines.push(format!(
+                    "Mechanism:         Hardware Purge ({})",
+                    selected_mechanism
+                ));
+            }
+        }
+
+        if let Some(purge) = &self.purge {
+            lines.push(format!(
+                "Purge Evidence:    {} (completion: {})",
+                purge.executed_mechanism, purge.completion_evidence
+            ));
+            if !purge.fallbacks.is_empty() {
+                lines.push(format!(
+                    "Purge Fallbacks:  {} (controller-rejected mechanisms)",
+                    purge.fallbacks.len()
+                ));
+            }
+        }
+        if let (Some(pre), Some(post)) = (&self.health_pre, &self.health_post) {
+            lines.push(format!(
+                "Health (pre/post): {}% / {}% used, media errors {} -> {}",
+                pre.percentage_used, post.percentage_used, pre.media_errors, post.media_errors
+            ));
+        }
 
         if self.verification.mismatch_count > 0 {
             lines.push(format!(

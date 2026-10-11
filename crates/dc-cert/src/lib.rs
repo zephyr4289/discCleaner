@@ -11,8 +11,9 @@ pub mod zone_attest;
 
 pub use cert::{
     CertVerificationResult, ExecutionDetails, ExecutionPassReport, FailureRecord,
-    InterruptionRecord, OperatorDetails, SanitizationCertificate, SignatureDetails,
-    UnsignedCertificate, VERIFICATION_SCHEME_DOC,
+    HealthSnapshotEvidence, InterruptionRecord, OperatorDetails, PurgeCertificateEvidence,
+    PurgeFallbackRecord, SanitizationCertificate, SignatureDetails, UnsignedCertificate,
+    VERIFICATION_SCHEME_DOC,
 };
 pub use dualauth::{
     AuthSignatureEntry, AuthorizationSet, CustodyType, FLEET_MANIFEST_DOMAIN, PLAN_APPROVAL_DOMAIN,
