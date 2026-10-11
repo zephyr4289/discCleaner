@@ -217,13 +217,17 @@ impl<'a> NvmePurgeClient<'a> {
     /// `/dev/nvme0n1`-style whole-namespace devices map to their trailing
     /// `n<N>` component; the controller device itself falls back to NSID 1
     /// with the derivation recorded in the returned value's provenance.
+    pub(crate) fn nsid_of_target(target_device: &str) -> u32 {
+        Self::derive_target_nsid(target_device)
+    }
+
     fn derive_nsid(permit: &PurgePermit) -> u32 {
+        Self::derive_target_nsid(&permit.target_device)
+    }
+
+    fn derive_target_nsid(target_device: &str) -> u32 {
         // Extract the trailing "n<index>" from e.g. "/dev/nvme0n3" -> 3.
-        let name = permit
-            .target_device
-            .rsplit('/')
-            .next()
-            .unwrap_or(&permit.target_device);
+        let name = target_device.rsplit('/').next().unwrap_or(target_device);
         if let Some(pos) = name.rfind('n') {
             if let Ok(nsid) = name[pos + 1..].parse::<u32>() {
                 if nsid > 0 {

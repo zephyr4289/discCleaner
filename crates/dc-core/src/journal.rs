@@ -457,8 +457,20 @@ impl JournalReader {
                 }
             };
 
-            // Inspect Header (Record 0) for sealed journal state and UUID (Δ39, Δ40)
+            // Inspect Header (Record 0) for sealed journal state and UUID (Δ39, Δ40).
+            // REG-JOURNAL-HEADER-FIRST: record 0 MUST be a Header. Without
+            // this invariant a sealed journal whose first record is anything
+            // else desynchronizes the parser (the record-0 signature bytes
+            // would be consumed as the next length prefix).
             if record_idx == 0 {
+                if !matches!(record, JournalRecord::Header { .. }) {
+                    return Err(DcError::JournalCorrupt {
+                        record_index: 0,
+                        reason: "FIRST_RECORD_NOT_HEADER: the DCJ1 format requires record #0 \
+                                 to be the Header record"
+                            .to_string(),
+                    });
+                }
                 if let JournalRecord::Header {
                     ref uuid,
                     sealed,

@@ -153,3 +153,79 @@ mod tests {
         assert!(engine.caps().window_bytes > 0);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit test layer (additional, focused on hardened invariants)
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn lbaspan_window_count_is_overflow_safe() {
+        // REG-LBASPAN-OVERFLOW: near-u64::MAX sizes must not wrap.
+        let span = LbaSpan::new(u64::MAX, 512, 2 * 1024 * 1024);
+        let expected = u64::MAX.div_ceil(2 * 1024 * 1024);
+        assert_eq!(span.total_windows(), expected);
+
+        // Exact multiple: no phantom extra window.
+        let exact = LbaSpan::new(8 * 1024 * 1024, 512, 2 * 1024 * 1024);
+        assert_eq!(exact.total_windows(), 4);
+
+        // Short tail window.
+        let short = LbaSpan::new(8 * 1024 * 1024 + 1, 512, 2 * 1024 * 1024);
+        assert_eq!(short.total_windows(), 5);
+        let (off, len) = short.window_byte_range(4);
+        assert_eq!(off, 8 * 1024 * 1024);
+        assert_eq!(len as u64, 1);
+    }
+
+    #[test]
+    fn lbaspan_window_range_saturates_instead_of_wrapping() {
+        let span = LbaSpan::new(u64::MAX, 512, 4096);
+        let (off, len) = span.window_byte_range(u64::MAX);
+        assert_eq!(off, u64::MAX, "offset saturates");
+        assert_eq!(len, 0, "no bytes exist past a saturated offset");
+    }
+
+    #[test]
+    fn buffer_allocation_refuses_overflowing_sizes() {
+        // REG-BUFFERPOOL-OVERFLOW: a size near usize::MAX must error, not
+        // wrap to a tiny allocation.
+        assert!(AlignedBuffer::allocate(usize::MAX - 16, 4096).is_err());
+        assert!(AlignedBuffer::allocate(0, 4096).is_err());
+        assert!(AlignedBuffer::allocate(2 * 1024 * 1024, 4096).is_ok());
+    }
+
+    #[test]
+    fn buffer_pool_total_footprint_is_capped() {
+        // 1 GiB pool is fine; 8 GiB is refused.
+        assert!(BufferPool::new(64, 16 * 1024 * 1024).is_ok()); // 1 GiB
+        assert!(BufferPool::new(512, 16 * 1024 * 1024).is_err()); // 8 GiB
+    }
+
+    #[test]
+    fn completion_tracker_never_commits_across_holes() {
+        // INV2: the committed range never contains a hole.
+        let mut tracker = CompletionTracker::new(0);
+        tracker.on_cqe(2);
+        assert!(!tracker.can_commit(), "hole at 0 blocks commits");
+        tracker.on_cqe(0);
+        tracker.on_cqe(1);
+        let spec = tracker.commit_all_contiguous().unwrap();
+        assert_eq!(spec.first_window, 0);
+        assert_eq!(spec.num_windows, 3);
+        // Window 2 was harvested but the commit request below the watermark
+        // must not double-commit.
+        assert!(tracker.commit(100).is_none());
+    }
+
+    #[test]
+    fn window_geometry_validates_block_alignment() {
+        assert!(WindowGeometry::new(1024, 0, 512).is_err());
+        assert!(WindowGeometry::new(1024, 512, 300).is_err()); // window not block-multiple
+        let g = WindowGeometry::new(64 * 1024 * 1024, 512, 2 * 1024 * 1024).unwrap();
+        assert_eq!(g.total_windows, 32);
+        assert!(g.short_window_bytes.is_none());
+    }
+}

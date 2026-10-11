@@ -56,7 +56,7 @@ impl SatTransferClass {
         match self {
             SatTransferClass::None => 0x00,
             SatTransferClass::DataIn => 0x2E, // CK_COND=1, T_DIR=1, BYTE_BLOCK=1, T_LENGTH=2
-            SatTransferClass::DataOut => 0x0E, // BYTE_BLOCK=1, T_LENGTH=2
+            SatTransferClass::DataOut => 0x06, // BYTE_BLOCK=1, T_LENGTH=2, T_DIR=0
         }
     }
 }
