@@ -1,0 +1,56 @@
+[workspace]
+members = ["."]
+
+[package]
+name = "dc-fuzz"
+version = "0.9.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dc-tpm = { path = "../crates/dc-tpm" }
+dc-photon = { path = "../crates/dc-photon" }
+dc-nvme = { path = "../crates/dc-nvme" }
+dc-hw = { path = "../crates/dc-hw" }
+
+# Pin the libFuzzer harness profile: coverage instrumentation, no unwinding
+# of intentional panics (any panic IS the finding).
+[profile.release]
+debug = 1
+
+# Each fuzz target is its own binary (cargo-fuzz convention).
+[[bin]]
+name = "tpm_response"
+path = "fuzz_targets/tpm_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "photon_frame"
+path = "fuzz_targets/photon_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "photon_lt_decoder"
+path = "fuzz_targets/photon_lt_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nvme_fabrics"
+path = "fuzz_targets/nvme_fabrics.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scsi_decoders"
+path = "fuzz_targets/scsi_decoders.rs"
+test = false
+doc = false
+bench = false

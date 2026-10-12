@@ -568,6 +568,9 @@ pub fn parse_attestation(params: &[u8]) -> WireResult<QuoteAttestation> {
 /// `TPMT_SIGNATURE` (ECDSA flavor).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EcdsaSignature {
+    /// Signature algorithm (must be `TPM_ALG_ECDSA` — verified by the
+    /// replay ladder; a doctored scheme word is a doctored quote).
+    pub alg: u16,
     pub hash_alg: u16,
     pub r: Vec<u8>,
     pub s: Vec<u8>,
@@ -575,11 +578,12 @@ pub struct EcdsaSignature {
 
 pub fn parse_ecdsa_signature(params: &[u8]) -> WireResult<EcdsaSignature> {
     let mut r = Reader::new(params);
-    let _alg = r.u16()?;
+    let alg = r.u16()?;
     let hash_alg = r.u16()?;
     let r_bytes = r.tpm2b()?;
     let s_bytes = r.tpm2b()?;
     Ok(EcdsaSignature {
+        alg,
         hash_alg,
         r: r_bytes,
         s: s_bytes,

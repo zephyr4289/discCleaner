@@ -649,6 +649,12 @@ mod tests {
         let s = hex::decode(&bundle.signature_s_hex).unwrap();
         let mut der = Vec::new();
         for part in [&r, &s] {
+            // Minimal DER INTEGERs (same v0.9.0 fix as the verify ladder:
+            // fixed-width components with leading zeros must be stripped).
+            let mut part = part.as_slice();
+            while part.len() > 1 && part[0] == 0 {
+                part = &part[1..];
+            }
             let lead = usize::from(part.first().map(|b| b & 0x80 != 0).unwrap_or(false));
             der.push(0x02);
             der.push((part.len() + lead) as u8);

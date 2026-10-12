@@ -19,6 +19,7 @@ libc = { workspace = true }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 [dev-dependencies]
+proptest = { workspace = true }
 tempfile = "3.14"
 rand_core = { workspace = true }
 
