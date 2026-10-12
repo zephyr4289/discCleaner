@@ -11,7 +11,7 @@
 `dc` is a self-contained, statically linked, zero-dependency storage sanitization suite engineered for NVMe, SATA, SAS/SCSI, USB-bridged (SAT), eMMC/UFS, TCG Opal self-encrypting (SED), and Host-Managed SMR/ZNS storage. It executes **NIST SP 800-88 Rev 1** Clear and Purge operations, issuing cryptographically signed, third-party-verifiable evidence packages that survive crashes, power loss, and adversarial cross-examination.
 
 ```
-Version       : v0.10.0 (Operator Dashboard · AWS EBS cloud lifecycle w/ hybrid-signed receipts · ML-DSA-44 post-quantum audit signatures)
+Version       : v0.11.0 (Zero-knowledge audit receipts · CXL Type 3 memory sanitization · formal verification)
 Target Triples: x86_64-unknown-linux-musl · aarch64-unknown-linux-musl
 Runtime Deps  : Zero external binaries, zero dynamic libraries
 Crates        : 22 modular workspace crates
@@ -35,6 +35,9 @@ Verification  : Ed25519+ML-DSA-44 hybrid + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3
 - [Operator Dashboard (v0.10.0)](#operator-dashboard-v0100)
 - [Cloud Block-Storage Lifecycle (v0.10.0)](#cloud-block-storage-lifecycle-v0100)
 - [Post-Quantum Audit Signatures (v0.10.0)](#post-quantum-audit-signatures-v0100)
+- [Zero-Knowledge Audit Receipts (v0.11.0)](#zero-knowledge-audit-receipts-v0110)
+- [CXL Type 3 Memory Sanitization (v0.11.0)](#cxl-type-3-memory-sanitization-v0110)
+- [Formal Verification (v0.11.0)](#formal-verification-v0110)
 - [Standalone Boot Environment](#standalone-boot-environment)
 - [Engineering Discipline & Testkit](#engineering-discipline--testkit)
 - [Standards & Compliance](#standards--compliance)
@@ -435,6 +438,67 @@ fully valid and verifiable. See [docs/post-quantum.md](docs/post-quantum.md).
 dc keygen --out operator.sk            # Ed25519 + ML-DSA-44 twin (hybrid-ready)
 dc cert verify --file wipe.cert.json   # verifies both legs when present
 ```
+
+## Zero-Knowledge Audit Receipts (v0.11.0)
+
+Regulators and customers demand proof that a drive was wiped to NIST SP 800-88
+Purge standards — but the raw evidence contains confidential metadata (serial
+numbers, cloud Account IDs, host topology, operator identity). `dc zk` proves
+compliance **in zero knowledge** with Groth16 over a from-scratch, zero-dependency
+BLS12-381 stack (Montgomery fields, 2-6-12 tower, ate pairing, R1CS, Poseidon
+sponge, compressed 192-byte proofs). The circuit enforces: successful controller
+sanitize, ≥ 1 purge pass, full block-level verification, and binds the
+profile/tenant/timestamp statement — without revealing any private field.
+Receipts verify against a pinned verifying-key fingerprint in milliseconds.
+
+```bash
+dc zk setup --out-dir zk-keys/                       # one-time ceremony
+dc zk prove --pk zk-keys/zk-pk.json --certificate wipe.cert.json \
+            --tenant 0xtenant --receipt proof.json   # ~20 s, pure Rust
+dc zk verify --vk zk-keys/zk-vk.json --receipt proof.json --expect-tenant 0xtenant
+```
+
+See [docs/zk-audit.md](docs/zk-audit.md) for the circuit table, trust model
+(single-party ceremony, attributable via VK fingerprints) and performance notes.
+
+## CXL Type 3 Memory Sanitization (v0.11.0)
+
+Hyperscaler AI clusters and in-memory databases keep secrets in CXL Type 3
+persistent memory on the PCIe bus — media that no block-level tool can touch.
+`dc cxl` discovers CXL memdevs via `/sys/bus/cxl` + PCIe DVSEC parsing, drives
+the **Memory Device Mailbox** over MMIO, and issues `Sanitize` (opcode 0x4400,
+background overwrite of all media) and `Secure Erase` (0x4401, cryptographic
+erase) with full progress telemetry. Certificates gain a signature-covered
+evidence extension binding the component register hashes, Identify digest and
+a sampled all-zero read-back of the media. `--mock` runs the identical
+lifecycle against a built-in Type 3 simulator (including a fault-injection
+mode that "completes" without erasing — the verification layer must catch it).
+
+```bash
+dc cxl list
+dc cxl sanitize mem0 --evidence-out cxl-evidence.json
+```
+
+See [docs/cxl-sanitization.md](docs/cxl-sanitization.md).
+
+## Formal Verification (v0.11.0)
+
+Unit tests find bugs; formal methods prove their absence where it matters most.
+`dc formal check` exhaustively explores the sanitization FSM state space
+(state-merged BFS) proving: certification requires verification (INV-1),
+write permits mint only in destructive states (INV-2), and `Certified` is
+reachable only through `Verifying` (INV-3). `dc formal verify-model` proves the
+window-accounting abstraction exact and validates the real verifier against it
+on all bounded inputs. On top, `#[cfg(kani)]` harnesses symbolically prove the
+same invariants plus SecretBuf zeroization (any content, any path, all-zero
+after wipe) — run via `scripts/kani-run.sh` and the scheduled CI workflow.
+
+```bash
+dc formal check --depth 7
+dc formal verify-model --windows 12
+```
+
+See [docs/formal-verification.md](docs/formal-verification.md).
 
 ## Standalone Boot Environment
 

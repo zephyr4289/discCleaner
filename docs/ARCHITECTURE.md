@@ -34,6 +34,28 @@ gates everything; the Guardian decides; engines only write with a
 permit minted by the FSM in dc-core; codecs are pure; the testkit is the
 adversary and stays out of release binaries.
 
+
+## The v0.11.0 frontiers (ZK, CXL, formal)
+
+Three new layers extend the evidence chain without weakening the layer law:
+
+* **`dc-zk`** — a self-contained Groth16 ZK-SNARK stack over BLS12-381
+  (Montgomery fields → 2-6-12 tower → ate pairing → R1CS → Poseidon →
+  compliance circuit → receipts). Zero external cryptographic
+  dependencies; every constant regenerated programmatically from ground
+  truth and pinned by tests. Consumed by `dc zk` and the `SanitizationCertificate.zk`
+  statement extension.
+* **`dc-cxl`** — CXL 2.0/3.0 Type 3 memory-device sanitization: sysfs/DVSEC
+  discovery, Memory Device Mailbox protocol engine over a `MailboxBackend`
+  trait (production volatile-MMIO backend + full mock simulator), sanitize
+  (0x4400) / secure-erase (0x4401), and the signature-covered
+  `SanitizationCertificate.cxl` evidence extension.
+* **`dc-verify-formal`** — formal layer: always-on exhaustive state-merged
+  model checking of the real FSM (INV-1/2/3 run in every
+  `cargo test --workspace`), a verified-abstraction refinement check for the
+  window accounting, and `#[cfg(kani)]` bounded symbolic proofs (FSM guards,
+  SecretBuf zeroization). Proof artifacts land in `proofs/`.
+
 ## The evidence chain
 
 1. `dc plan` compiles a typed `SanitizationPlan` and hashes its JCS form.

@@ -3,10 +3,12 @@ pub mod bench;
 pub mod bootattest;
 pub mod bootiso;
 pub mod cloudcmd;
+pub mod cxlcmd;
 pub mod evidence;
 pub mod execute;
 pub mod fabrics;
 pub mod fleet;
+pub mod formalcmd;
 pub mod hybridsign;
 pub mod init;
 pub mod iscsi;
@@ -17,6 +19,7 @@ pub mod purge;
 pub mod quote;
 pub mod serve;
 pub mod stick_install;
+pub mod zkcmd;
 
 pub use profiles::ProfileOption;
 
@@ -112,7 +115,7 @@ fn cli_signal_injection(_event: &str) {}
 #[command(
     name = "diskcleaner",
     author = "Forensic Systems Engineering Team",
-    version = "0.10.0",
+    version = "0.11.0",
     about = "Military-grade storage sanitization and forensic verification suite",
     long_about = "Implements NIST SP 800-88 Rev 1, IEEE 2883-2022, and DoD media sanitization standards with deterministic cryptographic verification and tamper-evident audit logs."
 )]
@@ -204,6 +207,142 @@ pub enum Commands {
     /// Cloud block-storage lifecycle: attach -> sanitize -> verify ->
     /// detach with hybrid-signed audit receipts (v0.10.0, Frontier 2)
     Cloud(CloudArgs),
+
+    /// Zero-knowledge audit receipts: prove NIST purge compliance in
+    /// zero knowledge with Groth16 over a pure-Rust BLS12-381
+    /// (v0.11.0, Frontier 1)
+    Zk(ZkArgs),
+
+    /// CXL 2.0/3.0 Type 3 memory-device sanitization via the Memory
+    /// Device Mailbox (v0.11.0, Frontier 2)
+    Cxl(CxlArgs),
+
+    /// Formal verification: exhaustive model checks and Kani proof
+    /// harnesses for the sanitization core (v0.11.0, Frontier 3)
+    Formal(FormalArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ZkArgs {
+    #[command(subcommand)]
+    pub sub: ZkSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ZkSubcommands {
+    /// One-time Groth16 ceremony: generate proving/verifying keys
+    Setup {
+        /// Output directory for zk-pk.json / zk-vk.json
+        #[arg(long, default_value = ".")]
+        out_dir: PathBuf,
+        /// Deterministic seed (hex) — reproducible ceremonies for drills
+        #[arg(long)]
+        seed: Option<String>,
+    },
+    /// Produce a zero-knowledge compliance receipt from a certificate
+    Prove {
+        /// Proving key (zk-pk.json)
+        #[arg(long)]
+        pk: PathBuf,
+        /// SanitizationCertificate (JSON) the witness is derived from
+        #[arg(long)]
+        certificate: PathBuf,
+        /// Tenant identity the audit is owed to (hex; "0" = anonymous)
+        #[arg(long, default_value = "0")]
+        tenant: String,
+        /// Operator secret (hex) — defaults to a public-key-derived value
+        #[arg(long)]
+        operator_secret: Option<String>,
+        /// Blinding nonce (hex) — defaults to fresh OS entropy
+        #[arg(long)]
+        nonce: Option<String>,
+        /// Receipt output path
+        #[arg(long)]
+        receipt_out: PathBuf,
+    },
+    /// Verify a receipt against a verifying key
+    Verify {
+        /// Verifying key (zk-vk.json)
+        #[arg(long)]
+        vk: PathBuf,
+        /// Receipt artifact (zk-receipt.json)
+        #[arg(long)]
+        receipt: PathBuf,
+        /// Require this tenant id (hex)
+        #[arg(long)]
+        expect_tenant: Option<String>,
+        /// Require this profile hash (hex)
+        #[arg(long)]
+        expect_profile: Option<String>,
+        /// Require this verifying-key BLAKE3 fingerprint
+        #[arg(long)]
+        expect_vk_fingerprint: Option<String>,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct CxlArgs {
+    #[command(subcommand)]
+    pub sub: CxlSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CxlSubcommands {
+    /// Enumerate CXL Type 3 memory devices
+    List {
+        /// sysfs root (default /sys)
+        sysfs: Option<String>,
+    },
+    /// Identify + security state for one device
+    Status {
+        /// memdev name (e.g. mem0) — with --mock, a simulated device
+        device: String,
+        /// Run against the in-memory Type 3 simulator
+        #[arg(long)]
+        mock: bool,
+    },
+    /// Background sanitize (opcode 0x4400 — overwrite all media)
+    Sanitize {
+        device: String,
+        #[arg(long)]
+        mock: bool,
+        /// Evidence output path (JSON)
+        #[arg(long)]
+        evidence_out: Option<PathBuf>,
+    },
+    /// Foreground secure erase (opcode 0x4401 — cryptographic erase)
+    Erase {
+        device: String,
+        #[arg(long)]
+        mock: bool,
+        #[arg(long)]
+        evidence_out: Option<PathBuf>,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct FormalArgs {
+    #[command(subcommand)]
+    pub sub: FormalSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FormalSubcommands {
+    /// Run the exhaustive sanitization-FSM model check
+    Check {
+        /// Exploration depth (7 covers the shortest accepting path)
+        #[arg(long, default_value_t = 7)]
+        depth: u32,
+        /// Write the proof report JSON here
+        #[arg(long)]
+        report_out: Option<PathBuf>,
+    },
+    /// Run the verified-abstraction refinement check (window accounting)
+    VerifyModel {
+        /// Window count for the exhaustive refinement (max 16)
+        #[arg(long, default_value_t = 12)]
+        windows: u32,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -1144,6 +1283,9 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Iscsi(_) => "iscsi",
         Commands::Serve(_) => "serve",
         Commands::Cloud(_) => "cloud",
+        Commands::Zk(_) => "zk",
+        Commands::Cxl(_) => "cxl",
+        Commands::Formal(_) => "formal",
     }
 }
 
@@ -1243,6 +1385,18 @@ fn run_with_fleet_slot(
         }
         Commands::Cloud(args) => {
             cloudcmd::cmd_cloud(args)?;
+            Ok(())
+        }
+        Commands::Zk(args) => {
+            zkcmd::cmd_zk(args)?;
+            Ok(())
+        }
+        Commands::Cxl(args) => {
+            cxlcmd::cmd_cxl(args)?;
+            Ok(())
+        }
+        Commands::Formal(args) => {
+            formalcmd::cmd_formal(args)?;
             Ok(())
         }
     }
