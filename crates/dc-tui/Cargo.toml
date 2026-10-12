@@ -1,9 +1,10 @@
 [package]
 name = "dc-tui"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 
 [dependencies]
+dc-photon = { workspace = true }
 dc-core = { workspace = true }
 serde = { workspace = true }
 blake3 = { workspace = true }
