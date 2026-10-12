@@ -1,6 +1,6 @@
 [package]
 name = "dc-hw"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "Pure hardware protocol codecs (NVMe, ATA, SCSI) for diskcleaner"
 

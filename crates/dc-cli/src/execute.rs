@@ -1180,7 +1180,7 @@ fn execute_device_inner(
             elapsed_us: report.elapsed_us,
         });
     }
-    cert.sign(&keypair)?;
+    crate::hybridsign::sign_certificate(&mut cert, &keypair, shared.key.as_deref())?;
 
     let cert_filename = format!("{}.cert.json", journal_filename.trim_end_matches(".dcj"));
     let cert_path = shared.out_dir.join(&cert_filename);

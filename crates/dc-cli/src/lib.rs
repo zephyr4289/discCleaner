@@ -2,10 +2,12 @@ pub mod approve;
 pub mod bench;
 pub mod bootattest;
 pub mod bootiso;
+pub mod cloudcmd;
 pub mod evidence;
 pub mod execute;
 pub mod fabrics;
 pub mod fleet;
+pub mod hybridsign;
 pub mod init;
 pub mod iscsi;
 pub mod key;
@@ -13,6 +15,7 @@ pub mod photon;
 pub mod profiles;
 pub mod purge;
 pub mod quote;
+pub mod serve;
 pub mod stick_install;
 
 pub use profiles::ProfileOption;
@@ -109,7 +112,7 @@ fn cli_signal_injection(_event: &str) {}
 #[command(
     name = "diskcleaner",
     author = "Forensic Systems Engineering Team",
-    version = "0.9.0",
+    version = "0.10.0",
     about = "Military-grade storage sanitization and forensic verification suite",
     long_about = "Implements NIST SP 800-88 Rev 1, IEEE 2883-2022, and DoD media sanitization standards with deterministic cryptographic verification and tamper-evident audit logs."
 )]
@@ -193,6 +196,14 @@ pub enum Commands {
     /// Native iSCSI target discovery and in-band remote SCSI
     /// sanitization (v0.9.0, Phase 4)
     Iscsi(IscsiArgs),
+
+    /// Visual operator dashboard: embedded HTTP/SSE server with a REST
+    /// control plane over the real engine (v0.10.0, Frontier 1)
+    Serve(ServeArgs),
+
+    /// Cloud block-storage lifecycle: attach -> sanitize -> verify ->
+    /// detach with hybrid-signed audit receipts (v0.10.0, Frontier 2)
+    Cloud(CloudArgs),
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -838,6 +849,102 @@ pub struct IscsiArgs {
     pub sub: IscsiSubcommands,
 }
 
+/// `dc serve` — the visual operator dashboard (v0.10.0, Frontier 1).
+#[derive(Args, Debug)]
+pub struct ServeArgs {
+    #[command(subcommand)]
+    pub sub: ServeSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServeSubcommands {
+    /// Start the dashboard server (Ctrl-C to stop)
+    Start {
+        /// Listen address (DEFAULT 127.0.0.1:8087 — remote binds require
+        /// a token and a TLS reverse proxy)
+        #[arg(long, default_value = "127.0.0.1:8087")]
+        listen: String,
+        /// Explicit bearer token (>= 32 chars; generated when omitted)
+        #[arg(long)]
+        token: Option<String>,
+        /// Read the token from a 0600-mode file
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+        /// Directory scanned for certificates (matches execute's --out-dir)
+        #[arg(long, default_value = "certificates")]
+        cert_dir: PathBuf,
+    },
+}
+
+impl ServeArgs {
+    pub fn listen(&self) -> String {
+        match &self.sub {
+            ServeSubcommands::Start { listen, .. } => listen.clone(),
+        }
+    }
+    pub fn token(&self) -> &Option<String> {
+        match &self.sub {
+            ServeSubcommands::Start { token, .. } => token,
+        }
+    }
+    pub fn token_file(&self) -> &Option<PathBuf> {
+        match &self.sub {
+            ServeSubcommands::Start { token_file, .. } => token_file,
+        }
+    }
+    pub fn cert_dir(&self) -> PathBuf {
+        match &self.sub {
+            ServeSubcommands::Start { cert_dir, .. } => cert_dir.clone(),
+        }
+    }
+    pub fn self_exe(&self) -> PathBuf {
+        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("dc"))
+    }
+}
+
+/// `dc cloud` — cloud block-storage lifecycle (v0.10.0, Frontier 2).
+#[derive(Args, Debug)]
+pub struct CloudArgs {
+    #[command(subcommand)]
+    pub sub: CloudSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CloudSubcommands {
+    /// List the available cloud providers
+    Providers,
+    /// Read-only pre-flight report for a volume
+    Describe {
+        /// Provider: aws | mock
+        provider: String,
+        /// Volume id (e.g. vol-0abc123def)
+        volume: String,
+    },
+    /// Dry-run the full lifecycle (no API mutations, no writes)
+    Plan {
+        provider: String,
+        volume: String,
+        /// Attachment device name (e.g. /dev/sdf)
+        #[arg(long, default_value = "/dev/sdf")]
+        device: String,
+    },
+    /// attach -> sanitize -> verify -> detach with a signed audit receipt
+    /// (report-then-destroy: requires --execute to arm)
+    Wipe {
+        provider: String,
+        volume: String,
+        #[arg(long, default_value = "/dev/sdf")]
+        device: String,
+        /// ARMING FLAG: without it the command is a dry-run
+        #[arg(long)]
+        execute: bool,
+        /// Operator signing key for the receipt (Ed25519; ML-DSA sibling
+        /// at <key>.pq adds the post-quantum leg)
+        #[arg(short, long)]
+        key: Option<PathBuf>,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum IscsiSubcommands {
     /// Discover the iSCSI targets advertised by a portal (SendTargets=All)
@@ -1035,6 +1142,8 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Photon(_) => "photon",
         Commands::Fabrics(_) => "fabrics",
         Commands::Iscsi(_) => "iscsi",
+        Commands::Serve(_) => "serve",
+        Commands::Cloud(_) => "cloud",
     }
 }
 
@@ -1126,6 +1235,14 @@ fn run_with_fleet_slot(
         }
         Commands::Iscsi(args) => {
             iscsi::cmd_iscsi(args)?;
+            Ok(())
+        }
+        Commands::Serve(args) => {
+            serve::cmd_serve(args)?;
+            Ok(())
+        }
+        Commands::Cloud(args) => {
+            cloudcmd::cmd_cloud(args)?;
             Ok(())
         }
     }
@@ -1937,7 +2054,7 @@ fn cmd_resume(args: ResumeArgs, audit: &mut Option<AuditLogger>) -> Result<(), D
         keypair.key_fingerprint_blake3(),
     );
 
-    cert.sign(&keypair)?;
+    crate::hybridsign::sign_certificate(&mut cert, &keypair, args.key.as_deref())?;
 
     let cert_filename = format!(
         "{}.cert.json",
@@ -2296,7 +2413,7 @@ fn cmd_cert_reconstruct(
         keypair.key_fingerprint_blake3(),
     );
 
-    cert.sign(&keypair)?;
+    crate::hybridsign::sign_certificate(&mut cert, &keypair, key_path)?;
 
     let cert_filename = format!(
         "{}.cert.json",
@@ -2326,6 +2443,18 @@ fn cmd_keygen(args: KeygenArgs) -> Result<(), DcError> {
     println!(
         "    Key Fingerprint:     {}",
         keypair.key_fingerprint_blake3()
+    );
+
+    // v0.10.0: the post-quantum twin — certificates signed with this key
+    // pair on file are hybrid-signed (Ed25519 + ML-DSA-44) automatically.
+    let pq_key = dc_cert::MlDsaOperatorKey::generate()?;
+    let pq_path = dc_cert::MlDsaOperatorKey::sibling_path(&args.out);
+    pq_key.save_to_file(&pq_path)?;
+    println!("[+] Generated post-quantum ML-DSA-44 twin (hybrid signing ready)");
+    println!("    PQ Private Key File: {}", pq_path.display());
+    println!(
+        "    PQ Fingerprint:      {}",
+        pq_key.key_fingerprint_blake3()
     );
     Ok(())
 }

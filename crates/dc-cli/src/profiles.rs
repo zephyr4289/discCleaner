@@ -196,6 +196,22 @@ fn short_ref(p: &SanitizationProfile) -> &'static str {
     }
 }
 
+/// All catalog slugs — the dashboard's supported-profile list
+/// (single source of truth).
+pub fn catalog_slugs() -> &'static [&'static str] {
+    &[
+        "nist-clear",
+        "nist-clear-random",
+        "certin-goi",
+        "dod-5220.22m",
+        "dod-5220.22m-ece",
+        "csec-itsg-06",
+        "bsi-vsitr",
+        "schneier",
+        "gutmann",
+    ]
+}
+
 fn profile_slug(p: &SanitizationProfile) -> &'static str {
     match p {
         SanitizationProfile::NistClear => "nist-clear",
