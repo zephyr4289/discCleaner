@@ -1,6 +1,6 @@
 # diskCleaner (`dc`)
 
-[![Version](https://img.shields.io/badge/version-v0.6.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
+[![Version](https://img.shields.io/badge/version-v0.7.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64--musl-blueviolet.svg)](https://github.com/zephyr4289/discCleaner)
 [![Standards](https://img.shields.io/badge/standards-NIST%20SP%20800--88%20%7C%20IEEE%202883--2022-orange.svg)](diskCleaner.md)
@@ -11,7 +11,7 @@
 `dc` is a self-contained, statically linked, zero-dependency storage sanitization suite engineered for NVMe, SATA, SAS/SCSI, USB-bridged (SAT), eMMC/UFS, TCG Opal self-encrypting (SED), and Host-Managed SMR/ZNS storage. It executes **NIST SP 800-88 Rev 1** Clear and Purge operations, issuing cryptographically signed, third-party-verifiable evidence packages that survive crashes, power loss, and adversarial cross-examination.
 
 ```
-Version       : v0.6.0 (Universal Purge · ISO 19005-3 archival · defense policy guard)
+Version       : v0.7.0 (Hardware custody · cold-bus remediation · RAM appliance · firmware attestation)
 Target Triples: x86_64-unknown-linux-musl · aarch64-unknown-linux-musl
 Runtime Deps  : Zero external binaries, zero dynamic libraries
 Crates        : 15 modular workspace crates (25,000+ Rust LOC)
@@ -204,6 +204,22 @@ dc execute --target /dev/sda --target /dev/sdb --target /dev/nvme0n1 \
 # Bake-off evidence: production-engine throughput + per-profile ETA table
 dc bench --file /scratch/bench.raw --size-mib 2048 --ref-gib 4000
 ```
+
+### 8. Hardware Token Custody — PIV/CAC/YubiKey 2PI (v0.7.0)
+
+Two-Person Integrity signatures can now be computed **inside a hardware secure element** instead of a keyfile: `dc approve --token auto` discovers USB CCID readers (sysfs walk, no udev), opens the PIV application (SP 800-73-4 AID), verifies the officer PIN on `/dev/tty` with echo disabled, and issues the countersignature via PIV GENERAL AUTHENTICATE in slot 9C — Ed25519 (YubiKey 5.2.3+, alg 0xE0) or ECDSA P-256 (CAC, alg 0x11, as a custody co-proof). `is_hardware_token` is no longer a self-attested boolean: every hardware claim must carry a `HardwareCustodyAttestation` (PIN-verified transcript, USB coordinates, message binding, key disclosure) and the 2PI gate refuses `SeparateHardware` custody without one. No PKCS#11 shared library is ever loaded — the ISO 7816-4 APDU and CCID bulk protocols are spoken directly over usbfs ioctls, in the same bounded-unsafe style as the SG_IO/NVMe transports.
+
+### 9. Cold-Bus Freeze Remediation & Thermal Stewardship (v0.7.0)
+
+Lights-out data centers cannot power-cycle a frozen SATA drive: `dc purge --cold-unfreeze` walks the kernel-sanctioned sysfs ladder — SCSI LUN delete + host rescan (a libata COMRESET of the link) then ATA-port runtime-PM cycle (`power/control` auto → suspended → on) — re-probing IDENTIFY after every step and ending with the honest manual advisory if the controller keeps the lock. The run never fabricates success: only a fresh `frozen == false` IDENTIFY clears the gate, and every sysfs write lands in the certificate (`coldbus-reset-steps.json` PDF attachment). Meanwhile the thermal governor watches the media through three thermometers (SMART attr 194/190 via the purge transport, NVMe Health Log composite temperature, SCSI LOG SENSE page 0x0D, kernel hwmon for the overwrite engines): above 55 °C writes are adaptively paced, at 70 °C the run aborts and certification is refused — media health outranks completion.
+
+### 10. Standalone RAM-Resident Appliance (v0.7.0)
+
+`dc boot init` is a REAL PID-1: it mounts proc/sysfs/devtmpfs/devpts/efivarfs via raw mount(2), harvests hardware randomness (x86 RDRAND / `/dev/hwrng`) and credits it through the `RNDADDENTROPY` ioctl (entropy starvation remains a hard refusal), and installs the SIGCHLD zombie reaper a true Linux init must have. `scripts/build-appliance.sh` assembles the boot kit: a statically-linked musl `dc` as the entire userspace, embedded in a deterministic pure-Rust cpio `newc` initramfs (`dc boot pack`), with a constituents manifest (kernel/binary/initramfs BLAKE3 hashes) that the boot-time attestation re-verifies — tampered images are refused with `APPLIANCE_ATTESTATION_FAILED`. Booted from USB/PXE, the whole OS runs from RAM and every physical drive is unmounted and sanitizable, including the disk the old OS ran from.
+
+### 11. Deep Controller Forensics & Firmware Attestation (v0.7.0)
+
+Certificates now prove WHICH firmware sanitized the media: NVMe runs capture Identify (FR revision, SSVID subsystem identity) plus the Telemetry Host-Initiated log (LID 0x07, fresh-snapshot LSP) before and after the purge; ATA runs capture IDENTIFY firmware plus the Device Statistics log (GP 0x04) — Percentage Used Endurance, Logical Sectors Written — via READ LOG EXT; SAS runs capture INQUIRY identity. A firmware revision that CHANGED inside the sanitization window, or wear counters that did not move while a write mechanism claims to have run, are disclosed as signed DEFENSE_WARNINGs; the raw telemetry bytes ride as PDF/A-3 attachments for independent analysis.
 
 ### 8. Universal Hardware Purge + Court-Grade Archives (v0.6.0)
 ```bash

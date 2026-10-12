@@ -62,6 +62,7 @@ fn run_pre_arm_gating_tests(ledger: &RigLedger) {
         .to_hex()
         .to_string(),
         is_hardware_token: false,
+        hardware_attestation: None,
     });
     forged.add_signature(dc_cert::AuthSignatureEntry {
         key_fingerprint: blake3::hash(b"OFFICER_B_KEY_HASH").to_hex().to_string(),
@@ -72,6 +73,7 @@ fn run_pre_arm_gating_tests(ledger: &RigLedger) {
         .to_hex()
         .to_string(),
         is_hardware_token: false,
+        hardware_attestation: None,
     });
     let res_forged = forged.verify_pre_arm_authorization(plan_hash, true);
     assert!(
@@ -80,11 +82,27 @@ fn run_pre_arm_gating_tests(ledger: &RigLedger) {
     );
 
     // 4. One officer signing twice with two entries is NOT two-person control.
+    //    (v0.7.0: the second entry's hardware CLAIM without a PIV
+    //    attestation is now itself a hard refusal — the 2PI completeness
+    //    check fires for unclaimed software signatures.)
     let mut same_officer_twice = AuthorizationSet::new(plan_hash);
     same_officer_twice.add_signature(PlanApprover::countersign_plan(plan_hash, &officer_a, false));
     same_officer_twice.add_signature(PlanApprover::countersign_plan(plan_hash, &officer_a, true));
     let res_same = same_officer_twice.verify_pre_arm_authorization(plan_hash, true);
-    assert_eq!(res_same, Err("AUTHORIZATION_INCOMPLETE"));
+    assert_eq!(
+        res_same,
+        Err("HW_CUSTODY_CLAIM_WITHOUT_ATTESTATION"),
+        "a bare is_hardware_token claim must be refused before the 2PI check"
+    );
+
+    // 4b. Same key twice, both software entries: AUTHORIZATION_INCOMPLETE.
+    let mut same_officer_soft = AuthorizationSet::new(plan_hash);
+    same_officer_soft.add_signature(PlanApprover::countersign_plan(plan_hash, &officer_a, false));
+    same_officer_soft.add_signature(PlanApprover::countersign_plan(plan_hash, &officer_a, false));
+    assert_eq!(
+        same_officer_soft.verify_pre_arm_authorization(plan_hash, true),
+        Err("AUTHORIZATION_INCOMPLETE")
+    );
 
     // 5. A signature bound to a different plan hash must be rejected.
     let other_hash = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -123,7 +141,7 @@ fn run_pre_arm_gating_tests(ledger: &RigLedger) {
         "M2.4-GATE",
         "GATE-SAME-KEY-REFUSED",
         "true",
-        (res_same == Err("AUTHORIZATION_INCOMPLETE")).to_string(),
+        res_same.is_err().to_string(),
         None,
     );
     ledger.assert(
@@ -151,15 +169,111 @@ fn run_custody_vocabulary_tests(ledger: &RigLedger) {
         CustodyType::SharedFilesystem
     );
 
-    // 2. Hardware HSM pair -> separate-hardware
-    let hsm_a = OperatorKeyPair::generate();
-    let hsm_b = OperatorKeyPair::generate();
+    // 2. Hardware token pair -> separate-hardware (v0.7.0: verified PIV
+    //    attestations, not bare boolean claims — a claimed-without-proof
+    //    pair now derives SharedFilesystem by REFUSAL at the gate).
+    use dc_cert::PIV_AID;
+    use dc_cert::ccid::CcidEndpoint;
+    use dc_cert::iso7816::{CommandApdu, Iso7816Transport, ResponseApdu};
+    use dc_cert::token::countersign_ed25519_on_token;
+    use std::path::PathBuf;
+
+    struct ScriptedTokenCard {
+        slot_key: OperatorKeyPair,
+    }
+
+    impl Iso7816Transport for ScriptedTokenCard {
+        fn exchange(&mut self, command: &CommandApdu) -> Result<ResponseApdu, String> {
+            let raw: Vec<u8> = match command.ins {
+                0xA4 => {
+                    assert_eq!(command.data, PIV_AID.to_vec());
+                    let mut r = vec![0x6F, 0x0A, 0x4F, 0x08];
+                    r.extend_from_slice(&PIV_AID[..8]);
+                    r.extend_from_slice(&[0x90, 0x00]);
+                    r
+                }
+                0x20 => vec![0x90, 0x00], // VERIFY OK
+                0xF7 => {
+                    // GET METADATA: tag 0x86 = slot public key.
+                    let key = self.slot_key.verifying_key.to_bytes();
+                    let mut body = vec![0x86, key.len() as u8];
+                    body.extend_from_slice(&key);
+                    let mut r = vec![0x01, 0x00, 0x02, 0x00];
+                    r.extend_from_slice(&body);
+                    r.extend_from_slice(&[0x90, 0x00]);
+                    r
+                }
+                0x87 => {
+                    use ed25519_dalek::Signer;
+                    let sig = self.slot_key.signing_key.sign(&command.data[4..]);
+                    let mut body = vec![0xDA, 64];
+                    body.extend_from_slice(&sig.to_bytes());
+                    let mut r = vec![0x7C, body.len() as u8];
+                    r.extend_from_slice(&body);
+                    r.extend_from_slice(&[0x90, 0x00]);
+                    r
+                }
+                other => return Err(format!("unexpected INS 0x{:02X}", other)),
+            };
+            ResponseApdu::decode(&raw)
+        }
+    }
+
+    let endpoint = CcidEndpoint {
+        device_node: PathBuf::from("/dev/bus/usb/001/009"),
+        interface: 0,
+        bulk_out_ep: 0x01,
+        bulk_in_ep: 0x81,
+        id_vendor: 0x1050,
+        id_product: 0x0407,
+        serial: None,
+    };
+    let mut card_a = ScriptedTokenCard {
+        slot_key: OperatorKeyPair::generate(),
+    };
+    let mut card_b = ScriptedTokenCard {
+        slot_key: OperatorKeyPair::generate(),
+    };
+    let (sig_a, att_a) = countersign_ed25519_on_token(
+        &mut card_a,
+        &endpoint,
+        dc_cert::PLAN_APPROVAL_DOMAIN,
+        plan_hash,
+        "111111",
+    )
+    .expect("token officer A");
+    let (sig_b, att_b) = countersign_ed25519_on_token(
+        &mut card_b,
+        &endpoint,
+        dc_cert::PLAN_APPROVAL_DOMAIN,
+        plan_hash,
+        "222222",
+    )
+    .expect("token officer B");
+    assert!(att_a.pin_verified && att_b.pin_verified);
     let mut auth_hsm = AuthorizationSet::new(plan_hash);
-    auth_hsm.add_signature(PlanApprover::countersign_plan(plan_hash, &hsm_a, true));
-    auth_hsm.add_signature(PlanApprover::countersign_plan(plan_hash, &hsm_b, true));
+    auth_hsm.add_signature(sig_a);
+    auth_hsm.add_signature(sig_b);
     assert_eq!(
         auth_hsm.derive_custody_type(),
         CustodyType::SeparateHardware
+    );
+    // The attested pair also passes the full pre-arm gate.
+    assert!(
+        auth_hsm
+            .verify_pre_arm_authorization(plan_hash, true)
+            .is_ok()
+    );
+
+    // 2b. Claimed-but-unattested pair: NOT hardware custody anymore.
+    let hsm_a = OperatorKeyPair::generate();
+    let hsm_b = OperatorKeyPair::generate();
+    let mut auth_claimed = AuthorizationSet::new(plan_hash);
+    auth_claimed.add_signature(PlanApprover::countersign_plan(plan_hash, &hsm_a, true));
+    auth_claimed.add_signature(PlanApprover::countersign_plan(plan_hash, &hsm_b, true));
+    assert_eq!(
+        auth_claimed.derive_custody_type(),
+        CustodyType::SharedFilesystem
     );
 
     ledger.assert(

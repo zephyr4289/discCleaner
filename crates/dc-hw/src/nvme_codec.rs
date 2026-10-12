@@ -68,6 +68,25 @@ pub struct NvmeIdentifyNamespace {
     pub nguid: Option<String>,
 }
 
+/// Telemetry Host-Initiated log (LID 0x07) header decode — the vendor
+/// diagnostic snapshot provenance (v0.7.0, Vector 4).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NvmeTelemetryHeader {
+    /// Byte 0: telemetry data areas supported bits (area 1 = bit 0,
+    /// area 2 = bit 1, area 3 = bit 2 of the supported mask).
+    pub data_areas_supported: u8,
+    /// Byte 1: generation counter of the snapshot.
+    pub generation: u8,
+    /// Bytes 8..24: ASCII reason identifier (who created the snapshot).
+    pub reason_identifier: String,
+    /// Data Area 1 last block (bytes 509..512, 24-bit LE).
+    pub area1_last_block: u32,
+    /// Data Area 2 last block (bytes 512..515, 24-bit LE).
+    pub area2_last_block: u32,
+    /// Data Area 3 last block (bytes 515..518, 24-bit LE).
+    pub area3_last_block: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NvmeHealthLog {
     pub critical_warning: u8,
@@ -145,6 +164,43 @@ impl NvmeCodec {
         cmd[40..44].copy_from_slice(&cdw10.to_le_bytes()); // CDW10
 
         cmd
+    }
+
+    /// Encode a Get Log Page command for the Telemetry Host-Initiated log
+    /// (LID 0x07, NVMe 2.0 §5.16.1.13 / 1.4§5.14.1.9) — v0.7.0, Vector 4.
+    ///
+    /// `create_snapshot = true` sets the Log Specific Field (CDW12[7:0])
+    /// bit 0 so the controller generates a FRESH telemetry snapshot for
+    /// retrieval; false retrieves the last-created one. The first 512
+    /// bytes carry the Data Block Header (data-area support, generation
+    /// counter, ASCII reason identifier, and the per-area last-block
+    /// offsets in the header tail).
+    pub fn encode_get_telemetry_log(create_snapshot: bool) -> [u8; 64] {
+        let mut cmd = Self::encode_get_log_page(0x07, 512);
+        // CDW12 lives at bytes 48..52 of the wire format.
+        let lsp: u32 = if create_snapshot { 0b1 } else { 0b0 };
+        cmd[48..52].copy_from_slice(&lsp.to_le_bytes());
+        cmd
+    }
+
+    /// Decode the Telemetry Host-Initiated log header from the first
+    /// 512+ bytes of the page.
+    pub fn decode_telemetry_header(payload: &[u8]) -> Result<NvmeTelemetryHeader, String> {
+        if payload.len() < 518 {
+            return Err("Telemetry log header needs at least 518 bytes".to_string());
+        }
+        let reason = String::from_utf8_lossy(&payload[8..24])
+            .trim_end_matches('\0')
+            .to_string();
+        let le24 = |b: &[u8]| (b[0] as u32) | ((b[1] as u32) << 8) | ((b[2] as u32) << 16);
+        Ok(NvmeTelemetryHeader {
+            data_areas_supported: payload[0],
+            generation: payload[1],
+            reason_identifier: reason,
+            area1_last_block: le24(&payload[509..512]),
+            area2_last_block: le24(&payload[512..515]),
+            area3_last_block: le24(&payload[515..518]),
+        })
     }
 
     /// Encode a Get Log Page command for the SMART / Health log (LID 0x02).

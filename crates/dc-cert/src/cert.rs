@@ -143,6 +143,10 @@ pub struct UnsignedCertificate {
     /// breaking the Ed25519 signature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defense_warnings: Option<Vec<String>>,
+    /// Deep controller forensics (v0.7.0, Vector 4): firmware identity
+    /// pre/post, NVMe telemetry snapshots, ATA device-statistics wear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_attestation: Option<crate::firmware::FirmwareAttestationEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -172,6 +176,11 @@ pub struct SanitizationCertificate {
     /// disclosure on logical overwrites). Covered by the signature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defense_warnings: Option<Vec<String>>,
+    /// Deep controller forensics: firmware identity pre/post, NVMe
+    /// telemetry (LID 0x07) snapshots, ATA Device Statistics wear deltas
+    /// (v0.7.0, Vector 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_attestation: Option<crate::firmware::FirmwareAttestationEvidence>,
 }
 
 #[derive(Clone, Debug)]
@@ -213,6 +222,7 @@ impl SanitizationCertificate {
             health_pre: None,
             health_post: None,
             defense_warnings: None,
+            firmware_attestation: None,
         }
     }
 
@@ -244,6 +254,24 @@ impl SanitizationCertificate {
         self
     }
 
+    /// Attach firmware attestation & vendor telemetry evidence (v0.7.0,
+    /// Vector 4): pre/post firmware identity, NVMe telemetry snapshots,
+    /// ATA device-statistics wear counters, and the derived defense
+    /// warnings (firmware drift inside the sanitization window).
+    pub fn with_firmware_attestation(
+        mut self,
+        evidence: crate::firmware::FirmwareAttestationEvidence,
+    ) -> Self {
+        let derived = evidence.defense_warnings();
+        self.firmware_attestation = Some(evidence);
+        if !derived.is_empty() {
+            let mut warnings = self.defense_warnings.unwrap_or_default();
+            warnings.extend(derived);
+            self.defense_warnings = Some(warnings);
+        }
+        self
+    }
+
     /// Extract unsigned payload for canonical JCS serialization.
     pub fn unsigned_payload(&self) -> UnsignedCertificate {
         UnsignedCertificate {
@@ -261,6 +289,7 @@ impl SanitizationCertificate {
             health_pre: self.health_pre.clone(),
             health_post: self.health_post.clone(),
             defense_warnings: self.defense_warnings.clone(),
+            firmware_attestation: self.firmware_attestation.clone(),
         }
     }
 

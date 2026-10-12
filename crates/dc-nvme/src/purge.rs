@@ -59,6 +59,9 @@ pub struct NvmePurgeClient<'a> {
     /// `poll_interval` between reads.
     max_polls: u32,
     poll_interval: Duration,
+    /// Progress sink (permille) — the CLI wires its progress printer and
+    /// the v0.7.0 thermal monitor here.
+    progress_sink: Option<Box<dyn FnMut(u16) + 'a>>,
 }
 
 impl<'a> NvmePurgeClient<'a> {
@@ -67,6 +70,7 @@ impl<'a> NvmePurgeClient<'a> {
             transport,
             max_polls: 65535,
             poll_interval: Duration::from_millis(250),
+            progress_sink: None,
         }
     }
 
@@ -74,6 +78,13 @@ impl<'a> NvmePurgeClient<'a> {
     pub fn with_poll_budget(mut self, max_polls: u32, interval: Duration) -> Self {
         self.max_polls = max_polls;
         self.poll_interval = interval;
+        self
+    }
+
+    /// Attach a progress sink for the sanitize poll loop (v0.7.0: the
+    /// thermal monitor paces here between Log 0x81 reads).
+    pub fn with_progress_sink(mut self, sink: impl FnMut(u16) + 'a) -> Self {
+        self.progress_sink = Some(Box::new(sink));
         self
     }
 
@@ -261,6 +272,9 @@ impl<'a> NvmePurgeClient<'a> {
                      refusing to report completion without terminal status",
                     status.progress_permille, polls
                 ));
+            }
+            if let Some(sink) = self.progress_sink.as_mut() {
+                sink(status.progress_permille);
             }
             polls += 1;
             std::thread::sleep(self.poll_interval);

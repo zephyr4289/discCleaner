@@ -50,6 +50,9 @@ pub struct ExecuteShared {
     pub allow_flags: Vec<&'static str>,
     pub multi: Option<MultiProgress>,
     pub audit: Arc<Mutex<Option<AuditLogger>>>,
+    /// Thermal pacing limits (v0.7.0, Vector 2): the overwrite engine
+    /// consults the governor per window via kernel hwmon.
+    pub thermal_limits: dc_hw::ThermalLimits,
 }
 
 /// A device that passed the all-or-nothing precheck.
@@ -501,6 +504,16 @@ pub fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result
         allow_flags,
         multi: (!args.no_progress).then(MultiProgress::new),
         audit: audit.clone(),
+        thermal_limits: {
+            let mut limits = dc_hw::ThermalLimits::default();
+            if let Some(t) = args.thermal_throttle_c {
+                limits.throttle_c = t;
+            }
+            if let Some(c) = args.thermal_critical_c {
+                limits.critical_c = c;
+            }
+            limits
+        },
     };
 
     let outputs: Vec<DeviceRunOutput> = std::thread::scope(|scope| {
@@ -758,6 +771,24 @@ fn execute_device_inner(
     let exec_start_time = Instant::now();
     let mut total_bytes_written: u64 = 0;
 
+    // THERMAL PACER (v0.7.0, Vector 2): every engine window consults the
+    // governor through the kernel hwmon view — pacing delays sleep inside
+    // the progress callback, and a critical temperature requests the same
+    // global-cancel the signal handler uses (the engine drains, nothing
+    // more is written, the run refuses certification).
+    let mut pacer = dc_hw::ThermalPacer::new(
+        shared.thermal_limits,
+        &identity.kernel_name,
+        std::time::Duration::from_secs(2),
+    );
+    if !pacer.hwmon_available() {
+        eprintln!(
+            "[THERMAL] note: no kernel hwmon temperature for {} — the thermal guard is \
+             inert for this run (the kernel exposes no thermometer for it)",
+            identity.kernel_name
+        );
+    }
+
     for (pass_idx, pass) in passes.iter().enumerate() {
         let permit = fsm.begin_pass(pass_idx as u8)?;
         let pat_source = create_pattern_source(&pass.pattern);
@@ -781,6 +812,9 @@ fn execute_device_inner(
                     bar.set_position(p.windows_done);
                     bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
                 }
+                if !pacer.on_window_progress() {
+                    dc_io::request_global_cancel();
+                }
             })
         } else {
             engine.write_pass(
@@ -794,6 +828,9 @@ fn execute_device_inner(
                         bar.set_position(p.windows_done);
                         bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
                     }
+                    if !pacer.on_window_progress() {
+                        dc_io::request_global_cancel();
+                    }
                 },
             )
         };
@@ -801,6 +838,33 @@ fn execute_device_inner(
         let outcome = match outcome_res {
             Ok(o) => o,
             Err(DcError::Interrupted { completed_through }) => {
+                // THERMAL_CRITICAL (v0.7.0, Vector 2): the pacer requested
+                // the global cancel — journal it as a media-health abort,
+                // not a signal drain.
+                if let Some((temp, limit)) = pacer.aborted {
+                    let _ = journal.append(&dc_core::JournalRecord::Failed {
+                        code: "THERMAL_CRITICAL".to_string(),
+                        errno: None,
+                        op: Some("write".to_string()),
+                        at_lba: None,
+                        detail: format!(
+                            "drive temperature {} C reached the critical limit {} C — \
+                             the engine drained to protect the media",
+                            temp, limit
+                        ),
+                    });
+                    return Err(DcError::Guardian(dc_core::GuardianRefusal {
+                        code: "THERMAL_CRITICAL",
+                        detail: format!(
+                            "drive temperature {} C reached the critical limit {} C — \
+                             the overwrite was drained to protect the media",
+                            temp, limit
+                        ),
+                        hint: "let the drive cool and re-run (the journal records the \
+                               last completed window)"
+                            .to_string(),
+                    }));
+                }
                 let (through_pass, through_window) = match completed_through {
                     Some((p, w)) => (Some(p), Some(w)),
                     None => (Some(pass_idx as u8), None),
@@ -934,6 +998,9 @@ fn execute_device_inner(
                         bar.set_position(p.windows_done);
                         bar.set_message(format!("{:.1} MiB/s", p.throughput_mib_s));
                     }
+                    if !pacer.on_window_progress() {
+                        dc_io::request_global_cancel();
+                    }
                 },
             ) {
                 match e {
@@ -1011,6 +1078,28 @@ fn execute_device_inner(
         duration_mono_ms: exec_start_time.elapsed().as_millis() as u64,
     })?;
 
+    // Thermal statistics into the certificate (v0.7.0, Vector 2): max
+    // observed temperature and total pacing time are evidence of media
+    // stewardship; a paced run completed within thermal limits.
+    let mut certificate_defense_warnings = job.defense_warnings.clone();
+    if let Some(max_t) = pacer.max_temperature_c {
+        certificate_defense_warnings.push(format!(
+            "THERMAL_STEWARDSHIP: max observed drive temperature {} C, adaptive pacing \
+             inserted {} ms of delay (throttle limit {} C, critical {} C).",
+            max_t,
+            pacer.paced_ms_total,
+            shared.thermal_limits.throttle_c,
+            shared.thermal_limits.critical_c
+        ));
+    }
+    if let Some((temp, limit)) = pacer.aborted {
+        certificate_defense_warnings.push(format!(
+            "DEFENSE_WARNING: thermal abort at {} C (limit {} C) — the media state is \
+             incomplete; re-run required (NIST SP 800-88 Rev 1).",
+            temp, limit
+        ));
+    }
+
     let mut cert = SanitizationCertificate::new(
         plan.clone(),
         job.plan_hash.clone(),
@@ -1028,7 +1117,7 @@ fn execute_device_inner(
         keypair.public_key_hex(),
         keypair.key_fingerprint_blake3(),
     )
-    .with_defense_warnings(job.defense_warnings.clone());
+    .with_defense_warnings(certificate_defense_warnings.clone());
     cert.sign(&keypair)?;
 
     let cert_filename = format!("{}.cert.json", journal_filename.trim_end_matches(".dcj"));
@@ -1090,7 +1179,7 @@ fn execute_device_inner(
                 journal.current_chain_head(),
             ),
         ],
-        &job.defense_warnings,
+        &certificate_defense_warnings,
         &finished_time_str,
         &[
             dc_report::ArchiveAttachment {

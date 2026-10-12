@@ -1,8 +1,16 @@
+pub mod coldbus;
 pub mod freeze;
 pub mod geometry;
 pub mod purge;
 pub mod security;
+// v0.7.0: the thermal stack lives in dc-hw (shared with dc-scsi's LOG
+// SENSE decode); re-exported here so ATA-side callers keep one import.
+pub use dc_hw::thermal;
 
+pub use coldbus::{
+    attempt_cold_unfreeze, ColdBusOutcome, ColdBusStepRecord, RealSysfs, SysfsOps,
+    PHYSICAL_POWER_CYCLE_ADVISORY,
+};
 pub use freeze::{FreezeEvaluator, FreezeFinding};
 pub use geometry::{FdGen, GeometryStage, GeometryTransaction};
 pub use purge::{
@@ -11,6 +19,10 @@ pub use purge::{
     SatReply, SatXfer,
 };
 pub use security::{AtaFsmOutcome, AtaLifeline, AtaSecurityFsm, AtaSecurityState};
+pub use thermal::{
+    decode_log_sense_temperature, decode_smart_temperature, SysfsHwmonThermometer, ThermalDecision,
+    ThermalGovernor, ThermalLimits, ThermalPacer, ThermalReading, ThermalSource,
+};
 
 #[cfg(test)]
 mod unit_tests {
