@@ -1186,8 +1186,55 @@ pie title diskCleaner LOC Distribution by Subsystem Layer
 > **`diskCleaner` (`dc`) v0.3.1**  
 > *Forensic-grade storage sanitization for Linux — every claim carries its own evidence, its own grade, and its own instructions for cross-examination. Nothing else is owed.*
 
+## 22c. v0.8.0 Sovereign Air-Gap Vectors (TPM Quote, KVM Vault, Photon Bridge, Fabrics)
 
+### 22c.1 TPM 2.0 PCR Remote Attestation
+The certificate's Ed25519 signature proves operator approval, not host
+integrity. v0.8.0 adds the hardware anchor: a native TPM 2.0 stack (dc-tpm,
+frozen Part 1/2/3 wire protocol over /dev/tpmrm0 with poll(2) deadlines,
+no tpm2-tss) measures the appliance into PCRs 8-11 (UEFI owns 0-7), then
+quotes PCRs 0-11 under a non-exportable P-256 AIK (CreatePrimary with
+RESTRICTED|SIGN|FIXED_TPM|FIXED_PARENT — pinned). The quote binds a caller
+nonce (freshness) and the TPM monotonic clock (replay guard); verification
+recomputes the PCR digest from a live PCR_Read and checks the ECDSA
+signature against the AIK point — fail-closed before certification, and
+replayable offline from the archived raw response. Trust boundary: the
+AIK is anchored to the specific motherboard's TPM; a sovereign auditor
+needs the platform vendor's EK certificate chain (or physical custody of
+that machine) to bind the AIK identity to a site — that chain stays
+outside the embedded-evidence model and is documented as such.
 
+### 22c.2 Micro-KVM Vault
+The vault isolates key derivation and the verification chain in a
+pure-Rust KVM micro-VM (frozen API-12 UAPI, mlock'd guest RAM, measured
+64-byte RDRAND payload, SEV/SEV-ES/SW-protected VM type probing; strict
+posture refuses unencrypted hosts). The read-back evidence folds into an
+HMAC-SHA256 chain keyed by the guest-derived session key; the chain head
+rides the certificate. Honest scope: v0.8.0 vault protects key
+generation and the verification chain — the wipe traffic itself still
+executes host-side (guest-side virtio-blk via staged VFIO plumbing is
+the v0.9.0 milestone), so a host adversary can still tamper with WHAT is
+written, but can no longer forge WHAT was verified.
 
+### 22c.3 Photon Bridge
+SCIF exfiltration is photons-only: systematic-first LT fountain coding
+(k source blocks then robust-soliton tail), pure-Rust QR encoder (byte
+mode, ECC-M, v1-10, 8-mask penalty selection, BCH format/version info,
+RS over GF(256)), frame headers binding stream identity (BLAKE3) and
+payload digest. Any sufficient frame subset reconstructs and
+verifies; 50% frame loss is pinned by tests. The color-matrix mode is
+experimental (capture-hardware-specific). The receiving scanner is
+trusted computing equipment — the bridge solves transport, not scanner
+integrity.
 
-
+### 22c.4 NVMe-oF Remote Purge
+Generic netlink (family "nvme", pinned NVMF attribute enum) drives
+CONNECT/DISCONNECT; the kernel instantiates the controller, sysfs
+appearance is deadline-guarded, and the in-band sanitize ladder runs over
+the SAME admin passthrough as local NVMe (identical controller
+attestation). Fail-safes: ACK and appearance budgets, always-disconnect
+(including failure paths), and the fabric session verdict in the
+certificate. Discovery log (LID 0x70) parsing is defensive: malformed
+entries are skipped, never trusted. Multi-initiator SAN safety is the
+operator's zoning responsibility (documented: dc does not manage SAN
+access control).

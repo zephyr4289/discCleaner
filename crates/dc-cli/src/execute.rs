@@ -53,6 +53,14 @@ pub struct ExecuteShared {
     /// Thermal pacing limits (v0.7.0, Vector 2): the overwrite engine
     /// consults the governor per window via kernel hwmon.
     pub thermal_limits: dc_hw::ThermalLimits,
+    /// v0.8.0 Vector 1: capture a TPM attestation quote into the cert.
+    pub tpm_quote: bool,
+    /// v0.8.0 Vector 1: refuse certification without a verified quote.
+    pub tpm_quote_required: bool,
+    /// v0.8.0 Vector 2: run the vault enclave for the verification chain.
+    pub vault: bool,
+    /// v0.8.0 Vector 2: require SEV/TDX memory encryption in the vault.
+    pub vault_encrypted_required: bool,
 }
 
 /// A device that passed the all-or-nothing precheck.
@@ -494,6 +502,10 @@ pub fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result
 
     let shared = ExecuteShared {
         engine: args.engine,
+        tpm_quote: args.tpm_quote,
+        tpm_quote_required: args.tpm_quote_required,
+        vault: args.vault,
+        vault_encrypted_required: args.vault_encrypted_required,
         checkpoint_mib: args.checkpoint_mib,
         checkpoint_ms: args.checkpoint_ms,
         no_progress: args.no_progress,
@@ -1118,6 +1130,56 @@ fn execute_device_inner(
         keypair.key_fingerprint_blake3(),
     )
     .with_defense_warnings(certificate_defense_warnings.clone());
+
+    // ------------------------------------------------------------------
+    // v0.8.0 evidence embedding (Vectors 1+2): TPM attestation quote and
+    // the micro-KVM vault execution report with the HMAC verification
+    // chain sealed over this run's plan + verification evidence.
+    // ------------------------------------------------------------------
+    let want_vault = shared.vault || shared.vault_encrypted_required;
+    if shared.tpm_quote || shared.tpm_quote_required {
+        match crate::quote::capture_for_certificate(shared.tpm_quote_required) {
+            Ok(Some(bundle)) => {
+                cert = cert.with_tpm_attestation(crate::quote::bundle_to_evidence(&bundle));
+            }
+            Ok(None) => {} // opportunistic: no TPM, disclosed by absence
+            Err(e) => return Err(e),
+        }
+    }
+    if want_vault {
+        let requirement = if shared.vault_encrypted_required {
+            dc_vault::VaultRequirement::EncryptedEnclave
+        } else {
+            dc_vault::VaultRequirement::Enclave
+        };
+        let mut session = dc_vault::VaultSession::execute(requirement)
+            .map_err(|e| DcError::Internal(format!("{e}")))?;
+        // Seal the binding records: plan identity + verification verdict.
+        session
+            .seal_record(format!("plan-hash:{}", job.plan_hash).as_bytes())
+            .map_err(|e| DcError::Internal(format!("vault seal: {e}")))?;
+        session
+            .seal_record(
+                format!(
+                    "verify: checked={} mismatches={}",
+                    verifier_report.windows_checked, verifier_report.mismatch_count
+                )
+                .as_bytes(),
+            )
+            .map_err(|e| DcError::Internal(format!("vault seal: {e}")))?;
+        let report = session.report();
+        cert = cert.with_vault_report(dc_cert::VaultReportEvidence {
+            kvm_api_version: report.kvm_api_version,
+            memory_encryption: report.memory_encryption,
+            encrypted: report.encrypted,
+            guest_payload_blake3: report.guest_payload_blake3,
+            session_key_fingerprint: report.session_key_fingerprint,
+            chain_head_hex: report.chain_head_hex,
+            chain_records: report.chain_records,
+            vcpu_exits: report.vcpu_exits,
+            elapsed_us: report.elapsed_us,
+        });
+    }
     cert.sign(&keypair)?;
 
     let cert_filename = format!("{}.cert.json", journal_filename.trim_end_matches(".dcj"));
@@ -1138,6 +1200,14 @@ fn execute_device_inner(
         }
     };
     let journal_bytes = std::fs::read(&journal_path).unwrap_or_default();
+    // v0.8.0 evidence field lines ride the archival front page.
+    let mut visual_fields: Vec<(String, String)> = Vec::new();
+    if let Some(tpm) = cert.tpm_attestation.as_ref() {
+        visual_fields.extend(tpm.field_lines());
+    }
+    if let Some(vault) = cert.vault_report.as_ref() {
+        visual_fields.extend(vault.field_lines());
+    }
     let pdf_bytes = dc_report::render_sanitization_archive(
         if verifier_report.mismatch_count > 0 {
             "Sanitization Report — VERIFICATION FAILED"
@@ -1178,7 +1248,10 @@ fn execute_device_inner(
                 "Journal chain head".to_string(),
                 journal.current_chain_head(),
             ),
-        ],
+        ]
+        .into_iter()
+        .chain(visual_fields)
+        .collect::<Vec<_>>(),
         &certificate_defense_warnings,
         &finished_time_str,
         &[

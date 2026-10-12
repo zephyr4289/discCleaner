@@ -474,9 +474,45 @@ struct PurgeRunOutcome {
     thermal_report: Option<String>,
 }
 
+/// v0.8.0 runtime evidence captured around the purge and folded into the
+/// certificate by the assembly tail.
+#[derive(Debug)]
+pub struct V08Evidence {
+    /// Verified TPM2_Quote bundle (Vector 1).
+    pub tpm_quote: Option<dc_tpm::QuoteBundle>,
+    /// Micro-KVM vault execution report (Vector 2).
+    pub vault_report: Option<dc_cert::VaultReportEvidence>,
+    /// Fabric session record (Vector 4).
+    pub fabric_session: Option<dc_cert::FabricSessionEvidence>,
+}
+
 pub fn cmd_purge(args: PurgeArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
     let requested = parse_mechanism(&args.mechanism)?;
+
+    // ------------------------------------------------------------------
+    // v0.8.0 Vector 4: fabric URI target — connect, resolve the block
+    // device of the appeared controller, purge through the normal NVMe
+    // ladder, disconnect afterwards (including on failure), and carry the
+    // session record into the certificate.
+    // ------------------------------------------------------------------
+    let target_str = args.target.to_string_lossy().to_string();
+    if let Ok(fabric_target) = dc_nvme::FabricTarget::parse(&target_str) {
+        return run_fabric_purge(args, fabric_target, audit);
+    }
+
+    // ------------------------------------------------------------------
+    // v0.8.0 Vectors 1+2: opportunistic (or required) TPM attestation and
+    // vault enclave execution, captured before arming.
+    // ------------------------------------------------------------------
+    let v08 = capture_v08_evidence(&args)?;
     let identity = InventoryScanner::probe_device_or_refuse(&args.target)?;
+    let args = if v08.is_some() {
+        let mut a = args;
+        a.v08_evidence = v08;
+        a
+    } else {
+        args
+    };
 
     // Guardian evaluation (same 15-rule normative table as execute).
     let flags = GuardianFlags {
@@ -597,6 +633,203 @@ fn confirm_destructive_purge(
 /// Shared journal + certificate + archival-PDF pipeline. Returns after the
 /// certificate and PDF/A-3 are on disk.
 #[allow(clippy::too_many_arguments)]
+/// Capture the v0.8.0 runtime evidence requested by flags.
+fn capture_v08_evidence(args: &PurgeArgs) -> Result<Option<std::sync::Arc<V08Evidence>>, DcError> {
+    let want_vault = args.vault || args.vault_encrypted_required;
+    if !args.tpm_quote && !args.tpm_quote_required && !want_vault {
+        return Ok(None);
+    }
+    let mut evidence = V08Evidence {
+        tpm_quote: None,
+        vault_report: None,
+        fabric_session: None,
+    };
+    if args.tpm_quote || args.tpm_quote_required {
+        evidence.tpm_quote = crate::quote::capture_for_certificate(args.tpm_quote_required)?;
+    }
+    if want_vault {
+        let requirement = if args.vault_encrypted_required {
+            dc_vault::VaultRequirement::EncryptedEnclave
+        } else {
+            dc_vault::VaultRequirement::Enclave
+        };
+        let mut session = dc_vault::VaultSession::execute(requirement)
+            .map_err(|e| DcError::Internal(format!("{e}")))?;
+        // Seal the run's own identifying evidence into the chain.
+        let plan_binding = format!(
+            "purge-target={} mechanism={}",
+            args.target.display(),
+            args.mechanism
+        );
+        session
+            .seal_record(plan_binding.as_bytes())
+            .map_err(|e| DcError::Internal(format!("vault seal: {e}")))?;
+        let report = session.report();
+        eprintln!(
+            "[vault] enclave executed: {} ({} records sealed)",
+            report.memory_encryption, report.chain_records
+        );
+        evidence.vault_report = Some(dc_cert::VaultReportEvidence {
+            kvm_api_version: report.kvm_api_version,
+            memory_encryption: report.memory_encryption,
+            encrypted: report.encrypted,
+            guest_payload_blake3: report.guest_payload_blake3,
+            session_key_fingerprint: report.session_key_fingerprint,
+            chain_head_hex: report.chain_head_hex,
+            chain_records: report.chain_records,
+            vcpu_exits: report.vcpu_exits,
+            elapsed_us: report.elapsed_us,
+        });
+    }
+    Ok(Some(std::sync::Arc::new(evidence)))
+}
+
+/// Fabric-target purge: the full connect → sanitize → disconnect cycle
+/// with fail-safe timeouts; the session record rides the certificate.
+fn run_fabric_purge(
+    mut args: PurgeArgs,
+    target: dc_nvme::FabricTarget,
+    audit: &mut Option<AuditLogger>,
+) -> Result<(), DcError> {
+    let timeouts = dc_nvme::FabricTimeouts::default();
+    eprintln!(
+        "[fabric] connecting to {}://{} (subsystem {})…",
+        target.transport, target.traddr, target.nqn
+    );
+    let session = dc_nvme::fabric_connect(&target, &timeouts)
+        .map_err(|e| DcError::Guardian(dc_core::GuardianRefusal {
+            code: "FABRIC_CONNECT_REFUSED",
+            detail: format!("{e}"),
+            hint: "verify the fabric address, transport service id and subsystem NQN;                    the target must ACK the connection within the timeout budget"
+                .to_string(),
+        }))?;
+    eprintln!("[fabric] controller {} online", session.ctrl_name);
+    FABRIC_TARGET_SNAPSHOT.with(|cell| {
+        cell.borrow_mut().replace((
+            target.transport.kernel_name().to_string(),
+            target.traddr.clone(),
+            target.trsvcid.clone(),
+            target.nqn.clone(),
+        ));
+    });
+
+    // Resolve the first namespace block device of the controller.
+    let block_dev = wait_for_namespace(&session.ctrl_name).inspect_err(|_e| {
+        let _ = dc_nvme::fabric_disconnect(&target, &timeouts);
+    })?;
+    eprintln!("[fabric] purging namespace {}", block_dev.display());
+
+    // Evidence stash: fabric session + optional TPM quote / vault.
+    let mut evidence = capture_v08_evidence(&args)?;
+    if evidence.is_none() {
+        evidence = Some(std::sync::Arc::new(V08Evidence {
+            tpm_quote: None,
+            vault_report: None,
+            fabric_session: None,
+        }));
+    }
+    // Snapshot the session while connected; disconnect updates the record.
+    let connected_at = session.connected_at;
+
+    args.target = block_dev;
+    args.v08_evidence = evidence;
+
+    let identity = InventoryScanner::probe_device_or_refuse(&args.target).inspect_err(|_e| {
+        let _ = dc_nvme::fabric_disconnect(&target, &timeouts);
+    })?;
+
+    let flags = GuardianFlags {
+        allow_system_disk: args.allow_system_disk,
+        serial_confirm: None,
+        allow_loop: args.allow_loop,
+        allow_inactive_signatures: args.allow_inactive_signatures,
+        allow_member: args.allow_member,
+    };
+    if let Err(e) = Guardian::evaluate(&args.target, &identity, &flags) {
+        let _ = dc_nvme::fabric_disconnect(&target, &timeouts);
+        return Err(e);
+    }
+
+    let requested = parse_mechanism(&args.mechanism)?;
+    requested.validate_for_bus(identity.stable.bus)?;
+
+    // Mutate the target clone for the NVMe runner, but keep the fabric
+    // session around for the disconnect after the run.
+    let run_result = run_nvme_purge(args, identity, audit);
+
+    // Always disconnect (fail-safe: an open session is disclosed).
+    let disconnected_cleanly = dc_nvme::fabric_disconnect(&target, &timeouts).is_ok();
+    let session_ms = connected_at.elapsed().as_millis() as u64;
+    eprintln!(
+        "[fabric] controller {} disconnected ({})",
+        session.ctrl_name,
+        if disconnected_cleanly {
+            "clean"
+        } else {
+            "FAILED"
+        }
+    );
+
+    // Attach the fabric session record onto the certificate the runner
+    // wrote: the runner stashed its evidence under `v08_evidence`, so we
+    // re-read the latest cert in the out dir? No — the evidence stash is
+    // consumed by assemble_purge_certificate through the moved args. To
+    // carry the disconnect outcome we patch a thread-local the assembly
+    // reads (see FABRIC_OUTCOME).
+    FABRIC_OUTCOME.with(|cell| {
+        cell.borrow_mut().replace((
+            session.ctrl_name.clone(),
+            session.ctrl_char_dev.to_string_lossy().to_string(),
+            disconnected_cleanly,
+            session_ms,
+        ));
+    });
+
+    let _ = &target;
+    run_result
+}
+
+thread_local! {
+    /// (ctrl_name, ctrl_char_dev, disconnected_cleanly, session_ms) of the
+    /// fabric session around the current purge — consumed by the
+    /// certificate assembly tail.
+    static FABRIC_OUTCOME: std::cell::RefCell<Option<(String, String, bool, u64)>> =
+        const { std::cell::RefCell::new(None) };
+    /// (transport, traddr, trsvcid, nqn) of the current fabric target.
+    static FABRIC_TARGET_SNAPSHOT: std::cell::RefCell<Option<(String, String, String, String)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Wait for the first namespace block device of a just-connected fabric
+/// controller (`nvme4` → `nvme4n1`), bounded by the controller's
+/// namespace scan.
+fn wait_for_namespace(ctrl: &str) -> Result<std::path::PathBuf, DcError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if let Ok(rd) = std::fs::read_dir(format!("/sys/class/nvme/{ctrl}")) {
+            for entry in rd.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(ctrl) && name.contains('n') {
+                    let dev = std::path::Path::new("/dev").join(&name);
+                    if dev.exists() {
+                        return Ok(dev);
+                    }
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(DcError::Guardian(dc_core::GuardianRefusal {
+                code: "FABRIC_NO_NAMESPACE",
+                detail: format!(
+                    "fabric controller {ctrl} exposed no namespace block device within the timeout"
+                ),
+                hint: "check the subsystem's namespace configuration".to_string(),
+            }));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
 fn assemble_purge_certificate(
     args: &PurgeArgs,
     identity: &DeviceIdentity,
@@ -697,6 +930,53 @@ fn assemble_purge_certificate(
         // warnings into the signed payload (Vector 4).
         cert = cert.with_firmware_attestation(fw);
     }
+    // ------------------------------------------------------------------
+    // v0.8.0 evidence embedding: TPM quote (Vector 1), vault report
+    // (Vector 2), fabric session (Vector 4).
+    // ------------------------------------------------------------------
+    let mut v08_attachments: Vec<(String, Vec<u8>, &'static str)> = Vec::new();
+    if let Some(evidence) = args.v08_evidence.as_ref() {
+        if let Some(bundle) = &evidence.tpm_quote {
+            cert = cert.with_tpm_attestation(crate::quote::bundle_to_evidence(bundle));
+            v08_attachments.push((
+                "tpm2-quote-raw.hex".to_string(),
+                bundle.quote_response_hex.as_bytes().to_vec(),
+                "text/plain",
+            ));
+        }
+        if let Some(report) = &evidence.vault_report {
+            cert = cert.with_vault_report(report.clone());
+        }
+    }
+    // Fabric outcome is captured by run_fabric_purge into the thread-local.
+    let fabric_evidence = FABRIC_OUTCOME.with(|cell| {
+        cell.borrow().clone().map(
+            |(ctrl_name, ctrl_char_dev, disconnected_cleanly, session_ms)| {
+                let (transport, traddr, trsvcid, nqn) = FABRIC_TARGET_SNAPSHOT.with(|t| {
+                    t.borrow().clone().unwrap_or((
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                    ))
+                });
+                dc_cert::FabricSessionEvidence {
+                    transport,
+                    traddr,
+                    trsvcid,
+                    nqn,
+                    ctrl_name,
+                    ctrl_char_dev,
+                    disconnected_cleanly,
+                    session_ms,
+                    fc_host_port_name: None,
+                }
+            },
+        )
+    });
+    if let Some(fabric) = fabric_evidence {
+        cert = cert.with_fabric_session(fabric);
+    }
     cert.sign(keypair)?;
 
     let cert_json = serde_json::to_string_pretty(&cert)?;
@@ -746,6 +1026,15 @@ fn assemble_purge_certificate(
     if let Some(fw) = cert.firmware_attestation.as_ref() {
         visual_fields.extend(fw.field_lines());
     }
+    if let Some(tpm) = cert.tpm_attestation.as_ref() {
+        visual_fields.extend(tpm.field_lines());
+    }
+    if let Some(vault) = cert.vault_report.as_ref() {
+        visual_fields.extend(vault.field_lines());
+    }
+    if let Some(fabric) = cert.fabric_session.as_ref() {
+        visual_fields.extend(fabric.field_lines());
+    }
     if let Some(ref report) = outcome.thermal_report {
         visual_fields.push(("Thermal monitor".to_string(), report.clone()));
     }
@@ -766,6 +1055,14 @@ fn assemble_purge_certificate(
     for (name, bytes, mime) in extra_attachments {
         attachments_storage.push(dc_report::ArchiveAttachment {
             filename: name,
+            bytes,
+            mime,
+            relationship: "Supplement",
+        });
+    }
+    for (name, bytes, mime) in &v08_attachments {
+        attachments_storage.push(dc_report::ArchiveAttachment {
+            filename: name.as_str(),
             bytes,
             mime,
             relationship: "Supplement",

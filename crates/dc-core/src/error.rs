@@ -52,6 +52,11 @@ pub enum DcError {
     #[error("Usage error: {0}")]
     Usage(String),
 
+    /// Internal tool failure (substrate unusable, hardware stack refused,
+    /// cryptographic precondition violated). Exit bucket 1.
+    #[error("Internal error: {0}")]
+    Internal(String),
+
     #[error("JSON serialization error: {0}")]
     Json(#[from] serde_json::Error),
 

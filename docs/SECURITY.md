@@ -78,3 +78,28 @@ Found something? Do not open a public issue. Contact the maintainers
 privately with reproduction steps. Regressions found internally are pinned
 in `crates/dc-cli/tests/r900_regression_guards.rs` with `REG-*` identifiers
 that also appear at the fix site in the source.
+
+## v0.8.0 — Sovereign Air-Gap: Trust Boundaries
+
+- **TPM quote (Vector 1)**: the AIK is anchored to the specific
+  motherboard's TPM. Binding the AIK identity to a site requires the
+  platform vendor's EK certificate chain or physical custody of the
+  machine — outside the embedded-evidence model, and documented. The
+  quote proves platform/software state at signing time; it cannot prove
+  the absence of a hardware implant below the TPM's own measurement root.
+- **Micro-KVM vault (Vector 2)**: v0.8.0 isolates key generation and the
+  HMAC verification chain inside the enclave (memory-encrypted under
+  SEV/TDX-class VM types when available; the strict posture refuses
+  unencrypted hosts rather than downgrading). The wipe traffic itself
+  still executes host-side — guest-side block I/O (virtio-blk over the
+  staged VFIO plumbing) is the v0.9.0 milestone. A host adversary can
+  still tamper with what is WRITTEN, but cannot forge what was VERIFIED.
+- **Photon bridge (Vector 3)**: the bridge solves evidence TRANSPORT out
+  of a SCIF without physical media. The receiving scanner remains trusted
+  computing equipment; the color-matrix mode is experimental and
+  capture-hardware-specific.
+- **Fabric purge (Vector 4)**: `dc` does not manage SAN access control —
+  multi-initiator safety is the operator's zoning responsibility.
+  Connect/disconnect lifecycle is deadline-guarded and always
+  disconnects (including on failure); malformed discovery entries are
+  skipped defensively, never trusted.
