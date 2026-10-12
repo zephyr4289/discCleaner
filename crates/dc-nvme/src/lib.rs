@@ -1,9 +1,14 @@
+pub mod fabrics;
 pub mod linux_admin;
 pub mod permit;
 pub mod probe;
 pub mod purge;
 pub mod transport;
 
+pub use fabrics::{
+    connect as fabric_connect, disconnect as fabric_disconnect, Attr as FabricAttr, FabricError,
+    FabricSession, FabricTarget, FabricTimeouts, FabricTransport,
+};
 pub use linux_admin::{controller_char_dev_for, data_len_for, LinuxNvmeAdmin};
 pub use permit::PurgePermit;
 pub use probe::{attest_capabilities, identify_controller, read_health, HealthSnapshot};

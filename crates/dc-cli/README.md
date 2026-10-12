@@ -65,6 +65,64 @@ journals, purge refusals never fabricate evidence, and all guards are pinned
 in `r900_regression_guards.rs` + `t14_fleet_parallel_matrix.rs`.
 
 
+## v0.8.0 — Sovereign Air-Gap: TPM attestation, KVM vault, photon bridge, NVMe-oF purge
+
+- `dc quote generate|verify`: native TPM 2.0 stack (`dc-tpm`) — PCR
+  measurement (kernel→8, initramfs→9, binary→10, evidence→11), AIK
+  provisioning (`CreatePrimary` restricted-sign P-256 + `EvictControl`),
+  `TPM2_Quote` over PCRs 0-11 with nonce/clock binding, local ECDSA
+  verification fail-closed, raw response archived for offline replay
+  (REG-TPM-QUOTE-EMBED).
+- `dc purge --tpm-quote[-required]` / `dc execute --tpm-quote[-required]`:
+  opportunistic or mandatory quote embedding into the signed certificate.
+- `dc purge --vault[--encrypted-required]` /
+  `dc execute --vault[--encrypted-required]`: micro-KVM enclave (pure-Rust
+  hypervisor, SEV/SEV-ES/SW-protected VM probing, mlock'd guest RAM,
+  64-byte measured RDRAND key payload) + HMAC-SHA256 verification chain
+  over plan/verify evidence; strict posture refuses unencrypted hosts
+  (REG-VAULT-FAIL-CLOSED).
+- `dc photon stream|decode|manifest`: fountain-coded animated QR stream
+  (LT systematic fountain, pure-Rust QR v1-10 ECC-M encoder, half-block
+  terminal rendering, 50% frame-loss tolerance verified end-to-end)
+  (REG-PHOTON-FOUNTAIN-ROUNDTRIP).
+- `dc purge --target nvme+tcp://…/nqn…` (+ rdma/fc/loop) and
+  `dc fabrics connect|disconnect|list|discover`: generic-netlink NVMe-oF
+  session lifecycle with pinned wire format, sysfs controller wait,
+  discovery log (LID 0x70) decoding, deadline-guarded fail-safes and the
+  fabric session embedded in the certificate
+  (REG-FABRICS-WIRE-CONTRACT).
+- New workspace crates: `dc-tpm`, `dc-vault`, `dc-photon` (18 total);
+  new suites t28-t31; version 0.8.0 across the workspace.
+
+## v0.8.0 — Sovereign Air-Gap: TPM attestation, KVM vault, photon bridge, NVMe-oF purge
+
+- `dc quote generate|verify`: native TPM 2.0 stack (`dc-tpm`) — PCR
+  measurement (kernel→8, initramfs→9, binary→10, evidence→11), AIK
+  provisioning (`CreatePrimary` restricted-sign P-256 + `EvictControl`),
+  `TPM2_Quote` over PCRs 0-11 with nonce/clock binding, local ECDSA
+  verification fail-closed, raw response archived for offline replay
+  (REG-TPM-QUOTE-EMBED).
+- `dc purge --tpm-quote[-required]` / `dc execute --tpm-quote[-required]`:
+  opportunistic or mandatory quote embedding into the signed certificate.
+- `dc purge --vault[--encrypted-required]` /
+  `dc execute --vault[--encrypted-required]`: micro-KVM enclave (pure-Rust
+  hypervisor, SEV/SEV-ES/SW-protected VM probing, mlock'd guest RAM,
+  64-byte measured RDRAND key payload) + HMAC-SHA256 verification chain
+  over plan/verify evidence; strict posture refuses unencrypted hosts
+  (REG-VAULT-FAIL-CLOSED).
+- `dc photon stream|decode|manifest`: fountain-coded animated QR stream
+  (LT systematic fountain, pure-Rust QR v1-10 ECC-M encoder, half-block
+  terminal rendering, 50% frame-loss tolerance verified end-to-end)
+  (REG-PHOTON-FOUNTAIN-ROUNDTRIP).
+- `dc purge --target nvme+tcp://…/nqn…` (+ rdma/fc/loop) and
+  `dc fabrics connect|disconnect|list|discover`: generic-netlink NVMe-oF
+  session lifecycle with pinned wire format, sysfs controller wait,
+  discovery log (LID 0x70) decoding, deadline-guarded fail-safes and the
+  fabric session embedded in the certificate
+  (REG-FABRICS-WIRE-CONTRACT).
+- New workspace crates: `dc-tpm`, `dc-vault`, `dc-photon` (18 total);
+  new suites t28-t31; version 0.8.0 across the workspace.
+
 ## v0.7.0 — hardware custody, cold-bus remediation, appliance boot, forensics
 
 - `dc approve --token <usb-node|auto> [--token2]`: officer signatures computed

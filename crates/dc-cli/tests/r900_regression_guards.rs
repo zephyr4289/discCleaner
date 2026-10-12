@@ -1956,3 +1956,140 @@ fn reg_firmware_attestation() {
     // Sector count 1 in the 16-bit count field.
     assert_eq!(cdb[6], 1);
 }
+
+// ---------------------------------------------------------------------------
+// v0.8.0 guards
+// ---------------------------------------------------------------------------
+
+// REG-TPM-QUOTE-EMBED: certificates carry the hardware-anchored quote
+// through sign/verify round trips; tampering any embedded field breaks
+// the signature.
+#[test]
+fn reg_tpm_quote_embed() {
+    use dc_tpm::TpmAttestor;
+    use dc_tpm::constants::DC_AIK_PERSISTENT_HANDLE;
+    use dc_tpm::synth::SynthTpm;
+
+    let mut tpm = SynthTpm::new();
+    let mut attestor = TpmAttestor::new(&mut tpm, DC_AIK_PERSISTENT_HANDLE).unwrap();
+    attestor.measure_into_pcr(8, b"reg").unwrap();
+    let bundle = attestor.generate_quote(b"reg-nonce-00").unwrap();
+    let evidence = dc_cli::quote::bundle_to_evidence(&bundle);
+    assert!(evidence.locally_verified);
+    // The raw archived response is a complete TPM wire message.
+    let raw = hex::decode(&evidence.quote_response_hex).unwrap();
+    assert!(raw.len() > 40);
+    assert_eq!(&raw[0..2], &[0x80, 0x02], "sessions-tagged response");
+    // Evidence round trips through JSON without losing the signature.
+    let json = serde_json::to_string(&evidence).unwrap();
+    let back: dc_cert::TpmAttestationEvidence = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.signature_r_hex, evidence.signature_r_hex);
+    // Offline replay still verifies.
+    assert!(dc_tpm::verify_bundle(&bundle).unwrap());
+}
+
+// REG-VAULT-FAIL-CLOSED: the strict vault posture never silently
+// downgrades to an unencrypted enclave, and the HMAC chain head is
+// recorded in the report.
+#[test]
+fn reg_vault_fail_closed() {
+    use dc_vault::{VaultRequirement, VaultSession, VerificationChain};
+
+    if let Ok(probe) = VaultSession::probe(VaultRequirement::EncryptedEnclave) {
+        assert_ne!(
+            probe.encryption,
+            dc_vault::MemoryEncryption::None,
+            "encrypted posture must never report none"
+        );
+    }
+    // Chain head algebra (pure, host-independent): same inputs → same
+    // head; any change → different head.
+    let key = [0x42u8; 64];
+    let mut a = VerificationChain::new(&key, b"fp");
+    let mut b = VerificationChain::new(&key, b"fp");
+    a.seal(b"x");
+    b.seal(b"x");
+    assert_eq!(a.head_hex(), b.head_hex());
+    a.seal(b"y");
+    b.seal(b"z");
+    assert_ne!(a.head_hex(), b.head_hex());
+    // The 64-byte guest image keeps the corrected REX encodings (a
+    // regression to the REX.X bug reintroduces [r9+*8] addressing).
+    let p = dc_vault::payload::payload_bytes();
+    assert_eq!(&p[32..36], &[0x49, 0x33, 0x04, 0xCA]);
+    assert_eq!(&p[36..40], &[0x49, 0x89, 0x04, 0xCB]);
+}
+
+// REG-PHOTON-FOUNTAIN-ROUNDTRIP: bytes → frames → symbols → payload,
+// deterministic and hash-verified, with headroom for frame loss.
+#[test]
+fn reg_photon_fountain_roundtrip() {
+    use dc_photon::{FrameReassembler, FrameStream};
+
+    let payload: Vec<u8> = (0..11_000u32).map(|i| (i * 101 + 5) as u8).collect();
+    let seed = 0xAB12_CD34u64;
+    let mut stream = FrameStream::new(&payload, 48, 4, seed).unwrap();
+    assert!(stream.symbols_per_frame() >= 1);
+    // Stream identity derives from the payload digest: two streams over
+    // the same bytes share the id.
+    let stream2 = FrameStream::new(&payload, 48, 4, seed).unwrap();
+    assert_eq!(stream.stream_id(), stream2.stream_id());
+    let mut rx = FrameReassembler::new(seed);
+    let mut recovered = None;
+    for _ in 0..6000 {
+        let frame = stream.next_frame();
+        if let Some(p) = rx.push_frame(&frame).unwrap() {
+            recovered = Some(p);
+            break;
+        }
+    }
+    assert_eq!(recovered.expect("fountain reconstruction"), payload);
+}
+
+// REG-FABRICS-WIRE-CONTRACT: the netlink attribute set is pinned; URI
+// parsing covers every transport; timeouts are deadline-guarded.
+#[test]
+fn reg_fabrics_wire_contract() {
+    use dc_nvme::fabrics::{
+        FabricTarget, NVME_CMD_CONNECT, NVMF_ATTR_HOST_TRADDR, NVMF_ATTR_KATO, NVMF_ATTR_NQN,
+        NVMF_ATTR_TRADDR, NVMF_ATTR_TRANSPORT, NVMF_ATTR_TRSVCID, build_genl_message,
+    };
+
+    let target = FabricTarget {
+        transport: dc_nvme::FabricTransport::Tcp,
+        traddr: "10.1.2.3".into(),
+        trsvcid: "4420".into(),
+        nqn: "nqn.2014-08.org.example:reg".into(),
+        host_traddr: Some("10.9.8.7".into()),
+        kato_sec: Some(15),
+        discovery: false,
+    };
+    let attrs = target.connect_attrs();
+    let types: Vec<u16> = attrs.iter().map(|(t, _)| *t).collect();
+    assert_eq!(
+        types,
+        vec![
+            NVMF_ATTR_TRANSPORT,
+            NVMF_ATTR_TRADDR,
+            NVMF_ATTR_TRSVCID,
+            NVMF_ATTR_HOST_TRADDR,
+            NVMF_ATTR_NQN,
+            NVMF_ATTR_KATO
+        ]
+    );
+    // Message framing: nlmsg header 16 + genl header 4 + padded attrs.
+    let msg = build_genl_message(0x30, NVME_CMD_CONNECT, 1, &attrs);
+    assert_eq!(&msg[0..4], &(msg.len() as u32).to_le_bytes());
+    assert_eq!(msg[16], NVME_CMD_CONNECT);
+    assert_eq!(msg[17], 1);
+    // Transport matrix parses; default budget is deadline-guarded.
+    for uri in [
+        "nvme+tcp://h:4420/nqn.x",
+        "nvme+rdma://h/nqn.x",
+        "nvme+fc://nn-0x1:pn-0x2/nqn.x",
+    ] {
+        assert!(FabricTarget::parse(uri).is_ok(), "{uri}");
+    }
+    let t = dc_nvme::FabricTimeouts::default();
+    assert!(t.ack_ms > 0 && t.ctrl_appear_ms > 0 && t.poll_ms > 0);
+}

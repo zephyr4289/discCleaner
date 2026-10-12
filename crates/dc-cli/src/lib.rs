@@ -4,11 +4,14 @@ pub mod bootattest;
 pub mod bootiso;
 pub mod evidence;
 pub mod execute;
+pub mod fabrics;
 pub mod fleet;
 pub mod init;
 pub mod key;
+pub mod photon;
 pub mod profiles;
 pub mod purge;
+pub mod quote;
 pub mod stick_install;
 
 pub use profiles::ProfileOption;
@@ -105,7 +108,7 @@ fn cli_signal_injection(_event: &str) {}
 #[command(
     name = "diskcleaner",
     author = "Forensic Systems Engineering Team",
-    version = "0.5.0",
+    version = "0.8.0",
     about = "Military-grade storage sanitization and forensic verification suite",
     long_about = "Implements NIST SP 800-88 Rev 1, IEEE 2883-2022, and DoD media sanitization standards with deterministic cryptographic verification and tamper-evident audit logs."
 )]
@@ -158,6 +161,21 @@ pub enum Commands {
     /// Standalone appliance lifecycle: PID-1 bootstrap, image packing and
     /// constituent attestation (v0.7.0, Vector 3)
     Boot(BootArgs),
+
+    /// TPM 2.0 PCR remote attestation: generate/verify hardware-signed
+    /// quotes proving the sanitization ran on an unmodified platform
+    /// (v0.8.0, Vector 1)
+    Quote(QuoteArgs),
+
+    /// Bidirectional optical air-gap bridge: stream certificates and audit
+    /// evidence out of a SCIF purely via photons — animated fountain-coded
+    /// QR frames (v0.8.0, Vector 3)
+    Photon(PhotonArgs),
+
+    /// NVMe-oF fabric session management: connect, disconnect, list and
+    /// discover remote subsystems over RDMA / RoCEv2 / TCP / FC
+    /// (v0.8.0, Vector 4)
+    Fabrics(FabricsArgs),
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -321,6 +339,24 @@ pub struct ExecuteArgs {
     /// the run aborts before certification.
     #[arg(long)]
     pub thermal_critical_c: Option<i32>,
+
+    /// Capture a TPM 2.0 remote-attestation quote over PCRs 0-11 into the
+    /// certificate when a TPM is present (v0.8.0, Vector 1).
+    #[arg(long)]
+    pub tpm_quote: bool,
+
+    /// Refuse to certify without a verified TPM quote (fail-closed).
+    #[arg(long)]
+    pub tpm_quote_required: bool,
+
+    /// Execute the verification-critical path inside the micro-KVM vault
+    /// enclave (v0.8.0, Vector 2). Requires /dev/kvm.
+    #[arg(long)]
+    pub vault: bool,
+
+    /// Vault posture: require SEV/TDX memory encryption (implies --vault).
+    #[arg(long)]
+    pub vault_encrypted_required: bool,
 }
 
 #[derive(Args, Debug)]
@@ -458,6 +494,32 @@ pub struct PurgeArgs {
     /// Disable the thermal guard entirely (NOT recommended; disclosed)
     #[arg(long)]
     pub no_thermal_guard: bool,
+
+    /// Capture a TPM 2.0 remote-attestation quote over PCRs 0-11 into the
+    /// certificate when a TPM is present (v0.8.0, Vector 1).
+    #[arg(long)]
+    pub tpm_quote: bool,
+
+    /// Refuse to certify without a verified TPM quote (fail-closed
+    /// hardware attestation).
+    #[arg(long)]
+    pub tpm_quote_required: bool,
+
+    /// Execute the verification-critical path inside the micro-KVM vault
+    /// enclave (v0.8.0, Vector 2). Requires /dev/kvm.
+    #[arg(long)]
+    pub vault: bool,
+
+    /// Vault posture: require SEV/TDX memory encryption, refusing to run
+    /// on hosts without it (implies --vault).
+    #[arg(long)]
+    pub vault_encrypted_required: bool,
+
+    /// Runtime v0.8.0 evidence (TPM quote bundle, vault report, fabric
+    /// session) captured by `cmd_purge` and consumed by the certificate
+    /// assembly. Not a CLI flag.
+    #[arg(skip)]
+    pub v08_evidence: Option<std::sync::Arc<crate::purge::V08Evidence>>,
 }
 
 #[derive(Args, Debug)]
@@ -590,6 +652,135 @@ pub struct BootArgs {
     pub sub: BootSubcommands,
 }
 
+// ---------------------------------------------------------------------------
+// v0.8.0: Sovereign Air-Gap command surface
+// ---------------------------------------------------------------------------
+
+#[derive(Args, Debug)]
+pub struct QuoteArgs {
+    #[command(subcommand)]
+    pub sub: QuoteSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum QuoteSubcommands {
+    /// Measure the appliance artifacts into PCRs 8-11 and produce a
+    /// locally-verified TPM2_Quote over PCRs 0-11
+    Generate {
+        /// Kernel image to measure into PCR 8
+        #[arg(long)]
+        kernel: Option<PathBuf>,
+        /// initramfs to measure into PCR 9
+        #[arg(long)]
+        initramfs: Option<PathBuf>,
+        /// dc binary to measure into PCR 10
+        #[arg(long)]
+        binary: Option<PathBuf>,
+        /// Evidence tag extended into PCR 11 (default: run timestamp)
+        #[arg(long)]
+        evidence_tag: Option<String>,
+        /// Freshness nonce in hex (default: run-bound BLAKE3)
+        #[arg(long)]
+        nonce: Option<String>,
+        /// Output file for the quote bundle JSON (default: stdout)
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// Re-verify a saved quote bundle offline (the auditor's check)
+    Verify { file: PathBuf },
+}
+
+#[derive(Args, Debug)]
+pub struct PhotonArgs {
+    #[command(subcommand)]
+    pub sub: PhotonSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PhotonSubcommands {
+    /// Stream a file as an endless animated QR fountain (point the
+    /// approved scanner at the screen)
+    Stream {
+        /// Evidence file to stream (certificate, journal, package…)
+        file: PathBuf,
+        /// Frames per second
+        #[arg(long, default_value_t = 2.0)]
+        fps: f64,
+        /// Fountain block size in bytes
+        #[arg(long, default_value_t = 48)]
+        block_size: usize,
+        /// Requested symbols per frame (clamped to QR capacity)
+        #[arg(long, default_value_t = 4)]
+        batch: u8,
+        /// Quiet-zone modules around the QR
+        #[arg(long, default_value_t = 2)]
+        quiet_zone: usize,
+        /// Experimental color-matrix mode (2 modules per character cell)
+        #[arg(long, default_value_t = false)]
+        color: bool,
+        /// Stop after N frames (test rigs)
+        #[arg(long)]
+        limit: Option<u64>,
+        /// Fountain stream seed (hex; receiver must match)
+        #[arg(long, default_value = "0")]
+        seed: String,
+    },
+    /// Reassemble a captured frame dump and verify the payload hash
+    Decode {
+        /// Frame dump file (one hex frame per line, from --dump-frames)
+        frames: PathBuf,
+        /// Fountain stream seed (hex)
+        #[arg(long, default_value = "0")]
+        seed: String,
+        /// Write recovered payload here
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// Print the stream manifest for the certificate
+    Manifest {
+        file: PathBuf,
+        #[arg(long, default_value_t = 48)]
+        block_size: usize,
+        #[arg(long, default_value = "0")]
+        seed: String,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct FabricsArgs {
+    #[command(subcommand)]
+    pub sub: FabricsSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FabricsSubcommands {
+    /// List connected fabric controllers
+    List,
+    /// Connect to a fabric target: nvme+tcp://addr[:port]/nqn…
+    Connect {
+        target: String,
+        /// CONNECT netlink ACK deadline (ms)
+        #[arg(long, default_value_t = 5000)]
+        ack_ms: u64,
+        /// Controller appearance deadline (ms)
+        #[arg(long, default_value_t = 30000)]
+        ctrl_appear_ms: u64,
+        /// Disconnect immediately after a successful connect (probe)
+        #[arg(long, default_value_t = false)]
+        disconnect: bool,
+    },
+    /// Disconnect a controller by its fabric target
+    Disconnect { target: String },
+    /// Discover subsystems behind a discovery controller
+    Discover {
+        target: String,
+        #[arg(long, default_value_t = 5000)]
+        ack_ms: u64,
+        #[arg(long, default_value_t = 30000)]
+        ctrl_appear_ms: u64,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum BootSubcommands {
     /// Run the real PID-1 bootstrap (mounts, entropy seeding, zombie
@@ -695,6 +886,18 @@ pub fn run(cli: Cli) -> Result<(), DcError> {
         }
         Commands::Boot(args) => {
             cmd_boot(args)?;
+            Ok(())
+        }
+        Commands::Quote(args) => {
+            quote::cmd_quote(args)?;
+            Ok(())
+        }
+        Commands::Photon(args) => {
+            photon::cmd_photon(args)?;
+            Ok(())
+        }
+        Commands::Fabrics(args) => {
+            fabrics::cmd_fabrics(args)?;
             Ok(())
         }
     }

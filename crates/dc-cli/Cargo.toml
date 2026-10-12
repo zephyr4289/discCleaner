@@ -1,6 +1,6 @@
 [package]
 name = "dc-cli"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 
 [features]
@@ -31,6 +31,9 @@ dc-mmc = { workspace = true }
 dc-opal = { workspace = true }
 dc-tui = { workspace = true }
 dc-report = { workspace = true }
+dc-tpm = { workspace = true }
+dc-vault = { workspace = true }
+dc-photon = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
 tracing = { workspace = true }

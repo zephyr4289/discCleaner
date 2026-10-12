@@ -147,6 +147,19 @@ pub struct UnsignedCertificate {
     /// pre/post, NVMe telemetry snapshots, ATA device-statistics wear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware_attestation: Option<crate::firmware::FirmwareAttestationEvidence>,
+    /// Hardware-anchored remote attestation: verified TPM2_Quote over
+    /// PCRs 0-11 signed by the non-exportable AIK (v0.8.0, Vector 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tpm_attestation: Option<crate::tpm::TpmAttestationEvidence>,
+    /// Micro-KVM enclave execution report (v0.8.0, Vector 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_report: Option<crate::vault::VaultReportEvidence>,
+    /// Photon-bridge stream manifest (v0.8.0, Vector 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photon_manifest: Option<crate::vault::PhotonManifestEvidence>,
+    /// Fabric session record for remote NVMe-oF purges (v0.8.0, Vector 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fabric_session: Option<crate::vault::FabricSessionEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -181,6 +194,19 @@ pub struct SanitizationCertificate {
     /// (v0.7.0, Vector 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware_attestation: Option<crate::firmware::FirmwareAttestationEvidence>,
+    /// Hardware-anchored remote attestation: verified TPM2_Quote over
+    /// PCRs 0-11 signed by the non-exportable AIK (v0.8.0, Vector 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tpm_attestation: Option<crate::tpm::TpmAttestationEvidence>,
+    /// Micro-KVM enclave execution report (v0.8.0, Vector 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_report: Option<crate::vault::VaultReportEvidence>,
+    /// Photon-bridge stream manifest (v0.8.0, Vector 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photon_manifest: Option<crate::vault::PhotonManifestEvidence>,
+    /// Fabric session record for remote NVMe-oF purges (v0.8.0, Vector 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fabric_session: Option<crate::vault::FabricSessionEvidence>,
 }
 
 #[derive(Clone, Debug)]
@@ -223,6 +249,10 @@ impl SanitizationCertificate {
             health_post: None,
             defense_warnings: None,
             firmware_attestation: None,
+            tpm_attestation: None,
+            vault_report: None,
+            photon_manifest: None,
+            fabric_session: None,
         }
     }
 
@@ -272,6 +302,48 @@ impl SanitizationCertificate {
         self
     }
 
+    /// Attach the hardware-anchored TPM quote (v0.8.0, Vector 1).
+    pub fn with_tpm_attestation(mut self, evidence: crate::tpm::TpmAttestationEvidence) -> Self {
+        let derived = evidence.defense_warnings();
+        self.tpm_attestation = Some(evidence);
+        if !derived.is_empty() {
+            let mut warnings = self.defense_warnings.unwrap_or_default();
+            warnings.extend(derived);
+            self.defense_warnings = Some(warnings);
+        }
+        self
+    }
+
+    /// Attach the micro-KVM vault execution report (v0.8.0, Vector 2).
+    pub fn with_vault_report(mut self, report: crate::vault::VaultReportEvidence) -> Self {
+        let derived = report.defense_warnings();
+        self.vault_report = Some(report);
+        if !derived.is_empty() {
+            let mut warnings = self.defense_warnings.unwrap_or_default();
+            warnings.extend(derived);
+            self.defense_warnings = Some(warnings);
+        }
+        self
+    }
+
+    /// Attach the photon-bridge stream manifest (v0.8.0, Vector 3).
+    pub fn with_photon_manifest(mut self, manifest: crate::vault::PhotonManifestEvidence) -> Self {
+        self.photon_manifest = Some(manifest);
+        self
+    }
+
+    /// Attach the fabric session record (v0.8.0, Vector 4).
+    pub fn with_fabric_session(mut self, session: crate::vault::FabricSessionEvidence) -> Self {
+        let derived = session.defense_warnings();
+        self.fabric_session = Some(session);
+        if !derived.is_empty() {
+            let mut warnings = self.defense_warnings.unwrap_or_default();
+            warnings.extend(derived);
+            self.defense_warnings = Some(warnings);
+        }
+        self
+    }
+
     /// Extract unsigned payload for canonical JCS serialization.
     pub fn unsigned_payload(&self) -> UnsignedCertificate {
         UnsignedCertificate {
@@ -290,6 +362,10 @@ impl SanitizationCertificate {
             health_post: self.health_post.clone(),
             defense_warnings: self.defense_warnings.clone(),
             firmware_attestation: self.firmware_attestation.clone(),
+            tpm_attestation: self.tpm_attestation.clone(),
+            vault_report: self.vault_report.clone(),
+            photon_manifest: self.photon_manifest.clone(),
+            fabric_session: self.fabric_session.clone(),
         }
     }
 

@@ -1,6 +1,6 @@
 # diskCleaner (`dc`)
 
-[![Version](https://img.shields.io/badge/version-v0.7.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
+[![Version](https://img.shields.io/badge/version-v0.8.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64--musl-blueviolet.svg)](https://github.com/zephyr4289/discCleaner)
 [![Standards](https://img.shields.io/badge/standards-NIST%20SP%20800--88%20%7C%20IEEE%202883--2022-orange.svg)](diskCleaner.md)
@@ -11,11 +11,11 @@
 `dc` is a self-contained, statically linked, zero-dependency storage sanitization suite engineered for NVMe, SATA, SAS/SCSI, USB-bridged (SAT), eMMC/UFS, TCG Opal self-encrypting (SED), and Host-Managed SMR/ZNS storage. It executes **NIST SP 800-88 Rev 1** Clear and Purge operations, issuing cryptographically signed, third-party-verifiable evidence packages that survive crashes, power loss, and adversarial cross-examination.
 
 ```
-Version       : v0.7.0 (Hardware custody · cold-bus remediation · RAM appliance · firmware attestation)
+Version       : v0.8.0 (Sovereign Air-Gap: TPM 2.0 attestation · KVM vault · photon bridge · NVMe-oF purge)
 Target Triples: x86_64-unknown-linux-musl · aarch64-unknown-linux-musl
 Runtime Deps  : Zero external binaries, zero dynamic libraries
-Crates        : 15 modular workspace crates (25,000+ Rust LOC)
-Tests         : 100+ unit tests + 51 integration suites + 30 pinned regression guards
+Crates        : 18 modular workspace crates (30,000+ Rust LOC)
+Tests         : 120+ unit tests + 55 integration suites + 34 pinned regression guards
 Test Driver   : python3 tests/run_tests.py (lit-style discovery, parallel, PASS/FAIL/UNSUPPORTED)
 Verification  : Ed25519 + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3 Archival Embedding
 ```
@@ -204,6 +204,22 @@ dc execute --target /dev/sda --target /dev/sdb --target /dev/nvme0n1 \
 # Bake-off evidence: production-engine throughput + per-profile ETA table
 dc bench --file /scratch/bench.raw --size-mib 2048 --ref-gib 4000
 ```
+
+### 12. TPM 2.0 PCR Remote Attestation — `dc quote` (v0.8.0, Vector 1)
+
+An Ed25519-signed certificate proves the *operator* approved the wipe — it says nothing about the *host*. A ring-0 rootkit can shim the wipe engine, forge the read-back verifier, and certify a wipe that never happened. `dc quote` closes that gap with the platform's own secure element: a native, zero-dependency TPM 2.0 wire stack (`dc-tpm`, no tpm2-tss, no tpm2-tools, no OpenSSL) that speaks the Part 1/2/3 command set byte-exactly over the kernel resource manager `/dev/tpmrm0` with poll(2) deadline discipline. The appliance measures its kernel into PCR 8, initramfs into PCR 9, the running `dc` binary into PCR 10 and the run evidence into PCR 11 (platform firmware owns PCRs 0-7 via UEFI SRTM), then requests a **TPM2_Quote over PCRs 0-11** signed by a non-exportable NIST P-256 AIK (`CreatePrimary` with RESTRICTED|SIGN|FIXED_TPM|FIXED_PARENT attributes — pinned and verified on every provisioning). The bundle binds a caller nonce (freshness), the TPM monotonic clock (replay guard) and the full PCR digest; it is verified locally before it is ever certified — magic/type/nonce/selection checks, PCR digest recomputation from live `TPM2_PCR_Read`, and ECDSA-P256 signature verification against the AIK public point — and the **raw quote response rides the certificate** so any external auditor can replay the identical verification offline. Hardware-drives-firmware attacks now face the motherboard itself.
+
+### 13. Micro-KVM "Vault Mode" — Encrypted Memory Enclave (v0.8.0, Vector 2)
+
+`dc purge --vault` and `dc execute --vault` isolate the security-critical path inside a **self-contained micro-hypervisor** (~700 lines of pure Rust — no BIOS, no QEMU, no device model): `/dev/kvm` is opened with the frozen API-v12 handshake, guest RAM is mlock'd and never swapped, 1-GiB-identity long-mode page tables + a two-segment GDT are laid down, and the vCPU enters 64-bit mode directly at a 64-byte, BLAKE3-measured guest payload that derives the session key from in-guest RDRAND plus host-injected entropy. Under AMD SEV / SEV-ES / SW-protected VM types (probed by actually attempting the encrypted VM create — the strict `--vault-encrypted-required` posture REFUSES to certify on hosts without memory encryption, never silently downgrading) the guest's working set is ciphertext to the host: a rootkit with hypervisor access cannot read the session key. The read-back verification evidence is then folded into an **HMAC-SHA256 chain keyed by the vault session key** (`chain[n] = HMAC(key, chain[n-1] ‖ record[n])`) whose head rides the certificate: a host rootkit can alter records, but it cannot forge the chain head without the guest-only key, and it cannot replay the head because its altered records cannot reproduce it. The guest image's machine code is pinned by native-execution tests — the same 64 bytes run on the real CPU in CI (REX/SIB encodings included), so no encoding drift can survive. VFIO group-attach plumbing (container SET + KVM_DEV_VFIO_GROUP_ADD) is staged for the v0.9.0 guest-side block driver.
+
+### 14. Photon Bridge — Optical Air-Gap Evidence Exfiltration (v0.8.0, Vector 3)
+
+The highest-classification facilities forbid plugging *anything* into a machine that touched classified data — yet the signed certificate, TPM quote and audit journal must leave the room for command review. `dc photon stream certificate.cert.json` renders an **endless animated stream of fountain-coded QR frames** directly in the terminal: an auditor holds an approved scanning device up to the screen and captures evidence purely via photons — nothing physical ever crosses the SCIF boundary. The payload is split into blocks and **LT fountain-coded** (systematic-first: the k source blocks stream as-is, then a robust-soliton fountain tail repairs any frames the capture missed — order-independent, retransmission-free), each frame batching several symbols plus a stream-identity header (BLAKE3-truncated) inside a pure-Rust QR encoder (byte mode, ECC level M, versions 1-10, full 8-mask penalty selection, BCH format info, RS over GF(256) — every byte-pinned by structure tests). The receiving side reassembles from any sufficient subset of frames and verifies the payload BLAKE3 end-to-end (`dc photon decode`); the certificate embeds the photon manifest (payload hash, stream id, seed, geometry) so the capture session is provably bound to what was signed. Half-block terminal rendering works over serial consoles and SCIF KVM carts; an experimental color-matrix mode doubles density for capture hardware that understands the 4-color cell mapping.
+
+### 15. Enterprise SAN / NVMe-over-Fabrics Remote Purge (v0.8.0, Vector 4)
+
+Government datacenters decommission multi-petabyte SANs, not just local drives. `dc purge --target nvme+tcp://10.0.0.5:4420/nqn.2014-08.org.example:sub1` (also `nvme+rdma://`, `nvme+fc://`, `nvme+loop://`) drives the kernel's fabric host stack **directly over generic netlink** — no libnvme, no nvme-cli: the family id is resolved through the nlctrl GETFAMILY dance, `NVME_CMD_CONNECT` is marshaled byte-exactly with the pinned NVMF attribute set (TRANSPORT/TRADDR/TRSVCID/NQN/HOST_TRADDR/KATO), and the new controller is awaited in `/sys/class/nvme` under a hard appearance deadline. The remote namespace then purges through the SAME controller-attested ladder (in-band Sanitize/Format admin commands over the fabrics controller), after which `NVME_CMD_DISCONNECT` always fires — including on failure — and the certificate records the full fabric session (transport, addresses, NQN, controller, connect/disconnect timestamps, clean-disconnect verdict). `dc fabrics discover` walks the discovery NQN and decodes the LID 0x70 log; `dc fabrics connect/disconnect/list` manage sessions; FC topology evidence (local HBA WWPNs, remote ports) is read from sysfs into the certificate. Every step is deadline-guarded — a wedged fabric fails the purge in seconds, never hangs a lights-out run.
 
 ### 8. Hardware Token Custody — PIV/CAC/YubiKey 2PI (v0.7.0)
 
