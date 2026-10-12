@@ -11,6 +11,17 @@ pub struct AtaSecurityStatus {
     pub enhanced_erase_time_minutes: Option<u16>,
 }
 
+/// SANITIZE DEVICE feature support decoded from IDENTIFY DEVICE word 169
+/// (guarded by the word 206 VALID coverage bits). Drives without sanitize
+/// fall back to the ATA SECURITY ERASE ladder.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtaSanitizeSupport {
+    pub supported: bool,
+    pub crypto_scramble_supported: bool,
+    pub block_erase_supported: bool,
+    pub overwrite_supported: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AtaIdentifyData {
     pub model: String,
@@ -18,6 +29,8 @@ pub struct AtaIdentifyData {
     pub firmware: String,
     pub lba48_sectors: u64,
     pub security: AtaSecurityStatus,
+    /// SANITIZE DEVICE feature support (word 169).
+    pub sanitize: AtaSanitizeSupport,
 }
 
 pub struct AtaCodec;
@@ -95,13 +108,44 @@ impl AtaCodec {
             enhanced_erase_time_minutes: if words[90] > 0 { Some(words[90]) } else { None },
         };
 
+        // Word 169: SANITIZE DEVICE support. Valid only when word 206
+        // bits 14:12 report the VALID coverage (0b001/0b010); bit 0 =
+        // sanitize supported, bit 1 = crypto scramble, bit 2 = block erase,
+        // bit 3 = overwrite.
+        let w169 = words[169];
+        let w206 = words[206];
+        let sanitize_valid = (w206 >> 12) & 0x7;
+        let sanitize = AtaSanitizeSupport {
+            supported: sanitize_valid != 0 && (w169 & 0x0001) != 0,
+            crypto_scramble_supported: sanitize_valid != 0 && (w169 & 0x0002) != 0,
+            block_erase_supported: sanitize_valid != 0 && (w169 & 0x0004) != 0,
+            overwrite_supported: sanitize_valid != 0 && (w169 & 0x0008) != 0,
+        };
+
         Ok(AtaIdentifyData {
             model,
             serial,
             firmware,
             lba48_sectors,
             security,
+            sanitize,
         })
+    }
+
+    /// Parse the DCO (Device Configuration Overlay) 512-byte sector from
+    /// DEVICE CONFIGURATION IDENTIFY: the maximum accessible sectors live
+    /// in words 100-103 (same layout as IDENTIFY DEVICE). When the DCO
+    /// reports zero, the drive has no factory reserve beyond the reported
+    /// native capacity (nothing to unmask).
+    pub fn decode_device_config_overlay(raw: &[u8]) -> Result<u64, String> {
+        if raw.len() < 208 {
+            return Err("DCO sector must be at least 208 bytes".to_string());
+        }
+        let w100 = u16::from_le_bytes([raw[200], raw[201]]);
+        let w101 = u16::from_le_bytes([raw[202], raw[203]]);
+        let w102 = u16::from_le_bytes([raw[204], raw[205]]);
+        let w103 = u16::from_le_bytes([raw[206], raw[207]]);
+        Ok((w100 as u64) | ((w101 as u64) << 16) | ((w102 as u64) << 32) | ((w103 as u64) << 48))
     }
 
     /// Decode byte-swapped ATA ASCII string.
@@ -181,13 +225,22 @@ impl AtaCodec {
         Self::encode_sat_passthrough_16_framed(0xF3, 0x0000, 0, 1, SatTransferClass::None)
     }
 
-    /// SECURITY ERASE UNIT (ATA-ACS: opcode 0xF4, non-data).
-    /// `enhanced = true` requests the enhanced (cryptographic) erase variant
-    /// via the FEATURES register.
+    /// SECURITY ERASE UNIT (ATA-ACS: opcode 0xF4). `enhanced = true` requests
+    /// the enhanced (cryptographic) erase variant via the FEATURES register.
+    ///
+    /// FEATURES encoding (ATA8-ACS §7.43): bit 0 = Master Password
+    /// Capability, bit 1 = Enhanced Security Erase. NOTE (v0.6.0): the
+    /// pre-0.6.0 codec selected enhanced with bit 0, which names the
+    /// master-password authority and leaves the erase NORMAL — fixed here
+    /// and pinned by REG-ATA-PURGE-SGIO-FRAMING. The real pipeline uses
+    /// [`encode_sat_security_erase_unit_auth`], which also frames the
+    /// command as PIO data-out with its 512-byte password payload
+    /// (SECURITY ERASE UNIT is a PIO Data-Out command; a non-data framing
+    /// never transfers the password and can never authenticate).
     pub fn encode_sat_security_erase_unit(enhanced: bool) -> [u8; 16] {
         Self::encode_sat_passthrough_16_framed(
             0xF4,
-            if enhanced { 0x0001 } else { 0x0000 },
+            if enhanced { 0x0002 } else { 0x0000 },
             0,
             1,
             SatTransferClass::None,
@@ -197,5 +250,257 @@ impl AtaCodec {
     /// SECURITY FREEZE LOCK (ATA-ACS: opcode 0xF5, non-data). Idempotent.
     pub fn encode_sat_security_freeze_lock() -> [u8; 16] {
         Self::encode_sat_passthrough_16_framed(0xF5, 0x0000, 0, 1, SatTransferClass::None)
+    }
+
+    // -------------------------------------------------------------------
+    // v0.6.0 — Universal ATA hardware purge ladder (SAT framing)
+    // -------------------------------------------------------------------
+
+    /// IDENTIFY DEVICE (ATA8-ACS §7.16: opcode 0xEC, PIO data-in, 512-byte
+    /// response). Sector count 0 = the conventional full 256-word page.
+    pub fn encode_sat_identify_device() -> [u8; 16] {
+        Self::encode_sat_passthrough_16_framed(0xEC, 0x0000, 0, 0, SatTransferClass::DataIn)
+    }
+
+    /// SECURITY SET PASSWORD (ATA-ACS: opcode 0xF1, PIO data-out, 512-byte
+    /// payload). `master = true` sets the master password, else the user
+    /// password. The payload carries the password at bytes 2..33.
+    pub fn encode_sat_security_set_password(
+        master: bool,
+        password: &[u8; 32],
+    ) -> ([u8; 16], [u8; 512]) {
+        let cdb =
+            Self::encode_sat_passthrough_16_framed(0xF1, 0x0000, 0, 1, SatTransferClass::DataOut);
+        (cdb, Self::security_password_payload(master, password))
+    }
+
+    /// SECURITY ERASE UNIT with its 512-byte password payload (opcode
+    /// 0xF4, PIO data-out). FEATURES: bit 0 = master password authority,
+    /// bit 1 = enhanced security erase (ATA8-ACS §7.43).
+    pub fn encode_sat_security_erase_unit_auth(
+        master: bool,
+        enhanced: bool,
+        password: &[u8; 32],
+    ) -> ([u8; 16], [u8; 512]) {
+        let features: u16 = (master as u16) | ((enhanced as u16) << 1);
+        let cdb =
+            Self::encode_sat_passthrough_16_framed(0xF4, features, 0, 1, SatTransferClass::DataOut);
+        (cdb, Self::security_password_payload(master, password))
+    }
+
+    /// SECURITY DISABLE PASSWORD (ATA-ACS: opcode 0xF6, PIO data-out) —
+    /// the no-harm repair path when an erase fails mid-flight.
+    pub fn encode_sat_security_disable_password(
+        master: bool,
+        password: &[u8; 32],
+    ) -> ([u8; 16], [u8; 512]) {
+        let cdb =
+            Self::encode_sat_passthrough_16_framed(0xF6, 0x0000, 0, 1, SatTransferClass::DataOut);
+        (cdb, Self::security_password_payload(master, password))
+    }
+
+    /// SECURITY UNLOCK (ATA-ACS: opcode 0xF2, PIO data-out).
+    pub fn encode_sat_security_unlock(master: bool, password: &[u8; 32]) -> ([u8; 16], [u8; 512]) {
+        let cdb =
+            Self::encode_sat_passthrough_16_framed(0xF2, 0x0000, 0, 1, SatTransferClass::DataOut);
+        (cdb, Self::security_password_payload(master, password))
+    }
+
+    /// ATA SECURITY password payload sector (ATA8-ACS §7.44):
+    /// byte 0 bit 7 = master password capability (0 = user, 1 = master),
+    /// bytes 2..34 = the password, bytes 34.. = master password revision
+    /// (master only). Reserved bytes are zero.
+    fn security_password_payload(master: bool, password: &[u8; 32]) -> [u8; 512] {
+        let mut payload = [0u8; 512];
+        if master {
+            payload[0] = 0x80;
+        }
+        payload[2..34].copy_from_slice(password);
+        payload
+    }
+
+    /// SANITIZE DEVICE (ATA8-ACS §7.47: opcode 0xB4, non-data). The
+    /// FEATURES register selects the sanitize operation.
+    pub fn encode_sat_sanitize_device(feature: AtaSanitizeFeature) -> [u8; 16] {
+        Self::encode_sat_passthrough_16_framed(0xB4, feature as u16, 0, 1, SatTransferClass::None)
+    }
+
+    /// SMART READ DATA (ATA8-ACS: opcode 0xB0, features 0xD0, PIO data-in,
+    /// 512-byte attribute table). The 0x4F/0xC2 key bytes in the LBA field
+    /// are the SMART command signature the device demands.
+    pub fn encode_sat_smart_read_data() -> [u8; 16] {
+        // LBA low = 0x4F, LBA mid = 0xC2 (SMART key), count = 1 sector.
+        Self::encode_sat_passthrough_16_framed(0xB0, 0xD0, 0xC24F, 1, SatTransferClass::DataIn)
+    }
+
+    /// SMART READ LOG (ATA8-ACS: opcode 0xB0, features 0xD5, PIO data-in,
+    /// 512-byte log page). `log_address` 0x30 selects the Sanitize Status
+    /// log.
+    pub fn encode_sat_smart_read_log(log_address: u8) -> [u8; 16] {
+        // LBA low carries the log address, LBA mid = 0xC2 SMART key.
+        Self::encode_sat_passthrough_16_framed(
+            0xB0,
+            0xD5,
+            0xC200 | (log_address as u64),
+            1,
+            SatTransferClass::DataIn,
+        )
+    }
+
+    /// DEVICE CONFIGURATION IDENTIFY (opcode 0xB1, feature 0xC2, PIO
+    /// data-in, 512 bytes): the DCO sector, whose maximum-sector words
+    /// (100-103, same layout as IDENTIFY DEVICE) disclose the factory
+    /// capacity ceiling.
+    pub fn encode_sat_device_config_identify() -> [u8; 16] {
+        Self::encode_sat_passthrough_16_framed(0xB1, 0xC2, 0, 1, SatTransferClass::DataIn)
+    }
+
+    /// DEVICE CONFIGURATION RESTORE (opcode 0xB1, feature 0xC0, non-data).
+    /// Restores the DCO to factory defaults; a power-on reset applies it.
+    pub fn encode_sat_device_config_restore() -> [u8; 16] {
+        Self::encode_sat_passthrough_16_framed(0xB1, 0xC0, 0, 1, SatTransferClass::None)
+    }
+
+    /// READ NATIVE MAX ADDRESS EXT (opcode 0x27, non-data with CK_COND=1):
+    /// the 48-bit native maximum LBA returns in the ATA task file, which
+    /// SAT delivers as the 0x09 (ATA return) sense descriptor.
+    pub fn encode_sat_read_native_max_ext() -> [u8; 16] {
+        let mut cdb =
+            Self::encode_sat_passthrough_16_framed(0x27, 0x0000, 0, 1, SatTransferClass::None);
+        // CK_COND=1 (bit 5 of byte 2): request the return task file in
+        // sense data so the native max LBA is observable.
+        cdb[2] |= 0x20;
+        cdb
+    }
+
+    /// SET MAX ADDRESS EXT (opcode 0x37, features 0x0000, non-data):
+    /// re-addresses the device up to `native_max_lba`, exposing HPA-hidden
+    /// capacity to subsequent commands (including purges).
+    pub fn encode_sat_set_max_ext(native_max_lba: u64) -> [u8; 16] {
+        Self::encode_sat_passthrough_16_framed(
+            0x37,
+            0x0000,
+            native_max_lba,
+            1,
+            SatTransferClass::None,
+        )
+    }
+
+    /// Extract the 48-bit LBA from a SAT sense buffer carrying the 0x09
+    /// ATA return descriptor (returned by READ NATIVE MAX ADDRESS EXT
+    /// when CK_COND=1). Descriptor layout (SAT-5 §11.1): descriptor bytes
+    /// 6..12 carry LBA 47:40, 31:24, 39:32, 23:16, 15:8, 7:0.
+    pub fn decode_ata_return_descriptor_lba(sense: &[u8]) -> Result<u64, String> {
+        // Walk descriptor-format sense data: response code 0x72/0x73,
+        // descriptors start at byte 8, each [type, len, payload...].
+        if sense.len() < 10 {
+            return Err("sense buffer too short for descriptor walk".to_string());
+        }
+        let response_code = sense[0] & 0x7F;
+        if response_code != 0x72 && response_code != 0x73 {
+            return Err(format!(
+                "expected descriptor-format sense (0x72/0x73), got 0x{:02X}",
+                response_code
+            ));
+        }
+        let sense_len = sense.len();
+        let mut off = 8usize;
+        while off + 2 <= sense_len {
+            let desc_type = sense[off];
+            let desc_len = sense[off + 1] as usize;
+            if desc_type == 0x09 && desc_len >= 12 && off + 2 + 12 <= sense_len {
+                // d[0] is descriptor byte 2 (flags); descriptor byte N is
+                // d[N - 2]. LBA fields are descriptor bytes 6..12.
+                let d = &sense[off + 2..off + 2 + 12];
+                let lba = ((d[4] as u64) << 40)
+                    | ((d[5] as u64) << 24)
+                    | ((d[6] as u64) << 32)
+                    | ((d[7] as u64) << 16)
+                    | ((d[8] as u64) << 8)
+                    | (d[9] as u64);
+                return Ok(lba);
+            }
+            off += 2 + desc_len;
+        }
+        Err("no 0x09 ATA return descriptor in sense data".to_string())
+    }
+
+    /// Parse SMART attribute 0x05 (Reallocated_Sector_Ct) raw value from a
+    /// 512-byte SMART READ DATA table. Attribute entries are 12 bytes
+    /// (id, flags 2, current/worst/reserved 3, raw 6, reserved 1); the
+    /// table ends at the first 0x00 id. The raw value is the grown defect
+    /// (G-List) count the defense disclosure is built from.
+    pub fn decode_smart_reallocated_sectors(raw: &[u8]) -> Result<u64, String> {
+        if raw.len() < 512 {
+            return Err("SMART READ DATA buffer must be 512 bytes".to_string());
+        }
+        for entry_idx in 0..30 {
+            let base = 2 + entry_idx * 12; // table starts at byte 2
+            if base + 12 > 512 {
+                break;
+            }
+            let id = raw[base];
+            if id == 0x00 {
+                break; // end of attribute table
+            }
+            if id == 0x05 {
+                // Raw value: 6 bytes little-endian at offset +5.
+                let mut value: u64 = 0;
+                for (i, b) in raw[base + 5..base + 11].iter().enumerate() {
+                    value |= (*b as u64) << (8 * i);
+                }
+                return Ok(value);
+            }
+        }
+        // Attribute absent: the drive does not report reallocations.
+        Ok(0)
+    }
+}
+
+/// Sanitize operations selectable through the SANITIZE DEVICE command's
+/// FEATURES register (ATA8-ACS §7.47.2).
+#[repr(u16)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AtaSanitizeFeature {
+    /// Block Erase: electrical erase of all user data blocks.
+    BlockErase = 0x10,
+    /// Crypto Scramble: destroy the internal data encryption key.
+    CryptoScramble = 0x20,
+    /// Overwrite: single-pattern overwrite of all user data blocks.
+    Overwrite = 0x40,
+}
+
+/// ATA Sanitize Status log (log address 0x30) decode — the ATA mirror of
+/// `NvmeSanitizeStatus`. Field offsets follow the ATA8-ACS Sanitize Status
+/// log page layout as implemented: 16-bit SSTAT at word 5 (offset 10) with
+/// bit 0 = in progress, bit 1 = completed successfully, bit 2 = failed;
+/// 16-bit progress fraction at word 2 (offset 4), 0x10000-scaled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtaSanitizeStatus {
+    pub progress_permille: u16,
+    pub is_in_progress: bool,
+    pub is_completed: bool,
+    pub is_failed: bool,
+    pub raw_sstat: u16,
+    pub raw_sprog: u16,
+}
+
+impl AtaSanitizeStatus {
+    /// Decode the 512-byte Sanitize Status log page.
+    pub fn decode_log(raw: &[u8]) -> Result<Self, String> {
+        if raw.len() < 12 {
+            return Err("Sanitize Status log page must be at least 12 bytes".to_string());
+        }
+        let raw_sprog = u16::from_le_bytes([raw[4], raw[5]]);
+        let raw_sstat = u16::from_le_bytes([raw[10], raw[11]]);
+        let progress_permille = ((raw_sprog as u32 * 1000 + 32767) / 65536).min(1000) as u16;
+        Ok(Self {
+            progress_permille,
+            is_in_progress: raw_sstat & 0x0001 != 0,
+            is_completed: raw_sstat & 0x0002 != 0,
+            is_failed: raw_sstat & 0x0004 != 0,
+            raw_sstat,
+            raw_sprog,
+        })
     }
 }

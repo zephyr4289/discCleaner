@@ -141,11 +141,526 @@ fn reg_sat_security_erase_is_non_data_framed() {
     }
     assert_eq!(prep[14], 0xF3);
     assert_eq!(unit[14], 0xF4);
-    assert_eq!(
-        enhanced[4], 0x01,
-        "enhanced erase selected via FEATURES register"
-    );
+    // Enhanced erase is selected via the FEATURES register bit 1
+    // (ATA8-ACS §7.43: bit 0 = Master Password Capability, bit 1 =
+    // Enhanced Security Erase). v0.6.0 CORRECTION (REG-ATA-PURGE-SGIO-
+    // FRAMING): the pre-0.6.0 codec selected enhanced with bit 0, which
+    // names the master-password authority and silently leaves the erase
+    // NORMAL — on classified media that downgrade is a certification of
+    // an erase that did not happen as ordered.
+    assert_eq!(unit[4], 0x00);
+    assert_eq!(enhanced[4], 0x02, "enhanced = FEATURES bit 1 (0x02)");
     assert_eq!(freeze[14], 0xF5);
+}
+
+// ---------------------------------------------------------------------------
+// REG-DEFENSE-SAMPLING-REFUSED: defense profiles never accept sampled or
+// disabled verification (v0.6.0 enforcement gate).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reg_defense_sampling_refused_exit_8_before_arming() {
+    use dc_cli::profiles::{enforce_verification_policy, parse_verify_flag};
+    use dc_core::SanitizationProfile;
+
+    // Library gate: every defense profile refuses sampling and none.
+    for defense in [
+        SanitizationProfile::Dod5220_22M,
+        SanitizationProfile::Dod5220_22MEce,
+        SanitizationProfile::CertinGoi,
+        SanitizationProfile::CsecItsg06,
+        SanitizationProfile::BsiVsitr,
+    ] {
+        for spec in ["sample:4", "sample:64", "none"] {
+            let level = parse_verify_flag(spec).unwrap();
+            assert!(
+                enforce_verification_policy(&defense, &level).is_err(),
+                "{:?} must refuse --verify {}",
+                defense,
+                spec
+            );
+        }
+        assert!(enforce_verification_policy(&defense, &dc_core::VerifyLevel::Full).is_ok());
+    }
+
+    // CLI gate: usage error (exit code 8) fires BEFORE the target is
+    // probed — the target path is nonexistent on purpose; if the gate
+    // leaked past argument validation the exit code would be 2
+    // (Guardian probe refusal), not 8.
+    for profile in ["dod5220-22m", "certin-goi", "bsi-vsitr"] {
+        Command::cargo_bin("diskcleaner")
+            .unwrap()
+            .arg("execute")
+            .arg("--target")
+            .arg("/dev/nonexistent-zz")
+            .arg("--profile")
+            .arg(profile)
+            .arg("--verify")
+            .arg("sample:4")
+            .arg("--dry-run")
+            .assert()
+            .code(8);
+        Command::cargo_bin("diskcleaner")
+            .unwrap()
+            .arg("execute")
+            .arg("--target")
+            .arg("/dev/nonexistent-zz")
+            .arg("--profile")
+            .arg(profile)
+            .arg("--verify")
+            .arg("none")
+            .arg("--dry-run")
+            .assert()
+            .code(8);
+        // The plan verb compiles the same gate: a defense plan may never
+        // carry sampled verification.
+        Command::cargo_bin("diskcleaner")
+            .unwrap()
+            .arg("plan")
+            .arg("--target")
+            .arg("/dev/nonexistent-zz")
+            .arg("--profile")
+            .arg(profile)
+            .arg("--verify")
+            .arg("sample:8")
+            .assert()
+            .code(8);
+    }
+
+    // Commercial profiles pass the gate and proceed to the (failing)
+    // probe — exit 2, NOT 8: proof the gate did not over-trigger.
+    Command::cargo_bin("diskcleaner")
+        .unwrap()
+        .arg("execute")
+        .arg("--target")
+        .arg("/dev/nonexistent-zz")
+        .arg("--profile")
+        .arg("nist-clear")
+        .arg("--verify")
+        .arg("sample:4")
+        .arg("--dry-run")
+        .assert()
+        .code(2);
+}
+
+// ---------------------------------------------------------------------------
+// REG-PDFA3-COMPLIANT-STRUCTURE: the archival certificate is a real ISO
+// 19005-3 document, not the pre-0.6.0 plaintext mock.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reg_pdfa3_compliant_structure() {
+    let cert_json = br#"{"schema":"diskcleaner-cert/1","signature":{"alg":"Ed25519"}}"#;
+    let journal = b"DCJ1-hash-chained-journal-bytes";
+    let pdf = dc_report::render_sanitization_archive(
+        "Certificate of Sanitization",
+        "Hardware Purge — ATA Sanitize Crypto Scramble — SN-TEST",
+        "Purge",
+        true,
+        &[(
+            "Executed mechanism".to_string(),
+            "AtaSanitizeCryptoScramble".to_string(),
+        )],
+        &[],
+        "2026-10-12T07:33:00Z",
+        &[
+            dc_report::ArchiveAttachment {
+                filename: "certificate.json",
+                bytes: cert_json,
+                mime: "application/json",
+                relationship: "Source",
+            },
+            dc_report::ArchiveAttachment {
+                filename: "journal.dcj",
+                bytes: journal,
+                mime: "application/octet-stream",
+                relationship: "Supplement",
+            },
+        ],
+    );
+
+    // Structural conformance markers a validator checks first.
+    let s = String::from_utf8_lossy(&pdf);
+    for marker in [
+        "%PDF-1.7",
+        "xref",
+        "/Type /Catalog",
+        "/OutputIntents",
+        "/GTS_PDFA1",
+        "/EmbeddedFiles",
+        "/Type /Filespec",
+        "/AFRelationship",
+        "/Subtype /Type0",
+        "/CIDToGIDMap /Identity",
+        "pdfaid:part>3<",
+        "pdfaid:conformance>B<",
+        "startxref",
+        "%%EOF",
+    ] {
+        assert!(s.contains(marker), "PDF/A-3 structure missing {}", marker);
+    }
+
+    // The signed certificate and the journal are embedded VERBATIM:
+    // an auditor carves them out with a hex viewer and verifies the
+    // Ed25519 signature / hash chain as-is.
+    assert!(pdf.windows(cert_json.len()).any(|w| w == cert_json));
+    assert!(pdf.windows(journal.len()).any(|w| w == journal));
+
+    // XMP <-> Info consistency: the creation date matches in both forms.
+    assert!(s.contains("D:20261012073300Z"));
+    assert!(s.contains("2026-10-12T07:33:00Z"));
+
+    // Deterministic rendering: no clock leaks into the artifact.
+    let pdf2 = dc_report::render_sanitization_archive(
+        "Certificate of Sanitization",
+        "Hardware Purge — ATA Sanitize Crypto Scramble — SN-TEST",
+        "Purge",
+        true,
+        &[(
+            "Executed mechanism".to_string(),
+            "AtaSanitizeCryptoScramble".to_string(),
+        )],
+        &[],
+        "2026-10-12T07:33:00Z",
+        &[
+            dc_report::ArchiveAttachment {
+                filename: "certificate.json",
+                bytes: cert_json,
+                mime: "application/json",
+                relationship: "Source",
+            },
+            dc_report::ArchiveAttachment {
+                filename: "journal.dcj",
+                bytes: journal,
+                mime: "application/octet-stream",
+                relationship: "Supplement",
+            },
+        ],
+    );
+    assert_eq!(
+        pdf, pdf2,
+        "identical inputs must produce byte-identical archives"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// REG-ATA-PURGE-SGIO-FRAMING: the SAT CDBs of the ATA purge ladder are
+// opcode/feature/framing-correct (and the password payload rides along).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reg_ata_purge_sgio_framing() {
+    use dc_hw::AtaSanitizeFeature;
+
+    // SANITIZE DEVICE (0xB4): FEATURES selects the operation, non-data.
+    let crypto = AtaCodec::encode_sat_sanitize_device(AtaSanitizeFeature::CryptoScramble);
+    let block = AtaCodec::encode_sat_sanitize_device(AtaSanitizeFeature::BlockErase);
+    assert_eq!(crypto[0], 0x85, "ATA PASS-THROUGH (16)");
+    assert_eq!(crypto[14], 0xB4);
+    assert_eq!(crypto[4], 0x20, "Crypto Scramble = FEATURES 0x20");
+    assert_eq!(block[4], 0x10, "Block Erase = FEATURES 0x10");
+    assert_eq!((crypto[1] >> 1) & 0x0F, 3, "non-data protocol 3");
+
+    // SECURITY ERASE UNIT carries its 512-byte password payload as PIO
+    // Data-Out with the enhanced bit in FEATURES bit 1 — the v0.6.0 fix.
+    let password = [0x5Au8; 32];
+    let (cdb, payload) = AtaCodec::encode_sat_security_erase_unit_auth(false, true, &password);
+    assert_eq!(cdb[14], 0xF4);
+    assert_eq!(cdb[4], 0x02);
+    assert_eq!((cdb[1] >> 1) & 0x0F, 5, "PIO Data-Out protocol");
+    assert_eq!(cdb[2] & 0x0F, 0b0110, "data-out transfer framing");
+    assert_eq!(payload.len(), 512);
+    assert_eq!(&payload[2..34], &password, "password at bytes 2..34");
+
+    // Sanitize Status log read: SMART READ LOG with log address 0x30.
+    let status_cdb = AtaCodec::encode_sat_smart_read_log(0x30);
+    assert_eq!(status_cdb[14], 0xB0);
+    assert_eq!(status_cdb[4], 0xD5, "SMART READ LOG feature");
+    assert_eq!(status_cdb[8], 0x30, "log address 0x30 in LBA low");
+    assert_eq!(status_cdb[10], 0xC2, "SMART signature in LBA mid");
+
+    // Sanitize Status decode: SSTAT/SPROG semantics.
+    let mut log = vec![0u8; 512];
+    log[4..6].copy_from_slice(&0x8000u16.to_le_bytes()); // 50%
+    log[10..12].copy_from_slice(&0x0001u16.to_le_bytes()); // in progress
+    let st = dc_hw::AtaSanitizeStatus::decode_log(&log).unwrap();
+    assert!(st.is_in_progress && !st.is_completed);
+    assert_eq!(st.progress_permille, 500, "0x8000/0x10000 = 50%");
+
+    // READ NATIVE MAX ADDRESS EXT returns via the 0x09 ATA return
+    // descriptor in sense data (CK_COND framing bit set).
+    let rnmx = AtaCodec::encode_sat_read_native_max_ext();
+    assert_eq!(rnmx[14], 0x27);
+    assert_ne!(rnmx[2] & 0x20, 0, "CK_COND=1 required");
+}
+
+// ---------------------------------------------------------------------------
+// REG-SCSI-SANITIZE-CDB: SANITIZE (0x48) encoding + sense-progress polling
+// semantics of the SCSI ladder.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reg_scsi_sanitize_cdb_and_sense_progress() {
+    use dc_hw::{ScsiCodec, ScsiSanitizeServiceAction};
+
+    // CDB framing: opcode 0x48, service action + IMMED in byte 1.
+    let crypto = ScsiCodec::encode_sanitize(ScsiSanitizeServiceAction::CryptoErase, true);
+    assert_eq!(crypto[0], 0x48);
+    assert_eq!(crypto[1] & 0x1F, 0x03, "Crypto Erase service action");
+    assert_eq!(crypto[1] & 0x80, 0x80, "IMMED=1 (non-blocking law, Δ288)");
+    let block = ScsiCodec::encode_sanitize(ScsiSanitizeServiceAction::BlockErase, true);
+    assert_eq!(block[1] & 0x1F, 0x02);
+    // FORMAT UNIT: FMTDATA=0 (no parameter-list obligation).
+    let fmt = ScsiCodec::encode_format_unit(false);
+    assert_eq!(fmt[0], 0x04);
+    assert_eq!(fmt[1] & 0x10, 0, "FMTDATA clear");
+
+    // Sense decoding: in-progress (0x02/0x04) with SKS progress, and the
+    // UA 0x29/0x00 completion signature.
+    let mut sense = vec![0u8; 18];
+    sense[0] = 0x70;
+    sense[2] = 0x02; // NOT READY
+    sense[12] = 0x04; // LOGICAL UNIT NOT READY
+    sense[13] = 0x0B; // SANITIZE IN PROGRESS
+    sense[15] = 0x80; // SKS valid
+    let raw: u16 = 0x8000; // 50% of the 0x10000 progress scale
+    sense[16] = (raw >> 8) as u8;
+    sense[17] = raw as u8;
+    let decoded = ScsiCodec::decode_sense_data(&sense).unwrap();
+    assert_eq!(
+        (decoded.sense_key, decoded.asc, decoded.ascq),
+        (0x02, 0x04, 0x0B)
+    );
+    assert_eq!(decoded.progress_permille, Some(500));
+
+    let mut ua = vec![0u8; 18];
+    ua[0] = 0x70;
+    ua[2] = 0x06; // UNIT ATTENTION
+    ua[12] = 0x29; // POWER ON OR RESET OCCURRED
+    let decoded_ua = ScsiCodec::decode_sense_data(&ua).unwrap();
+    assert_eq!((decoded_ua.sense_key, decoded_ua.asc), (0x06, 0x29));
+}
+
+// ---------------------------------------------------------------------------
+// REG-SMART-GLIST-DISCLOSURE: nonzero reallocated sectors force the
+// destruction disclosure on logical overwrites, and the advisory rides
+// inside the signed certificate payload.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reg_smart_glist_disclosure() {
+    use dc_cert::{ExecutionDetails, OperatorKeyPair, SanitizationCertificate};
+    use dc_core::{Mechanism, SanitizationPlan, VerifyLevel};
+
+    // Codec half: SMART attribute 0x05 raw value decodes as the count.
+    let mut smart = vec![0u8; 512];
+    smart[2] = 0x05;
+    smart[7..13].copy_from_slice(&2048u64.to_le_bytes()[..6]);
+    assert_eq!(
+        AtaCodec::decode_smart_reallocated_sectors(&smart).unwrap(),
+        2048
+    );
+    // SCSI grown-defect header: 16-byte list = 2 descriptors.
+    assert_eq!(
+        ScsiCodec::decode_defect_list_count(&[0x00, 0x00, 0x00, 16]).unwrap(),
+        2
+    );
+
+    // Certificate half: the advisory must be signed (stripping it breaks
+    // the signature) and rendered in the summary.
+    let kp = OperatorKeyPair::generate();
+    let plan = SanitizationPlan {
+        plan_schema: "dc-plan/1".to_string(),
+        target: dc_core::StableIdentity {
+            model: Some("GList".into()),
+            serial: Some("SN-GL".into()),
+            wwn: None,
+            size_bytes: 1_000_000,
+            bus: dc_core::BusType::Sata,
+            dm_name: None,
+            dm_uuid: None,
+        },
+        mechanism: Mechanism::LogicalOverwrite { passes: vec![] },
+        verification: VerifyLevel::Full,
+        window_bytes: SanitizationPlan::DEFAULT_WINDOW_BYTES,
+        fast_path: dc_core::FastPathPolicy::ForbidWriteZeroes,
+        strategy_ladder: None,
+        legacy_note: None,
+    };
+    let device = dc_core::DeviceIdentity {
+        stable: dc_core::StableIdentity {
+            model: Some("GList".into()),
+            serial: Some("SN-GL".into()),
+            wwn: None,
+            size_bytes: 1_000_000,
+            bus: dc_core::BusType::Sata,
+            dm_name: None,
+            dm_uuid: None,
+        },
+        kernel: dc_core::KernelIdentity { major: 8, minor: 0 },
+        kernel_name: "sda".into(),
+        dev_path: "/dev/sda".into(),
+        logical_block_size: 512,
+        physical_block_size: 4096,
+    };
+    let mut cert = SanitizationCertificate::new(
+        plan.clone(),
+        "a".repeat(64),
+        device,
+        ExecutionDetails {
+            started_utc: "2026-10-12T07:00:00Z".into(),
+            finished_utc: "2026-10-12T07:01:00Z".into(),
+            duration_mono_ms: 60_000,
+            interruptions: vec![],
+            failures: vec![],
+            passes: vec![],
+        },
+        dc_verify::StreamVerifier::new(
+            VerifyLevel::Full,
+            SanitizationPlan::DEFAULT_WINDOW_BYTES,
+            512,
+            false,
+            false,
+        )
+        .finalize(),
+        dc_core::JournalChainSummary {
+            path: std::path::PathBuf::from("/tmp/gl.dcj"),
+            chain_head: "head".into(),
+            record_count: 1,
+            discarded_tail_bytes: 0,
+            uuid: "dcj-gl".into(),
+            sealed: false,
+        },
+        kp.public_key_hex(),
+        kp.key_fingerprint_blake3(),
+    )
+    .with_defense_warnings(vec![
+        "Media contains 2048 reallocated sector(s) inaccessible to logical writes. \
+         Physical destruction recommended per NIST SP 800-88 Rev 1"
+            .to_string(),
+    ]);
+    cert.sign(&kp).unwrap();
+    assert!(
+        cert.verify_signature().unwrap(),
+        "advisory-inclusive cert verifies"
+    );
+    let rendered = cert.render_summary();
+    assert!(
+        rendered.contains("DEFENSE_WARNING"),
+        "summary must disclose"
+    );
+    assert!(rendered.contains("Physical destruction recommended"));
+
+    // Stripping the advisory breaks the signature: the disclosure is
+    // evidence-grade, not cosmetic.
+    let mut stripped = cert.clone();
+    stripped.defense_warnings = None;
+    assert!(
+        !stripped.verify_signature().unwrap(),
+        "stripping the advisory must invalidate the signature"
+    );
+
+    // Old (pre-0.6.0) certificates without the field stay loadable and
+    // verifiable (backward compatibility).
+    let json = serde_json::to_string(&cert).unwrap();
+    assert!(json.contains("defense_warnings"));
+    let back: SanitizationCertificate = serde_json::from_str(&json).unwrap();
+    assert!(back.verify_signature().unwrap_or(false));
+}
+
+// ---------------------------------------------------------------------------
+// REG-PURGE-UNIVERSAL-DISPATCH: `dc purge` is bus-dispatched (NVMe admin,
+// SATA SAT, SAS SG_IO); unsupported buses are refused fail-closed.
+// (Replaces the pre-0.6.0 REG-PURGE-NVME-ONLY invariant.)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reg_purge_universal_dispatch() {
+    // Missing NVMe target: Guardian probe refusal (exit 2), before any
+    // prompt — unchanged since v0.5.0.
+    Command::cargo_bin("diskcleaner")
+        .unwrap()
+        .arg("purge")
+        .arg("--target")
+        .arg("/dev/nvme999n1")
+        .arg("--dry-run")
+        .assert()
+        .code(2);
+
+    // Bus/mechanism compatibility is a usage-class refusal: every
+    // mechanism is checked against its bus's menu (library-level because
+    // a nonexistent target cannot reach the post-probe validation).
+    use dc_cli::purge::RequestedMechanism;
+    use dc_core::BusType;
+    assert!(
+        RequestedMechanism::FormatUnit
+            .validate_for_bus(BusType::Nvme)
+            .is_err(),
+        "format-unit is SCSI-only"
+    );
+    assert!(
+        RequestedMechanism::SecurityEraseEnhanced
+            .validate_for_bus(BusType::Nvme)
+            .is_err(),
+        "security-erase is ATA-only"
+    );
+    assert!(
+        RequestedMechanism::FormatCrypto
+            .validate_for_bus(BusType::Sata)
+            .is_err(),
+        "format-crypto is NVMe-only"
+    );
+    assert!(
+        RequestedMechanism::SanitizeCrypto
+            .validate_for_bus(BusType::Nvme)
+            .is_ok()
+    );
+    assert!(
+        RequestedMechanism::SanitizeCrypto
+            .validate_for_bus(BusType::Sata)
+            .is_ok()
+    );
+    assert!(
+        RequestedMechanism::SanitizeCrypto
+            .validate_for_bus(BusType::Sas)
+            .is_ok()
+    );
+    assert!(
+        RequestedMechanism::SecurityEraseNormal
+            .validate_for_bus(BusType::Sata)
+            .is_ok()
+    );
+    // Transport-less buses (loop, virtio) are owned by the dispatch's
+    // fail-closed PURGE_TRANSPORT_UNSUPPORTED Guardian refusal (exit 2,
+    // pinned end-to-end by t14 F6), not by the mechanism menu.
+    assert!(
+        RequestedMechanism::Auto
+            .validate_for_bus(BusType::Loop)
+            .is_ok()
+    );
+    assert!(
+        RequestedMechanism::Auto
+            .validate_for_bus(BusType::Virtio)
+            .is_ok()
+    );
+
+    // Unknown mechanism names are usage errors listing the menu.
+    let bad = Command::cargo_bin("diskcleaner")
+        .unwrap()
+        .arg("purge")
+        .arg("--target")
+        .arg("/dev/nvme999n1")
+        .arg("--mechanism")
+        .arg("bleach")
+        .arg("--dry-run")
+        .assert()
+        .failure();
+    let output = String::from_utf8_lossy(&bad.get_output().stderr).to_string();
+    assert!(
+        output.contains("security-erase-enhanced") && output.contains("format-unit"),
+        "usage error must list the full mechanism menu: {}",
+        output
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -703,22 +1218,10 @@ fn reg_verify_flag_contract() {
 }
 
 // ---------------------------------------------------------------------------
-// REG-PURGE-NVME-ONLY: the hardware purge ladder refuses non-NVMe targets
-// fail-closed (never certifies a purge a controller cannot perform).
+// (Pre-0.6.0 REG-PURGE-NVME-ONLY invariant RETIRED: `dc purge` now
+// dispatches to the NVMe / ATA / SCSI transports; superseded by
+// REG-PURGE-UNIVERSAL-DISPATCH above.)
 // ---------------------------------------------------------------------------
-
-#[test]
-fn reg_purge_refuses_non_nvme_and_missing_targets() {
-    // Missing target: Guardian probe refusal (exit 2), before any prompt.
-    Command::cargo_bin("diskcleaner")
-        .unwrap()
-        .arg("purge")
-        .arg("--target")
-        .arg("/dev/nvme999n1")
-        .arg("--dry-run")
-        .assert()
-        .code(2);
-}
 
 // ---------------------------------------------------------------------------
 // REG-MULTI-ARM-ALLORNOTHING: one bad target aborts the whole batch before

@@ -323,10 +323,11 @@ fn run_f5_sampled_verify_cli(scratch_dir: &Path) {
     println!("  [✓] F5: sample:4 journaled + certified; media zeroed.");
 }
 
-/// F6 (REG-PURGE-NVME-ONLY): hardware purge refuses loop (non-NVMe) targets
-/// fail-closed, and non-root-visible refusal codes.
+/// F6 (REG-PURGE-UNIVERSAL-DISPATCH): hardware purge refuses loop targets
+/// fail-closed (no controller purge transport exists on the loop bus), and
+/// non-root-visible refusal codes.
 fn run_f6_purge_guards(scratch_dir: &Path) {
-    println!("\n[>>> F6: REG-PURGE-NVME-ONLY (loop target) <<<]");
+    println!("\n[>>> F6: REG-PURGE-UNIVERSAL-DISPATCH (loop target) <<<]");
     let run_dir = scratch_dir.join(format!("t14_f6_{}", std::process::id()));
     fs::create_dir_all(&run_dir).unwrap();
 
@@ -353,12 +354,12 @@ fn run_f6_purge_guards(scratch_dir: &Path) {
     assert_eq!(
         out.get_output().status.code(),
         Some(2),
-        "purge on non-NVMe is a Guardian refusal"
+        "purge on a bus with no controller transport is a Guardian refusal"
     );
     let stderr = String::from_utf8_lossy(&out.get_output().stderr);
     assert!(
-        stderr.contains("PURGE_NVME_ONLY") || stderr.contains("bus"),
-        "stderr must name the NVMe-only purge ladder: {}",
+        stderr.contains("PURGE_TRANSPORT_UNSUPPORTED"),
+        "stderr must name the unsupported transport: {}",
         stderr
     );
     assert!(
@@ -366,7 +367,7 @@ fn run_f6_purge_guards(scratch_dir: &Path) {
         "no journal from a refused purge"
     );
     assert!(!is_all_zero(&backing), "device untouched by refused purge");
-    println!("  [✓] F6: purge refuses non-NVMe media fail-closed; sentinel intact.");
+    println!("  [✓] F6: purge refuses transport-less media fail-closed; sentinel intact.");
 }
 
 /// F7 (REG-BENCH-SAFETY): bench refuses device nodes and completes on files.

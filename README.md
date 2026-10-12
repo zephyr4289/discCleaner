@@ -1,6 +1,6 @@
 # diskCleaner (`dc`)
 
-[![Version](https://img.shields.io/badge/version-v0.5.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
+[![Version](https://img.shields.io/badge/version-v0.6.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64--musl-blueviolet.svg)](https://github.com/zephyr4289/discCleaner)
 [![Standards](https://img.shields.io/badge/standards-NIST%20SP%20800--88%20%7C%20IEEE%202883--2022-orange.svg)](diskCleaner.md)
@@ -11,11 +11,11 @@
 `dc` is a self-contained, statically linked, zero-dependency storage sanitization suite engineered for NVMe, SATA, SAS/SCSI, USB-bridged (SAT), eMMC/UFS, TCG Opal self-encrypting (SED), and Host-Managed SMR/ZNS storage. It executes **NIST SP 800-88 Rev 1** Clear and Purge operations, issuing cryptographically signed, third-party-verifiable evidence packages that survive crashes, power loss, and adversarial cross-examination.
 
 ```
-Version       : v0.5.0 (Fleet Release: parallel wipe · standards matrix · hardware purge)
+Version       : v0.6.0 (Universal Purge · ISO 19005-3 archival · defense policy guard)
 Target Triples: x86_64-unknown-linux-musl · aarch64-unknown-linux-musl
 Runtime Deps  : Zero external binaries, zero dynamic libraries
-Crates        : 15 modular workspace crates (22,600+ Rust LOC)
-Tests         : 90+ unit tests + 50 integration suites + 26 pinned regression guards
+Crates        : 15 modular workspace crates (25,000+ Rust LOC)
+Tests         : 100+ unit tests + 51 integration suites + 30 pinned regression guards
 Test Driver   : python3 tests/run_tests.py (lit-style discovery, parallel, PASS/FAIL/UNSUPPORTED)
 Verification  : Ed25519 + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3 Archival Embedding
 ```
@@ -201,13 +201,40 @@ dc profiles
 dc execute --target /dev/sda --target /dev/sdb --target /dev/nvme0n1 \
            --profile certin-goi --verify sample:64
 
-# Controller-attested hardware purge (NIST 800-88 Purge in seconds):
-# Sanitize crypto-erase -> block-erase -> Format-NVM fallback ladder,
-# SMART/health pre+post embedded in the signed certificate
-dc purge --target /dev/nvme0n1
-
 # Bake-off evidence: production-engine throughput + per-profile ETA table
 dc bench --file /scratch/bench.raw --size-mib 2048 --ref-gib 4000
+```
+
+### 8. Universal Hardware Purge + Court-Grade Archives (v0.6.0)
+```bash
+# Controller-attested hardware purge on EVERY enterprise bus — one verb:
+#   NVMe   : Sanitize crypto-erase -> block-erase -> Format-NVM ladder
+#            through the admin ioctl transport
+#   SATA   : SAT SG_IO ladder — HPA/DCO geometry restoration, freeze-lock
+#            gate, Sanitize Crypto Scramble -> Block Erase -> Security
+#            Erase (Enhanced -> Normal) with random lifeline discipline
+#   SAS    : SANITIZE (0x48) crypto/block -> FORMAT UNIT with live
+#            REQUEST-SENSE progress (SK 0x02 / ASC 0x04 SKS percentage)
+# SMART/health pre+post, geometry evidence, and rescue-lifeline handling
+# embedded in the signed certificate.
+dc purge --target /dev/nvme0n1   # or /dev/sda, or the SAS LUN /dev/sdb
+
+# Every run (purge AND execute) also emits an ISO 19005-3 (PDF/A-3b)
+# archival copy: XMP conformance identification, sRGB ICC output intent,
+# fully embedded fonts, and the signed certificate.json + hash-chained
+# journal.dcj as UNFILTERED embedded attachments — court / e-discovery
+# systems (VeraPDF, Acrobat) parse the structure and carve the evidence
+# byte-identical for independent Ed25519 verification.
+
+# Defense profile enforcement: classified-media profiles (DoD 5220.22-M,
+# CERT-In/GoI, ITSG-06, VSITR) refuse --verify sample:N / none with
+# exit code 8 BEFORE any device is armed (100% read-back mandated):
+dc execute --target /dev/sda --profile dod5220-22m --verify sample:4   # REFUSED
+
+# G-List audit: reallocated-sector counts (SMART attr 0x05 / SCSI grown
+# defect list / NVMe health log 0x02) are disclosed in the signed
+# certificate whenever logical overwrites cannot reach retired sectors:
+# DEFENSE_WARNING: physical destruction recommended per NIST SP 800-88.
 ```
 
 ---
@@ -253,7 +280,7 @@ All evidence emitted by `diskCleaner` is **independently verifiable without usin
    ```
 3. **Deterministic Keystream Recipe (`ChaCha20WindowV1`):** Every random pass derives its stream via `ChaCha20(key = seed, nonce = window_index)`. Third parties can regenerate and verify any sector of a 20 TB drive with $O(1)$ memory overhead.
 4. **RFC 3161 TSA Timestamp Anchors:** Anchors provide verifiable proof that evidence existed *at-or-before* time $T$.
-5. **PDF/A-3 Archival Embedding:** Reports embed the raw signed JSON, token sidecars, and keyring references directly inside the PDF document attachments.
+5. **PDF/A-3 Archival Embedding (ISO 19005-3, real since v0.6.0):** every certificate ships with a true PDF/A-3b archival copy — XMP `pdfaid:part 3 / conformance B`, sRGB ICC output intent, fully embedded fonts, and the raw signed JSON + journal as unfiltered embedded attachments (extract and verify with any hex editor).
 
 ---
 

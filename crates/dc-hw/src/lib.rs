@@ -2,18 +2,27 @@ pub mod ata_codec;
 pub mod nvme_codec;
 pub mod raw;
 pub mod scsi_codec;
+pub mod sgio;
 pub mod tables;
 
-pub use ata_codec::{AtaCodec, AtaIdentifyData, AtaSecurityStatus};
+pub use ata_codec::{
+    AtaCodec, AtaIdentifyData, AtaSanitizeFeature, AtaSanitizeStatus, AtaSanitizeSupport,
+    AtaSecurityStatus,
+};
 pub use nvme_codec::{
     NvmeCodec, NvmeHealthLog, NvmeIdentifyController, NvmeIdentifyNamespace, NvmeSanitizeAction,
     NvmeSanitizeStatus, NvmeSecureEraseSetting,
 };
 pub use raw::RawBlob;
 pub use scsi_codec::{ScsiCodec, ScsiSanitizeServiceAction, ScsiSenseData};
+pub use sgio::{
+    SgIoDevice, SgIoError, SgIoHdr, SgIoResult, MAX_CDB_LEN, SENSE_BUFFER_LEN, SG_DXFER_FROM_DEV,
+    SG_DXFER_NONE, SG_DXFER_TO_DEV, SG_IO_IOCTL,
+};
 pub use tables::{
-    NvmeSstatStatus, CITATION_ATA_IDENTIFY_W128, CITATION_NVME_LOG_81, CITATION_NVME_SANITIZE,
-    CITATION_SCSI_SANITIZE, SPEC_ATA8_ACS, SPEC_NVME_BASE, SPEC_SPC4,
+    NvmeSstatStatus, CITATION_ATA_IDENTIFY_W128, CITATION_ATA_SANITIZE, CITATION_NVME_LOG_81,
+    CITATION_NVME_SANITIZE, CITATION_SCSI_SANITIZE, SPEC_ATA8_ACS, SPEC_NVME_BASE, SPEC_SAT5,
+    SPEC_SBC3, SPEC_SPC4,
 };
 
 #[cfg(test)]
@@ -116,10 +125,80 @@ mod unit_tests {
         }
         assert_eq!(prep[14], 0xF3);
         assert_eq!(unit[14], 0xF4);
-        // Enhanced erase is requested via the FEATURES register.
+        // Enhanced erase is requested via the FEATURES register bit 1
+        // (ATA8-ACS §7.43: bit 0 = Master Password Capability, bit 1 =
+        // Enhanced Security Erase). v0.6.0 correction: the pre-0.6.0 codec
+        // set bit 0 for enhanced, which names the master-password
+        // authority and silently leaves the erase NORMAL.
         assert_eq!(unit[4], 0x00);
-        assert_eq!(enhanced[4], 0x01);
+        assert_eq!(enhanced[4], 0x02, "enhanced = FEATURES bit 1 (0x02)");
         assert_eq!(freeze[14], 0xF5);
+    }
+
+    #[test]
+    fn security_erase_unit_auth_carries_password_payload() {
+        // REG-ATA-PURGE-SGIO-FRAMING: the real pipeline frames SECURITY
+        // ERASE UNIT as PIO Data-Out with its 512-byte password sector
+        // (a non-data framing never transfers the password and cannot
+        // authenticate the erase).
+        let password = [0xABu8; 32];
+        let (cdb, payload) = AtaCodec::encode_sat_security_erase_unit_auth(false, true, &password);
+        assert_eq!(cdb[14], 0xF4, "SECURITY ERASE UNIT opcode");
+        assert_eq!(cdb[4], 0x02, "master=0 | enhanced<<1");
+        // PIO Data-Out framing: protocol 5, BYTE_BLOCK|T_LENGTH=2, T_DIR=0.
+        assert_eq!((cdb[1] >> 1) & 0x0F, 5, "SAT protocol 5 (PIO Data-Out)");
+        assert_eq!(cdb[2] & 0x0F, 0b0110, "data-out transfer framing");
+        assert_eq!(payload.len(), 512);
+        assert_eq!(&payload[2..34], &password, "password at bytes 2..34");
+        assert_eq!(payload[0] & 0x80, 0, "user password authority");
+
+        let (cdb_m, payload_m) =
+            AtaCodec::encode_sat_security_erase_unit_auth(true, true, &password);
+        assert_eq!(cdb_m[4], 0x03, "master bit 0 | enhanced bit 1");
+        assert_eq!(payload_m[0] & 0x80, 0x80, "master password authority");
+    }
+
+    #[test]
+    fn sanitize_device_cdb_selects_feature_via_features_register() {
+        // REG-ATA-PURGE-SGIO-FRAMING: SANITIZE DEVICE (0xB4) with the
+        // FEATURES register selecting the operation; non-data framing.
+        for (feature, expected) in [
+            (AtaSanitizeFeature::BlockErase, 0x10),
+            (AtaSanitizeFeature::CryptoScramble, 0x20),
+            (AtaSanitizeFeature::Overwrite, 0x40),
+        ] {
+            let cdb = AtaCodec::encode_sat_sanitize_device(feature);
+            assert_eq!(cdb[0], 0x85, "ATA PASS-THROUGH (16)");
+            assert_eq!(cdb[14], 0xB4, "SANITIZE DEVICE opcode");
+            assert_eq!(cdb[4], expected, "FEATURES selects the operation");
+            assert_eq!((cdb[1] >> 1) & 0x0F, 3, "non-data protocol 3");
+            assert_eq!(cdb[2] & 0x0F, 0x00, "non-data framing");
+        }
+    }
+
+    #[test]
+    fn smart_and_defect_probes_decode_glist_counts() {
+        // REG-SMART-GLIST-DISCLOSURE (codec half): SMART attribute 0x05
+        // raw value and SCSI grown-defect headers both decode.
+        let mut smart = vec![0u8; 512];
+        smart[2] = 0x05; // first attribute id
+        smart[7..13].copy_from_slice(&1234u64.to_le_bytes()[..6]);
+        assert_eq!(
+            AtaCodec::decode_smart_reallocated_sectors(&smart).unwrap(),
+            1234
+        );
+        // SCSI READ DEFECT DATA header: 5 descriptors of 8 bytes.
+        assert_eq!(
+            ScsiCodec::decode_defect_list_count(&[0x00, 0x00, 0x00, 40]).unwrap(),
+            5
+        );
+        // Sanitize Status log: SSTAT completed, SPROG full scale.
+        let mut log = vec![0u8; 512];
+        log[4..6].copy_from_slice(&0xFFFFu16.to_le_bytes());
+        log[10..12].copy_from_slice(&0x0002u16.to_le_bytes());
+        let status = AtaSanitizeStatus::decode_log(&log).unwrap();
+        assert!(status.is_completed && !status.is_in_progress);
+        assert_eq!(status.progress_permille, 1000);
     }
 
     #[test]

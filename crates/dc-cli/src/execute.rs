@@ -61,6 +61,10 @@ pub struct DeviceJob {
     pub expected_token: String,
     /// Unique disambiguator for journal filenames within one batch.
     pub file_stem: String,
+    /// Mandatory defense advisories (v0.6.0, REG-SMART-GLIST-DISCLOSURE):
+    /// reallocated-sector / grown-defect disclosures carried into the
+    /// certificate's signed payload.
+    pub defense_warnings: Vec<String>,
 }
 
 /// Per-device result for the batch summary.
@@ -111,7 +115,13 @@ pub fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result
                         .to_string(),
                 ));
             }
-            Some(parse_verify_flag(spec).map_err(DcError::Usage)?)
+            let level = parse_verify_flag(spec).map_err(DcError::Usage)?;
+            // DEFENSE PROFILE ENFORCEMENT GATE (v0.6.0,
+            // REG-DEFENSE-SAMPLING-REFUSED): refuse lowered verification for
+            // defense-mandated profiles before any device is probed or armed.
+            crate::profiles::enforce_verification_policy(&args.profile.to_profile(), &level)
+                .map_err(DcError::Usage)?;
+            Some(level)
         }
         None => None,
     };
@@ -258,6 +268,11 @@ pub fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result
             expected_token.replace('/', "_")
         };
 
+        let defense_warnings = audit_target_glist(&identity);
+        for warning in &defense_warnings {
+            eprintln!("[DEFENSE_WARNING] {}", warning);
+        }
+
         jobs.push(DeviceJob {
             target: target.clone(),
             identity,
@@ -265,6 +280,7 @@ pub fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result
             plan_hash,
             expected_token,
             file_stem,
+            defense_warnings,
         });
     }
 
@@ -1001,27 +1017,106 @@ fn execute_device_inner(
         identity.clone(),
         ExecutionDetails {
             started_utc: timestamp_str,
-            finished_utc: finished_time_str,
+            finished_utc: finished_time_str.clone(),
             duration_mono_ms: exec_start_time.elapsed().as_millis() as u64,
             interruptions: vec![],
             failures: vec![],
             passes: exec_passes,
         },
-        verifier_report,
+        verifier_report.clone(),
         journal.summary(),
         keypair.public_key_hex(),
         keypair.key_fingerprint_blake3(),
-    );
+    )
+    .with_defense_warnings(job.defense_warnings.clone());
     cert.sign(&keypair)?;
 
     let cert_filename = format!("{}.cert.json", journal_filename.trim_end_matches(".dcj"));
     let cert_path = shared.out_dir.join(&cert_filename);
-    std::fs::write(&cert_path, serde_json::to_string_pretty(&cert)?)?;
+    let cert_json = serde_json::to_string_pretty(&cert)?;
+    std::fs::write(&cert_path, &cert_json)?;
+
+    // ISO 19005-3 (PDF/A-3) archival copy: certificate + journal embedded
+    // as verifiable attachments (v0.6.0).
+    let mechanism_label = match &plan.mechanism {
+        Mechanism::LogicalOverwrite { passes } => {
+            format!("Logical Overwrite ({} passes)", passes.len())
+        }
+        Mechanism::HardwarePurge {
+            selected_mechanism, ..
+        } => {
+            format!("Hardware Purge ({})", selected_mechanism)
+        }
+    };
+    let journal_bytes = std::fs::read(&journal_path).unwrap_or_default();
+    let pdf_bytes = dc_report::render_sanitization_archive(
+        if verifier_report.mismatch_count > 0 {
+            "Sanitization Report — VERIFICATION FAILED"
+        } else {
+            "Certificate of Sanitization"
+        },
+        &format!(
+            "{} — {}",
+            mechanism_label,
+            identity
+                .stable
+                .serial
+                .as_deref()
+                .unwrap_or("serial unknown")
+        ),
+        if plan.verification == dc_core::VerifyLevel::Full {
+            "Clear"
+        } else {
+            "Clear (verified)"
+        },
+        verifier_report.mismatch_count == 0,
+        &[
+            (
+                "Verification level".to_string(),
+                plan.verification.to_string(),
+            ),
+            (
+                "Windows checked".to_string(),
+                verifier_report.windows_checked.to_string(),
+            ),
+            (
+                "Stream hash (BLAKE3)".to_string(),
+                verifier_report.stream_hash_blake3.clone(),
+            ),
+            ("Plan hash".to_string(), job.plan_hash.clone()),
+            ("Operator key".to_string(), keypair.key_fingerprint_blake3()),
+            (
+                "Journal chain head".to_string(),
+                journal.current_chain_head(),
+            ),
+        ],
+        &job.defense_warnings,
+        &finished_time_str,
+        &[
+            dc_report::ArchiveAttachment {
+                filename: "certificate.json",
+                bytes: cert_json.as_bytes(),
+                mime: "application/json",
+                relationship: "Source",
+            },
+            dc_report::ArchiveAttachment {
+                filename: "journal.dcj",
+                bytes: &journal_bytes,
+                mime: "application/octet-stream",
+                relationship: "Supplement",
+            },
+        ],
+    );
+    let pdf_path = shared
+        .out_dir
+        .join(format!("{}.pdf", journal_filename.trim_end_matches(".dcj")));
+    std::fs::write(&pdf_path, pdf_bytes)?;
 
     if !shared.no_progress {
         println!("\n{}", cert.render_summary());
         println!("\n[+] Certificate written to: {}", cert_path.display());
         println!("[+] Journal written to:     {}", journal_path.display());
+        println!("[+] PDF/A-3 archival copy:  {}", pdf_path.display());
     }
 
     log_audit(
@@ -1078,6 +1173,9 @@ fn print_dry_run(jobs: &[DeviceJob], args: &ExecuteArgs, audit: &Arc<Mutex<Optio
         if let Some(note) = &job.plan.legacy_note {
             println!("  LEGACY NOTICE:   {}", note);
         }
+        for warning in &job.defense_warnings {
+            println!("  DEFENSE_WARNING: {}", warning);
+        }
         println!("  Guardian:        CLEAN (target is safe for sanitization)");
     }
     println!("Engine:            {}", args.engine_default_name());
@@ -1110,4 +1208,62 @@ fn print_dry_run(jobs: &[DeviceJob], args: &ExecuteArgs, audit: &Arc<Mutex<Optio
             },
         },
     );
+}
+
+/// SMART G-List / reallocated-sector audit (v0.6.0,
+/// REG-SMART-GLIST-DISCLOSURE).
+///
+/// Queries the media's hidden-defect state through the bus-appropriate
+/// door BEFORE any write is armed:
+/// - SATA/USB-SAT: SMART attribute 0x05 (Reallocated_Sector_Ct)
+/// - SAS/SCSI: READ DEFECT DATA (10) grown list (G-List)
+/// - NVMe: SMART/Health Log Page 0x02 media-error counter
+///
+/// A non-zero count on a LOGICAL overwrite means retired physical sectors
+/// holding classified data are unreachable by any host write: the run
+/// proceeds, but the certificate carries the mandatory NIST SP 800-88
+/// physical-destruction advisory inside its signed payload. Best-effort:
+/// a silent drive is disclosed as unreported, never blocking the wipe on
+/// a missing SMART door.
+fn audit_target_glist(identity: &DeviceIdentity) -> Vec<String> {
+    let count: Option<u64> = match identity.stable.bus {
+        dc_core::BusType::Sata | dc_core::BusType::Usb => {
+            dc_ata::LinuxSatPurge::open(std::path::Path::new(&identity.dev_path))
+                .ok()
+                .and_then(|mut sat| {
+                    dc_ata::purge::AtaPurgeClient::new(&mut sat)
+                        .read_reallocated_sectors()
+                        .ok()
+                })
+        }
+        dc_core::BusType::Sas => {
+            dc_scsi::LinuxScsiPurge::open(std::path::Path::new(&identity.dev_path))
+                .ok()
+                .and_then(|mut scsi| {
+                    dc_scsi::purge::ScsiPurgeClient::new(&mut scsi)
+                        .read_grown_defects()
+                        .ok()
+                })
+        }
+        dc_core::BusType::Nvme => {
+            // SMART/Health Log Page 0x02: media and data-integrity errors
+            // (the NVMe mirror of the reallocated-sector disclosure).
+            let ctrl = dc_nvme::controller_char_dev_for(std::path::Path::new(&identity.dev_path));
+            dc_nvme::LinuxNvmeAdmin::open(&ctrl)
+                .ok()
+                .and_then(|mut admin| dc_nvme::read_health(&mut admin).ok())
+                .map(|h| h.media_errors as u64)
+        }
+        _ => None,
+    };
+
+    match count {
+        Some(n) if n > 0 => vec![format!(
+            "Media contains {} reallocated sector(s) inaccessible to logical writes. \
+             Physical destruction recommended per NIST SP 800-88 Rev 1 (hidden-defect \
+             data may survive host overwrites).",
+            n
+        )],
+        _ => Vec::new(),
+    }
 }

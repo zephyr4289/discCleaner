@@ -1,9 +1,15 @@
 pub mod freeze;
 pub mod geometry;
+pub mod purge;
 pub mod security;
 
 pub use freeze::{FreezeEvaluator, FreezeFinding};
 pub use geometry::{FdGen, GeometryStage, GeometryTransaction};
+pub use purge::{
+    AtaCompletionEvidence, AtaMechanismFallback, AtaPurgeClient, AtaPurgeError,
+    AtaPurgeExecutionSummary, AtaPurgeMechanism, AtaPurgePermit, LinuxSatPurge, SatPurgeTransport,
+    SatReply, SatXfer,
+};
 pub use security::{AtaFsmOutcome, AtaLifeline, AtaSecurityFsm, AtaSecurityState};
 
 #[cfg(test)]

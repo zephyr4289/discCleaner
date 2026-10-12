@@ -82,6 +82,28 @@ impl StrategyCompiler {
                 });
             }
             DeviceTransportClass::SataSsd => {
+                // v0.6.0: the SATA ladder now leads with SANITIZE DEVICE
+                // (crypto scramble destroys the media encryption key in
+                // seconds) before the SECURITY ERASE fallbacks — mirroring
+                // what `dc-ata`'s AtaPurgeClient actually executes.
+                if caps.supports_sanitize_crypto {
+                    steps.push(MechanismStep {
+                        name: "AtaSanitizeCryptoScramble".to_string(),
+                        grade: "ControllerAttested".to_string(),
+                        nist_class: "Purge".to_string(),
+                        readback_expectation: "VendorRandom".to_string(),
+                        fallback_target: Some("AtaSanitizeBlockErase".to_string()),
+                    });
+                }
+                if caps.supports_sanitize_block {
+                    steps.push(MechanismStep {
+                        name: "AtaSanitizeBlockErase".to_string(),
+                        grade: "ControllerAttested".to_string(),
+                        nist_class: "Purge".to_string(),
+                        readback_expectation: "VendorRandom".to_string(),
+                        fallback_target: Some("AtaSecurityEraseEnhanced".to_string()),
+                    });
+                }
                 if caps.supports_ata_security_enhanced {
                     steps.push(MechanismStep {
                         name: "AtaSecurityEraseEnhanced".to_string(),
@@ -118,6 +140,18 @@ impl StrategyCompiler {
                 });
             }
             DeviceTransportClass::ScsiSas => {
+                // v0.6.0: crypto-erase leads when the controller attests
+                // it (SANITIZE service action 0x03), mirroring
+                // `dc-scsi`'s ScsiPurgeClient ladder.
+                if caps.supports_sanitize_crypto {
+                    steps.push(MechanismStep {
+                        name: "ScsiSanitizeCryptoErase".to_string(),
+                        grade: "ControllerAttested".to_string(),
+                        nist_class: "Purge".to_string(),
+                        readback_expectation: "VendorRandom".to_string(),
+                        fallback_target: Some("ScsiSanitizeBlockErase".to_string()),
+                    });
+                }
                 if caps.supports_scsi_sanitize {
                     steps.push(MechanismStep {
                         name: "ScsiSanitizeBlockErase".to_string(),

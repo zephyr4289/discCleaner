@@ -373,12 +373,16 @@ pub struct BenchArgs {
 
 #[derive(Args, Debug)]
 pub struct PurgeArgs {
-    /// Target NVMe namespace block device (e.g. /dev/nvme0n1)
+    /// Target block device on any purge-capable bus (NVMe namespace,
+    /// SATA/SAT drive incl. USB docks, or SAS/SCSI LUN — e.g. /dev/nvme0n1,
+    /// /dev/sda, /dev/sdb)
     #[arg(short, long)]
     pub target: PathBuf,
 
-    /// Purge mechanism: auto (ladder with fallback) | sanitize-crypto |
-    /// sanitize-block | format-crypto
+    /// Purge mechanism (bus-dispatched): auto (support-attested ladder) |
+    /// sanitize-crypto | sanitize-block | format-crypto (NVMe) |
+    /// security-erase-enhanced | security-erase-normal (ATA) |
+    /// format-unit (SCSI)
     #[arg(long, default_value = "auto")]
     pub mechanism: String,
 
@@ -734,7 +738,15 @@ fn cmd_plan(args: PlanArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcErr
         None => None,
     };
     let verification = match args.verify.as_deref() {
-        Some(spec) => profiles::parse_verify_flag(spec).map_err(DcError::Usage)?,
+        Some(spec) => {
+            let level = profiles::parse_verify_flag(spec).map_err(DcError::Usage)?;
+            // DEFENSE PROFILE ENFORCEMENT GATE (v0.6.0,
+            // REG-DEFENSE-SAMPLING-REFUSED): a compiled plan for a defense
+            // profile may never carry sampled/no verification.
+            profiles::enforce_verification_policy(&args.profile.to_profile(), &level)
+                .map_err(DcError::Usage)?;
+            level
+        }
         None => args.profile.to_profile().default_verification(),
     };
 

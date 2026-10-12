@@ -55,6 +55,37 @@ impl ScsiCodec {
         cdb
     }
 
+    /// Encode a 10-byte READ DEFECT DATA CDB (Opcode 0x37 — SBC-3 §5.13).
+    /// `grown_only = true` requests the grown defect list (G-List — the
+    /// reallocated/retired sector list the defense disclosure reads);
+    /// otherwise the primary (P-List) is requested. The allocation length
+    /// covers the 4-byte header, so a single round-trip yields the total
+    /// defect count without fetching every descriptor.
+    pub fn encode_read_defect_data(grown_only: bool, alloc_len: u16) -> [u8; 10] {
+        let mut cdb = [0u8; 10];
+        cdb[0] = 0x37; // Opcode: READ DEFECT DATA (10)
+                       // Byte 1 list selection: bit 3 (0x08) = grown list, bit 4 (0x10) =
+                       // primary list. Requesting neither returns the combined count.
+        cdb[1] = if grown_only { 0x08 } else { 0x10 };
+        // Byte 2 defect list format: 0 = vendor; the returned header's
+        // length field is what we consume.
+        cdb[7] = (alloc_len >> 8) as u8;
+        cdb[8] = alloc_len as u8;
+        cdb
+    }
+
+    /// Parse the defect count from a READ DEFECT DATA header (first 4
+    /// bytes: byte 0 echoes the format bits, bytes 2-3 = defect list
+    /// length in bytes). Standard physical-sector descriptors are 8
+    /// bytes each, so count = length / 8.
+    pub fn decode_defect_list_count(header: &[u8]) -> Result<u64, String> {
+        if header.len() < 4 {
+            return Err("READ DEFECT DATA header must be 4 bytes".to_string());
+        }
+        let list_len = u16::from_be_bytes([header[2], header[3]]) as u64;
+        Ok(list_len / 8)
+    }
+
     /// Decode SCSI Sense Data (Fixed and Descriptor formats).
     pub fn decode_sense_data(raw: &[u8]) -> Result<ScsiSenseData, String> {
         if raw.len() < 8 {

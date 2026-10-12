@@ -44,7 +44,11 @@ fn run_strategy_compiler_tests(ledger: &RigLedger) {
 
     let sata_ladder =
         StrategyCompiler::compile_strategy(DeviceTransportClass::SataSsd, &caps, true).unwrap();
-    assert_eq!(sata_ladder.steps[0].name, "AtaSecurityEraseEnhanced");
+    // v0.6.0: sanitize-capable SATA drives lead with Crypto Scramble (the
+    // controller destroys the media encryption key — seconds of work
+    // instead of hours of overwrite traffic).
+    assert_eq!(sata_ladder.steps[0].name, "AtaSanitizeCryptoScramble");
+    assert_eq!(sata_ladder.steps[0].nist_class, "Purge");
 
     ledger.assert(
         "M1.5-STRAT",

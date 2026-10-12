@@ -3,6 +3,10 @@ pub const SPEC_NVME_BASE: &str =
 pub const SPEC_ATA8_ACS: &str = "ATA/ATAPI Command Set - 8 (ATA8-ACS), Revision 6a, §7.16 (IDENTIFY DEVICE) & §7.43 (SECURITY ERASE)";
 pub const SPEC_SPC4: &str =
     "SCSI Primary Commands - 4 (SPC-4), Revision 37, §6.34 (SANITIZE) & §7.2 (Sense Data)";
+pub const SPEC_SBC3: &str =
+    "SCSI Block Commands - 3 (SBC-3), Revision 35, §5.13 (READ DEFECT DATA) & §5.2 (FORMAT UNIT)";
+pub const SPEC_SAT5: &str =
+    "SCSI/ATA Translation - 5 (SAT-5), Revision 3, §11 (ATA Pass-Through) & Sense descriptor 0x09";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpecCitation {
@@ -27,6 +31,12 @@ pub const CITATION_ATA_IDENTIFY_W128: SpecCitation = SpecCitation {
     standard: "ATA8-ACS",
     revision: "6a",
     clause: "§7.16.7.47",
+};
+
+pub const CITATION_ATA_SANITIZE: SpecCitation = SpecCitation {
+    standard: "ATA8-ACS",
+    revision: "6a",
+    clause: "§7.47 (SANITIZE DEVICE) & §7.47.2 (Sanitize Status log 0x30)",
 };
 
 pub const CITATION_SCSI_SANITIZE: SpecCitation = SpecCitation {
