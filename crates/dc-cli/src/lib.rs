@@ -115,6 +115,14 @@ fn cli_signal_injection(_event: &str) {}
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
+
+    /// Non-interactive fleet mode (v0.9.0 Phase 3): stdout carries
+    /// EXACTLY ONE machine-parsable JSON envelope (human-readable output
+    /// is redirected to stderr), and the process exit code preserves the
+    /// documented bucket map — designed for Ansible, SaltStack and
+    /// Kubernetes DaemonSet harvesting.
+    #[arg(long, global = true)]
+    pub json: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -855,7 +863,40 @@ pub fn entrypoint() -> ExitCode {
     dc_io::reset_global_cancel();
     install_signal_handlers();
 
-    let cli = Cli::parse();
+    // v0.9.0: in fleet mode even ARGUMENT-PARSING failures (unknown
+    // profile, missing values) must yield the JSON envelope — an
+    // automation agent must never face a usage dump instead of the
+    // harvest contract. (Clap's `parse()` would print+exit itself.)
+    let fleet_mode = std::env::args_os().any(|a| a == "--json");
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            if !fleet_mode {
+                e.exit();
+            }
+            let exit_code = e.exit_code();
+            let envelope = serde_json::json!({
+                "schema": "dc.fleet/v1",
+                "tool": "diskcleaner",
+                "version": env!("CARGO_PKG_VERSION"),
+                "command": "(unparsed)",
+                "status": "error",
+                "exit_code": exit_code,
+                "duration_ms": 0u64,
+                "error": {
+                    "code": "USAGE",
+                    "message": e.to_string(),
+                },
+                "data": serde_json::Value::Null,
+            });
+            println!("{}", envelope);
+            return ExitCode::from(exit_code as u8);
+        }
+    };
+
+    if cli.json {
+        return fleet_json_entrypoint(cli);
+    }
     match run(cli) {
         Ok(()) => ExitCode::from(0),
         Err(err) => {
@@ -866,12 +907,108 @@ pub fn entrypoint() -> ExitCode {
     }
 }
 
+/// `--json` fleet entrypoint: run any command with stdout fully
+/// redirected to stderr, then emit ONE JSON envelope on the original
+/// stdout. Machines harvest a single deterministic document; humans
+/// watching a terminal lose nothing (the human output still renders on
+/// stderr).
+fn fleet_json_entrypoint(cli: Cli) -> ExitCode {
+    let started = std::time::Instant::now();
+    let command = command_name(&cli.command).to_string();
+
+    // Redirect stdout -> stderr for the whole run. SAFETY: classic
+    // fd juggling — dup(1) preserves the original stdout, dup2(2, 1)
+    // clones stderr onto the stdout descriptor; both are plain
+    // descriptor-table operations on fds we own, single-threaded at
+    // this point, with no concurrent writers to race.
+    let saved = unsafe { libc::dup(1) };
+    if saved < 0 {
+        // Cannot set up the redirect: fall back to the human path —
+        // a fleet agent gets the envelope on stderr instead of stdout,
+        // which is a diagnosable (and extremely unlikely) failure.
+        eprintln!("[JSON] fd redirect failed: falling back to human output");
+        return match run(cli) {
+            Ok(()) => ExitCode::from(0),
+            Err(err) => ExitCode::from(err.exit_code() as u8),
+        };
+    }
+    unsafe { libc::dup2(2, 1) };
+
+    // The fleet data slot: commands may attach structured payloads
+    // (e.g. `list` device inventories) for the envelope's "data" field.
+    let mut fleet_data: Option<serde_json::Value> = None;
+    let result = run_with_fleet_slot(cli, &mut fleet_data);
+
+    // Restore stdout, then write the envelope on the ORIGINAL fd.
+    unsafe { libc::dup2(saved, 1) };
+    unsafe { libc::close(saved) };
+
+    let (status, exit_code, error) = match &result {
+        Ok(()) => ("ok", 0i32, serde_json::Value::Null),
+        Err(err) => {
+            let code = err.exit_code();
+            let e = serde_json::json!({
+                "code": err.machine_code(),
+                "message": err.to_string(),
+            });
+            ("error", code, e)
+        }
+    };
+    let envelope = serde_json::json!({
+        "schema": "dc.fleet/v1",
+        "tool": "diskcleaner",
+        "version": env!("CARGO_PKG_VERSION"),
+        "command": command,
+        "status": status,
+        "exit_code": exit_code,
+        "duration_ms": started.elapsed().as_millis() as u64,
+        "error": error,
+        "data": fleet_data,
+    });
+    println!("{}", envelope);
+    ExitCode::from(exit_code as u8)
+}
+
+/// Machine name of the active subcommand for the fleet envelope.
+fn command_name(command: &Commands) -> &'static str {
+    match command {
+        Commands::List => "list",
+        Commands::Check(_) => "check",
+        Commands::Plan(_) => "plan",
+        Commands::Execute(_) => "execute",
+        Commands::Resume(_) => "resume",
+        Commands::Verify(_) => "verify",
+        Commands::Cert(_) => "cert",
+        Commands::Journal(_) => "journal",
+        Commands::Keygen(_) => "keygen",
+        Commands::Key(_) => "key",
+        Commands::Approve(_) => "approve",
+        Commands::Profiles => "profiles",
+        Commands::Bench(_) => "bench",
+        Commands::Purge(_) => "purge",
+        Commands::Boot(_) => "boot",
+        Commands::Quote(_) => "quote",
+        Commands::Photon(_) => "photon",
+        Commands::Fabrics(_) => "fabrics",
+    }
+}
+
 pub fn run(cli: Cli) -> Result<(), DcError> {
+    let mut fleet_slot: Option<serde_json::Value> = None;
+    run_with_fleet_slot(cli, &mut fleet_slot)
+}
+
+/// Shared dispatch: identical to `run`, with an optional fleet data slot
+/// (`--json` mode) commands can attach structured payloads to.
+fn run_with_fleet_slot(
+    cli: Cli,
+    fleet_slot: &mut Option<serde_json::Value>,
+) -> Result<(), DcError> {
     let mut audit = AuditLogger::open_or_create(Path::new("audit-chain.log")).ok();
 
     match cli.command {
         Commands::List => {
-            cmd_list();
+            cmd_list(fleet_slot);
             Ok(())
         }
         Commands::Check(args) => {
@@ -1058,9 +1195,40 @@ fn cmd_boot(args: BootArgs) -> Result<(), DcError> {
     }
 }
 
-fn cmd_list() {
+fn cmd_list(fleet_slot: &mut Option<serde_json::Value>) {
     println!("Scanning physical block devices...");
     let devices = InventoryScanner::scan_all();
+
+    // v0.9.0 fleet mode: always attach the structured inventory to the
+    // slot — in `--json` mode the envelope harvests it as "data"
+    // (human output is already redirected to stderr); in human mode the
+    // slot is a throwaway (stdout is untouched).
+    {
+        let entries: Vec<serde_json::Value> = devices
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "dev_path": d.dev_path,
+                    "kernel_name": d.kernel_name,
+                    "bus": d.stable.bus.to_string(),
+                    "size_bytes": d.stable.size_bytes,
+                    "model": d.stable.model,
+                    "serial": d.stable.serial,
+                    "wwn": d.stable.wwn,
+                    "logical_block_size": d.logical_block_size,
+                    "physical_block_size": d.physical_block_size,
+                    "kernel_major": d.kernel.major,
+                    "kernel_minor": d.kernel.minor,
+                })
+            })
+            .collect();
+        let inventory = serde_json::json!({
+            "device_count": entries.len(),
+            "devices": entries,
+        });
+        *fleet_slot = Some(inventory);
+    }
+
     if devices.is_empty() {
         println!("No whole-disk block devices detected.");
         return;

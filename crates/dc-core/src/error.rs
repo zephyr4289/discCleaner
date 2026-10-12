@@ -92,4 +92,26 @@ impl DcError {
             _ => 1,
         }
     }
+
+    /// Stable machine-readable error class for `--json` fleet harvesting
+    /// (v0.9.0 Phase 3). Ansible/SaltStack agents branch on this string,
+    /// not on prose. Kept in lockstep with `exit_code()` buckets.
+    pub fn machine_code(&self) -> &'static str {
+        match self {
+            Self::Guardian(_) => "GUARDIAN_REFUSAL",
+            Self::IdentityDrift { .. } => "IDENTITY_DRIFT",
+            Self::Io { .. } => "IO_ERROR",
+            Self::JournalCorrupt { .. } => "JOURNAL_CORRUPT",
+            Self::VerificationFailed { .. } => "VERIFICATION_FAILED",
+            Self::Interrupted { .. } => "INTERRUPTED",
+            Self::OperatorAbort => "OPERATOR_ABORT",
+            Self::CertSigning(_) => "CERT_SIGNING",
+            Self::CertInvalid(_) => "CERT_INVALID",
+            Self::Usage(_) => "USAGE",
+            Self::Internal(_) => "INTERNAL",
+            Self::Json(_) => "JSON",
+            Self::StdIo(_) => "STDIO",
+            Self::Rng(_) => "RNG",
+        }
+    }
 }
