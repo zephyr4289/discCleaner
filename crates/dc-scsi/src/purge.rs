@@ -248,6 +248,38 @@ impl<'a> ScsiPurgeClient<'a> {
     // Non-destructive probes
     // -----------------------------------------------------------------
 
+    /// Read the standard INQUIRY identity (vendor / product / firmware
+    /// revision) — the SAS firmware attestation probe (v0.7.0, Vector 4).
+    pub fn identify(&mut self) -> Result<dc_hw::ScsiInquiryIdentity, String> {
+        let cdb = dc_hw::ScsiCodec::encode_inquiry(36);
+        let reply = self
+            .transport
+            .issue(&cdb, ScsiXfer::FromDev(36), PROBE_TIMEOUT_MS)?;
+        if !reply.is_good() {
+            return Err(format!(
+                "INQUIRY failed: SCSI status 0x{:02X}",
+                reply.status
+            ));
+        }
+        dc_hw::ScsiCodec::decode_inquiry_identity(&reply.data_in)
+    }
+
+    /// Read the drive temperature via LOG SENSE page 0x0D (parameter
+    /// 0x0000, current) — the SAS thermal probe (v0.7.0, Vector 2).
+    pub fn read_temperature(&mut self) -> Result<dc_hw::thermal::ThermalReading, String> {
+        let cdb = dc_hw::ScsiCodec::encode_log_sense_temperature();
+        let reply = self
+            .transport
+            .issue(&cdb, ScsiXfer::FromDev(32), PROBE_TIMEOUT_MS)?;
+        if !reply.is_good() {
+            return Err(format!(
+                "LOG SENSE (0x0D) failed: SCSI status 0x{:02X}",
+                reply.status
+            ));
+        }
+        dc_hw::thermal::decode_log_sense_temperature(&reply.data_in)
+    }
+
     /// Query the grown defect (G-List) count via READ DEFECT DATA (10):
     /// a header-only round-trip; count = list length / 8-byte descriptors.
     pub fn read_grown_defects(&mut self) -> Result<u64, String> {

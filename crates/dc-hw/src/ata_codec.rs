@@ -333,6 +333,22 @@ impl AtaCodec {
         Self::encode_sat_passthrough_16_framed(0xB0, 0xD0, 0xC24F, 1, SatTransferClass::DataIn)
     }
 
+    /// READ LOG EXT (ATA8-ACS: opcode 0x2F, PIO data-in, 48-bit). Reads
+    /// multi-page general purpose logs where the page number rides the
+    /// LBA field: bits 7:0 = log address, bits 31:8 = page number. This
+    /// is how the Device Statistics log (0x04) pages beyond page 0 are
+    /// fetched (v0.7.0, Vector 4).
+    pub fn encode_sat_read_log_ext(log_address: u8, page: u16, sector_count: u16) -> [u8; 16] {
+        let lba = (log_address as u64) | ((page as u64) << 8);
+        Self::encode_sat_passthrough_16_framed(
+            0x2F,
+            0x0000,
+            lba,
+            sector_count,
+            SatTransferClass::DataIn,
+        )
+    }
+
     /// SMART READ LOG (ATA8-ACS: opcode 0xB0, features 0xD5, PIO data-in,
     /// 512-byte log page). `log_address` 0x30 selects the Sanitize Status
     /// log.
@@ -454,6 +470,130 @@ impl AtaCodec {
         }
         // Attribute absent: the drive does not report reallocations.
         Ok(0)
+    }
+}
+
+/// ATA Device Statistics log (GP Log 0x04) — decoded wear evidence
+/// (v0.7.0, Vector 4).
+///
+/// Layout per ATA8-ACS §7.22: each 512-byte page begins with a 8-byte
+/// header (page number u16, rsvd, entry count u32 at offset 4), followed
+/// by entries of `2-byte code | 1-byte flags | 1-byte rsvd | value`.
+/// The value length is code-determined (the standard publishes the size
+/// table; the D bit in the flags marks data valid).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtaDeviceStatisticsPage {
+    /// Page number (0x00 General, 0x01 Rotating Media, 0x04 Solid State
+    /// Device Statistics, ...).
+    pub page_number: u16,
+    /// Entries in page order, decoded generically.
+    pub entries: Vec<AtaDeviceStatisticsEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtaDeviceStatisticsEntry {
+    /// 2-byte entry code (e.g. 0x0004 Logical Sectors Written).
+    pub code: u16,
+    /// The D bit (bit 4 of the flags byte): the value is valid data.
+    pub data_valid: bool,
+    /// Decoded value (length per the code's spec table).
+    pub value: u64,
+}
+
+impl AtaDeviceStatisticsEntry {
+    /// Canonical name for the codes the evidence stack cites, in the
+    /// context of the page they were decoded from.
+    pub fn name_in_page(&self, page_number: u16) -> Option<&'static str> {
+        match (page_number, self.code) {
+            (0x00, 0x0001) => Some("Lifetime Power-on Resets"),
+            (0x00, 0x0002) => Some("Power-on Hours"),
+            (0x00, 0x0004) => Some("Logical Sectors Written"),
+            (0x00, 0x0005) => Some("Number of Write Commands"),
+            (0x00, 0x0006) => Some("Logical Sectors Read"),
+            (0x00, 0x0007) => Some("Number of Read Commands"),
+            (0x00, 0x0008) => Some("Date and Time of Reset"),
+            (0x04, 0x0001) => Some("Percentage Used Endurance Indicator"),
+            (0x04, 0x0002) => Some("Logical Sectors Read (SSD)"),
+            (0x04, 0x0004) => Some("Logical Sectors Written (SSD)"),
+            _ => None,
+        }
+    }
+}
+
+impl AtaDeviceStatisticsPage {
+    /// Decode one 512-byte Device Statistics page. The page number is read
+    /// from the page header itself (word 0); the hint parameter only
+    /// documents what the caller requested.
+    pub fn decode(raw: &[u8], _page_number_hint: u16) -> Result<Self, String> {
+        if raw.len() < 512 {
+            return Err("Device Statistics page must be 512 bytes".to_string());
+        }
+        let page_number = u16::from_le_bytes([raw[0], raw[1]]);
+        let entry_count = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]) as usize;
+        let mut entries = Vec::with_capacity(entry_count);
+        let mut off = 8usize;
+        for _ in 0..entry_count {
+            if off + 4 > 512 {
+                break; // vendor tail: decode what the header promised
+            }
+            let code = u16::from_le_bytes([raw[off], raw[off + 1]]);
+            let flags = raw[off + 2];
+            let data_valid = flags & 0x10 != 0;
+            let len = stat_value_len(page_number, code);
+            if off + 4 + len > 512 {
+                break;
+            }
+            let mut value: u64 = 0;
+            for (i, b) in raw[off + 4..off + 4 + len].iter().enumerate() {
+                value |= (*b as u64) << (8 * i);
+            }
+            entries.push(AtaDeviceStatisticsEntry {
+                code,
+                data_valid,
+                value,
+            });
+            off += 4 + len;
+        }
+        Ok(Self {
+            page_number,
+            entries,
+        })
+    }
+
+    /// Fetch a decoded entry by code.
+    pub fn entry(&self, code: u16) -> Option<&AtaDeviceStatisticsEntry> {
+        self.entries.iter().find(|e| e.code == code)
+    }
+
+    /// The SSD Percentage Used Endurance Indicator (page 0x04, code 0x0001,
+    /// 1-byte value).
+    pub fn percentage_used_endurance(&self) -> Option<u8> {
+        if self.page_number == 0x04 {
+            self.entry(0x0001).map(|e| e.value as u8)
+        } else {
+            None
+        }
+    }
+}
+
+/// Value length per (page, code) — the standard's published size table.
+/// Default is 4 bytes. The 6-byte values are the sector counters and the
+/// date/time of reset; page 0x04's endurance indicator is 1 byte. NOTE the
+/// code spaces are PER-PAGE: 0x0002 is Power-on Hours (4B) in the General
+/// page but Logical Sectors Read (6B) in the Solid State page.
+fn stat_value_len(page: u16, code: u16) -> usize {
+    if page == 0x04 {
+        return match code {
+            0x0001 => 1, // Percentage Used Endurance Indicator
+            0x0002 => 6, // Logical Sectors Read (SSD page)
+            0x0004 => 6, // Logical Sectors Written (SSD page)
+            _ => 4,
+        };
+    }
+    match code {
+        0x0004 | 0x0006 => 6, // Logical Sectors Written / Read
+        0x0008 => 6,          // Date and Time of Reset
+        _ => 4,
     }
 }
 

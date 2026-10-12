@@ -17,6 +17,20 @@ pub struct ScsiSenseData {
     pub progress_permille: Option<u16>,
 }
 
+/// Standard INQUIRY identity: T10 vendor, product, firmware revision
+/// (v0.7.0, Vector 4 firmware attestation for SAS drives).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScsiInquiryIdentity {
+    /// Bytes 8..16: vendor ("SEAGATE ", ...).
+    pub vendor: String,
+    /// Bytes 16..32: product identification.
+    pub product: String,
+    /// Bytes 32..36: firmware revision.
+    pub revision: String,
+    /// Byte 0 peripheral qualifier / device type (raw, for evidence).
+    pub peripheral_type: u8,
+}
+
 pub struct ScsiCodec;
 
 impl ScsiCodec {
@@ -53,6 +67,43 @@ impl ScsiCodec {
         cdb[0] = 0x03; // Opcode: REQUEST SENSE
         cdb[4] = alloc_len;
         cdb
+    }
+
+    /// Encode a 10-byte LOG SENSE CDB (Opcode 0x4D — SPC-4 §6.14) for the
+    /// Temperature page (0x0D), current values (PC=01). The page carries
+    /// the current drive temperature as parameter 0x0000 (v0.7.0, Vector 2
+    /// thermal telemetry for SAS drives).
+    pub fn encode_log_sense_temperature() -> [u8; 10] {
+        let mut cdb = [0u8; 10];
+        cdb[0] = 0x4D; // Opcode: LOG SENSE
+        cdb[1] = 0x40 | 0x0D; // PC=01 (current), page 0x0D
+        cdb[7] = 0x00; // allocation length (16-bit, bytes 7-8)
+        cdb[8] = 0x20; // 32 bytes is ample for the temp page
+        cdb
+    }
+
+    /// Encode a 6-byte INQUIRY CDB (Opcode 0x12 — SPC-4 §6.7) requesting
+    /// the standard page (the vendor / product / revision identity the
+    /// firmware attestation embeds, v0.7.0, Vector 4).
+    pub fn encode_inquiry(alloc_len: u8) -> [u8; 6] {
+        let mut cdb = [0u8; 6];
+        cdb[0] = 0x12; // Opcode: INQUIRY
+        cdb[4] = alloc_len;
+        cdb
+    }
+
+    /// Decode a standard INQUIRY response (at least 36 bytes).
+    pub fn decode_inquiry_identity(raw: &[u8]) -> Result<ScsiInquiryIdentity, String> {
+        if raw.len() < 36 {
+            return Err("INQUIRY standard data must be at least 36 bytes".to_string());
+        }
+        let ascii = |slice: &[u8]| String::from_utf8_lossy(slice).trim().to_string();
+        Ok(ScsiInquiryIdentity {
+            vendor: ascii(&raw[8..16]),
+            product: ascii(&raw[16..32]),
+            revision: ascii(&raw[32..36]),
+            peripheral_type: raw[0],
+        })
     }
 
     /// Encode a 10-byte READ DEFECT DATA CDB (Opcode 0x37 — SBC-3 §5.13).

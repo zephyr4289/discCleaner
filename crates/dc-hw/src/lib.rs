@@ -4,17 +4,18 @@ pub mod raw;
 pub mod scsi_codec;
 pub mod sgio;
 pub mod tables;
+pub mod thermal;
 
 pub use ata_codec::{
-    AtaCodec, AtaIdentifyData, AtaSanitizeFeature, AtaSanitizeStatus, AtaSanitizeSupport,
-    AtaSecurityStatus,
+    AtaCodec, AtaDeviceStatisticsEntry, AtaDeviceStatisticsPage, AtaIdentifyData,
+    AtaSanitizeFeature, AtaSanitizeStatus, AtaSanitizeSupport, AtaSecurityStatus,
 };
 pub use nvme_codec::{
     NvmeCodec, NvmeHealthLog, NvmeIdentifyController, NvmeIdentifyNamespace, NvmeSanitizeAction,
-    NvmeSanitizeStatus, NvmeSecureEraseSetting,
+    NvmeSanitizeStatus, NvmeSecureEraseSetting, NvmeTelemetryHeader,
 };
 pub use raw::RawBlob;
-pub use scsi_codec::{ScsiCodec, ScsiSanitizeServiceAction, ScsiSenseData};
+pub use scsi_codec::{ScsiCodec, ScsiInquiryIdentity, ScsiSanitizeServiceAction, ScsiSenseData};
 pub use sgio::{
     SgIoDevice, SgIoError, SgIoHdr, SgIoResult, MAX_CDB_LEN, SENSE_BUFFER_LEN, SG_DXFER_FROM_DEV,
     SG_DXFER_NONE, SG_DXFER_TO_DEV, SG_IO_IOCTL,
@@ -23,6 +24,10 @@ pub use tables::{
     NvmeSstatStatus, CITATION_ATA_IDENTIFY_W128, CITATION_ATA_SANITIZE, CITATION_NVME_LOG_81,
     CITATION_NVME_SANITIZE, CITATION_SCSI_SANITIZE, SPEC_ATA8_ACS, SPEC_NVME_BASE, SPEC_SAT5,
     SPEC_SBC3, SPEC_SPC4,
+};
+pub use thermal::{
+    decode_log_sense_temperature, decode_smart_temperature, SysfsHwmonThermometer, ThermalDecision,
+    ThermalGovernor, ThermalLimits, ThermalPacer, ThermalReading, ThermalSource,
 };
 
 #[cfg(test)]

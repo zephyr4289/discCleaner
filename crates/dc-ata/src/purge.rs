@@ -339,6 +339,46 @@ impl<'a> AtaPurgeClient<'a> {
         AtaCodec::decode_smart_reallocated_sectors(&reply.data_in)
     }
 
+    /// Read the drive temperature via SMART READ DATA attribute 194
+    /// (fallback 190) on the SAME SG_IO fd the ladder holds — the thermal
+    /// probe for the v0.7.0 governor (Vector 2). No device contention.
+    pub fn read_temperature(&mut self) -> Result<crate::thermal::ThermalReading, String> {
+        let reply = self.transport.issue(
+            &AtaCodec::encode_sat_smart_read_data(),
+            SatXfer::FromDev(512),
+            READ_TIMEOUT_MS,
+        )?;
+        if !reply.is_good() {
+            return Err(format!(
+                "SMART READ DATA failed: SCSI status 0x{:02X}",
+                reply.status
+            ));
+        }
+        crate::thermal::decode_smart_temperature(&reply.data_in)
+    }
+
+    /// Read one page of the Device Statistics log (GP Log 0x04) via READ
+    /// LOG EXT — the raw SSD wear indicators of the v0.7.0 firmware
+    /// attestation (Vector 4). `page` 0x00 is General Statistics, 0x04
+    /// is the Solid State Device Statistics page.
+    pub fn read_device_statistics(
+        &mut self,
+        page: u16,
+    ) -> Result<(dc_hw::AtaDeviceStatisticsPage, Vec<u8>), String> {
+        let cdb = AtaCodec::encode_sat_read_log_ext(0x04, page, 1);
+        let reply = self
+            .transport
+            .issue(&cdb, SatXfer::FromDev(512), READ_TIMEOUT_MS)?;
+        if !reply.is_good() {
+            return Err(format!(
+                "READ LOG EXT (log 0x04 page 0x{:02X}) failed: SCSI status 0x{:02X}",
+                page, reply.status
+            ));
+        }
+        let decoded = dc_hw::AtaDeviceStatisticsPage::decode(&reply.data_in, page)?;
+        Ok((decoded, reply.data_in))
+    }
+
     // -----------------------------------------------------------------
     // The ladder
     // -----------------------------------------------------------------
