@@ -176,6 +176,12 @@ pub struct SanitizationCertificate {
     pub journal: JournalChainSummary,
     pub operator: OperatorDetails,
     pub signature: Option<SignatureDetails>,
+    /// Post-quantum hybrid signature (ML-DSA-44 over the same canonical
+    /// bytes as `signature`; v0.10.0, Frontier 3). Present only when the
+    /// operator signed with a hybrid keypair. Verification policy is a
+    /// strict conjunction: when present, BOTH legs must verify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_quantum: Option<crate::pq::PostQuantumSignature>,
     /// Present only for controller-attested hardware purges (`dc purge`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purge: Option<PurgeCertificateEvidence>,
@@ -218,6 +224,17 @@ pub struct CertVerificationResult {
     pub error_detail: Option<String>,
 }
 
+/// Outcome of hybrid dual-signature verification.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HybridSignatureStatus {
+    /// Ed25519 leg verified.
+    pub classical_ed25519: bool,
+    /// ML-DSA-44 leg verified (None when the certificate is classical-only).
+    pub post_quantum_ml_dsa: Option<bool>,
+    /// Conjunction: classical verified AND (no PQ leg OR PQ verified).
+    pub fully_authentic: bool,
+}
+
 impl SanitizationCertificate {
     pub fn new(
         plan: SanitizationPlan,
@@ -244,6 +261,7 @@ impl SanitizationCertificate {
                 public_key_ed25519: operator_pubkey,
             },
             signature: None,
+            post_quantum: None,
             purge: None,
             health_pre: None,
             health_post: None,
@@ -411,6 +429,39 @@ impl SanitizationCertificate {
             &canonical_bytes,
             &sig.value,
         )
+    }
+
+    /// Hybrid dual-signing: Ed25519 + ML-DSA-44 over the same canonical
+    /// JCS bytes (v0.10.0). The classical leg is produced by `sign`; the
+    /// post-quantum leg is appended as `post_quantum`.
+    pub fn sign_hybrid(
+        &mut self,
+        classical: &OperatorKeyPair,
+        pq: &crate::pq::MlDsaOperatorKey,
+    ) -> Result<(), DcError> {
+        self.sign(classical)?;
+        let canonical_bytes = self.canonical_unsigned_bytes()?;
+        self.post_quantum = Some(pq.sign_canonical_bytes(&canonical_bytes));
+        Ok(())
+    }
+
+    /// Verify the hybrid dual signature in strict-conjunction mode:
+    /// the classical leg must verify, and when a post-quantum leg is
+    /// present it must verify as well.
+    pub fn verify_signature_hybrid(&self) -> Result<HybridSignatureStatus, DcError> {
+        let classical_ok = self.verify_signature()?;
+        let pq_ok = match &self.post_quantum {
+            Some(pq_block) => {
+                let canonical_bytes = self.canonical_unsigned_bytes()?;
+                Some(pq_block.verify(&canonical_bytes)?)
+            }
+            None => None,
+        };
+        Ok(HybridSignatureStatus {
+            classical_ed25519: classical_ok,
+            post_quantum_ml_dsa: pq_ok,
+            fully_authentic: classical_ok && pq_ok.unwrap_or(true),
+        })
     }
 
     /// Strict parser and anchor verification driver (§5 / Δ63 / Δ65).

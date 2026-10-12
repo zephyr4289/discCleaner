@@ -1,10 +1,11 @@
 [package]
 name = "dc-cert"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 
 [dependencies]
 dc-core = { workspace = true }
+dc-pq = { workspace = true }
 dc-verify = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

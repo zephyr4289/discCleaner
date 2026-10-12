@@ -6,6 +6,7 @@ pub mod iso7816;
 pub mod keyring;
 pub mod keystore;
 pub mod package;
+pub mod pq;
 pub mod project;
 pub mod project2;
 pub mod schema2;
@@ -31,6 +32,7 @@ pub use firmware::{
 pub use keyring::{KeyringEntry, KeyringRegistry};
 pub use keystore::{KeyStoreRegistry, SigningKeySourceKind, SigningSiteId};
 pub use package::{EvidencePackageManifest, PackageArtifact, PackageVerifier};
+pub use pq::{MlDsaOperatorKey, PostQuantumSignature};
 pub use project::CertificateProjector;
 pub use project2::Cert2Projector;
 pub use schema2::Cert2Document;
