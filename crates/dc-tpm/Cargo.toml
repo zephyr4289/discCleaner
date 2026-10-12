@@ -1,0 +1,25 @@
+[package]
+name = "dc-tpm"
+version = "0.8.0"
+edition = "2024"
+
+[dependencies]
+dc-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+libc = { workspace = true }
+# ECDSA P-256 quote-signature verification (same pure-Rust family already
+# used by dc-cert for the PIV custody co-proof — no dynamic linking).
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+
+[dev-dependencies]
+tempfile = "3.14"
+rand_core = { workspace = true }
+
+[lints]
+workspace = true

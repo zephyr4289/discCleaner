@@ -11,6 +11,8 @@ pub mod project2;
 pub mod schema2;
 pub mod signer;
 pub mod token;
+pub mod tpm;
+pub mod vault;
 pub mod zone_attest;
 
 pub use cert::{
@@ -36,6 +38,8 @@ pub use signer::{OperatorKeyPair, verify_canonical_signature};
 pub use token::{
     HardwareCustodyAttestation, KeyDisclosure, PIV_AID, PivAlgorithm, PivSession, PivSlot,
 };
+pub use tpm::{AttestationFields, TpmAttestationEvidence};
+pub use vault::{FabricSessionEvidence, PhotonManifestEvidence, VaultReportEvidence};
 pub use zone_attest::{CapacityThreeNumbers, CrossVersionCertVerifier, ZoneAttestationBlock};
 
 #[cfg(test)]
