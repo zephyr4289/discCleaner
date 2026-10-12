@@ -25,6 +25,7 @@ impl PlanApprover {
             public_key_hex: keypair.public_key_hex(),
             signature_hex: hex::encode(sig.to_bytes()),
             is_hardware_token,
+            hardware_attestation: None,
         }
     }
 
@@ -44,6 +45,7 @@ impl PlanApprover {
             public_key_hex: keypair.public_key_hex(),
             signature_hex: hex::encode(sig.to_bytes()),
             is_hardware_token,
+            hardware_attestation: None,
         }
     }
 }

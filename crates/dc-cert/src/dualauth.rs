@@ -1,3 +1,4 @@
+use crate::token::HardwareCustodyAttestation;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -24,6 +25,13 @@ pub enum CustodyType {
 /// `key_hash` + a BLAKE3 hash of public strings — anyone could forge an
 /// "authorization" by hashing words together, and `verify_pre_arm_authorization`
 /// never checked any cryptography at all.
+///
+/// v0.7.0 (Vector 1): `is_hardware_token = true` is no longer a free claim.
+/// A hardware entry MUST carry `hardware_attestation` that verifies
+/// (REG-TOKEN-CUSTODY-PROOF): the PIV/CCID session transcript proves the
+/// card verified the officer PIN and computed the signature inside the
+/// secure element. Claiming hardware custody without evidence is now a
+/// REFUSAL, not a silent downgrade.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthSignatureEntry {
     /// BLAKE3(public_key) hex — must match `public_key_hex` (anti-spoofing).
@@ -34,6 +42,11 @@ pub struct AuthSignatureEntry {
     pub signature_hex: String,
     /// Whether the signature originated from a hardware token (HSM/PIV).
     pub is_hardware_token: bool,
+    /// Evidence that `is_hardware_token` is true (v0.7.0). Mandatory
+    /// whenever the hardware claim is set; pre-0.7.0 certificates
+    /// deserialize with `None` and fail the hardware gate fail-closed.
+    #[serde(default)]
+    pub hardware_attestation: Option<HardwareCustodyAttestation>,
 }
 
 impl AuthSignatureEntry {
@@ -99,12 +112,43 @@ impl AuthorizationSet {
     }
 
     /// Derive custody type based on signing source characteristics (Δ455).
+    ///
+    /// v0.7.0: `SeparateHardware` requires every hardware-claimed
+    /// signature to carry a VERIFIED attestation — see
+    /// `verify_hardware_claim`.
     pub fn derive_custody_type(&self) -> CustodyType {
-        if self.signatures.len() >= 2 && self.signatures.iter().all(|s| s.is_hardware_token) {
+        if self.signatures.len() >= 2
+            && self.signatures.iter().all(|s| s.is_hardware_token)
+            && self.signatures.iter().all(|s| {
+                s.hardware_attestation.is_some()
+                    && s.hardware_attestation
+                        .as_ref()
+                        .is_some_and(|a| a.pin_verified)
+            })
+        {
             CustodyType::SeparateHardware
         } else {
             CustodyType::SharedFilesystem
         }
+    }
+
+    /// Verify one entry's hardware custody claim (fail-closed, v0.7.0
+    /// Vector 1, REG-TOKEN-CUSTODY-PROOF): `is_hardware_token` without a
+    /// cryptographically consistent PIV attestation is a REFUSAL — the
+    /// certificate must never print `SeparateHardware` on a bare boolean.
+    fn verify_hardware_claim(
+        sig: &AuthSignatureEntry,
+        domain: &[u8],
+        bound_hash: &str,
+    ) -> Result<(), &'static str> {
+        if !sig.is_hardware_token {
+            return Ok(());
+        }
+        let attestation = sig
+            .hardware_attestation
+            .as_ref()
+            .ok_or("HW_CUSTODY_CLAIM_WITHOUT_ATTESTATION")?;
+        crate::token::verify_hardware_attestation(sig, attestation, domain, bound_hash)
     }
 
     /// Number of DISTINCT authorizing keys present in the set.
@@ -140,6 +184,7 @@ impl AuthorizationSet {
         // 2. Cryptographic verification of every countersignature
         for sig in &self.signatures {
             sig.verify(PLAN_APPROVAL_DOMAIN, expected_plan_hash)?;
+            Self::verify_hardware_claim(sig, PLAN_APPROVAL_DOMAIN, expected_plan_hash)?;
         }
 
         // 3. Enforce 2PI on DISTINCT keys
@@ -161,6 +206,7 @@ impl AuthorizationSet {
         }
         for sig in &self.signatures {
             sig.verify(FLEET_MANIFEST_DOMAIN, expected_manifest_hash)?;
+            Self::verify_hardware_claim(sig, FLEET_MANIFEST_DOMAIN, expected_manifest_hash)?;
         }
         if require_two_person && self.distinct_key_count() < 2 {
             return Err("AUTHORIZATION_INCOMPLETE");

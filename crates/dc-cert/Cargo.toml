@@ -1,6 +1,6 @@
 [package]
 name = "dc-cert"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 
 [dependencies]
@@ -16,6 +16,11 @@ base64 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# v0.7.0 Vector 1: PIV/CAC ECDSA P-256 custody co-proof verification
+# (pure Rust, no_std-compatible, no dynamic linking).
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+sha2 = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.14"

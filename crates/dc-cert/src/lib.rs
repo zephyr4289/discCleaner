@@ -1,5 +1,8 @@
+pub mod ccid;
 pub mod cert;
 pub mod dualauth;
+pub mod firmware;
+pub mod iso7816;
 pub mod keyring;
 pub mod keystore;
 pub mod package;
@@ -7,6 +10,7 @@ pub mod project;
 pub mod project2;
 pub mod schema2;
 pub mod signer;
+pub mod token;
 pub mod zone_attest;
 
 pub use cert::{
@@ -18,6 +22,10 @@ pub use cert::{
 pub use dualauth::{
     AuthSignatureEntry, AuthorizationSet, CustodyType, FLEET_MANIFEST_DOMAIN, PLAN_APPROVAL_DOMAIN,
 };
+pub use firmware::{
+    AtaDeviceStatisticsEvidence, FirmwareAttestationEvidence, FirmwareIdentity,
+    NvmeTelemetryEvidence, TelemetrySnapshot,
+};
 pub use keyring::{KeyringEntry, KeyringRegistry};
 pub use keystore::{KeyStoreRegistry, SigningKeySourceKind, SigningSiteId};
 pub use package::{EvidencePackageManifest, PackageArtifact, PackageVerifier};
@@ -25,6 +33,9 @@ pub use project::CertificateProjector;
 pub use project2::Cert2Projector;
 pub use schema2::Cert2Document;
 pub use signer::{OperatorKeyPair, verify_canonical_signature};
+pub use token::{
+    HardwareCustodyAttestation, KeyDisclosure, PIV_AID, PivAlgorithm, PivSession, PivSlot,
+};
 pub use zone_attest::{CapacityThreeNumbers, CrossVersionCertVerifier, ZoneAttestationBlock};
 
 #[cfg(test)]
@@ -147,6 +158,7 @@ mod unit_tests {
                 hex::encode(a.signing_key.sign(&msg).to_bytes())
             },
             is_hardware_token: false,
+            hardware_attestation: None,
         });
         set.add_signature(AuthSignatureEntry {
             key_fingerprint: b.key_fingerprint_blake3(),
@@ -156,6 +168,7 @@ mod unit_tests {
                 hex::encode(b.signing_key.sign(&msg).to_bytes())
             },
             is_hardware_token: false,
+            hardware_attestation: None,
         });
         assert!(set.verify_pre_arm_authorization(plan_hash(), true).is_ok());
     }
@@ -172,6 +185,7 @@ mod unit_tests {
                 .to_hex()
                 .to_string(),
             is_hardware_token: false,
+            hardware_attestation: None,
         });
         set.add_signature(AuthSignatureEntry {
             key_fingerprint: blake3::hash(b"FAKE2").to_hex().to_string(),
@@ -180,6 +194,7 @@ mod unit_tests {
                 .to_hex()
                 .to_string(),
             is_hardware_token: false,
+            hardware_attestation: None,
         });
         assert!(set.verify_pre_arm_authorization(plan_hash(), true).is_err());
     }
@@ -196,6 +211,7 @@ mod unit_tests {
                 hex::encode(k.signing_key.sign(&msg).to_bytes())
             },
             is_hardware_token: hw,
+            hardware_attestation: None,
         };
         // One signature: incomplete.
         let mut one = AuthorizationSet::new(plan_hash());
@@ -205,13 +221,24 @@ mod unit_tests {
             Err("AUTHORIZATION_INCOMPLETE")
         );
 
-        // Same key twice (even with different hardware flags): NOT 2PI.
+        // Same key twice: NOT 2PI (v0.7.0: hardware flags without
+        // attestation are refused BEFORE the 2PI completeness check, so
+        // exercise the same-key rule with unclaimed software signatures).
         let mut twice = AuthorizationSet::new(plan_hash());
         twice.add_signature(sig_of(&a, false));
-        twice.add_signature(sig_of(&a, true));
+        twice.add_signature(sig_of(&a, false));
         assert_eq!(
             twice.verify_pre_arm_authorization(plan_hash(), true),
             Err("AUTHORIZATION_INCOMPLETE")
+        );
+        // REG-TOKEN-CUSTODY-PROOF (library half): claiming hardware
+        // custody without a PIV attestation is a hard refusal.
+        let mut claimed = AuthorizationSet::new(plan_hash());
+        claimed.add_signature(sig_of(&a, true));
+        claimed.add_signature(sig_of(&b, false));
+        assert_eq!(
+            claimed.verify_pre_arm_authorization(plan_hash(), true),
+            Err("HW_CUSTODY_CLAIM_WITHOUT_ATTESTATION")
         );
 
         // Two distinct keys pass.
@@ -234,6 +261,7 @@ mod unit_tests {
                 public_key_hex: k.public_key_hex(),
                 signature_hex: hex::encode(k.signing_key.sign(&msg).to_bytes()),
                 is_hardware_token: false,
+                hardware_attestation: None,
             });
         }
         assert_eq!(
@@ -257,12 +285,14 @@ mod unit_tests {
             public_key_hex: a.public_key_hex(),
             signature_hex: hex::encode(a.signing_key.sign(&msg).to_bytes()),
             is_hardware_token: false,
+            hardware_attestation: None,
         });
         set.add_signature(AuthSignatureEntry {
             key_fingerprint: b.key_fingerprint_blake3(),
             public_key_hex: b.public_key_hex(),
             signature_hex: hex::encode(b.signing_key.sign(&msg).to_bytes()),
             is_hardware_token: false,
+            hardware_attestation: None,
         });
         assert_eq!(
             set.verify_pre_arm_authorization(plan_hash(), true),

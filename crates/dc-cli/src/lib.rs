@@ -1,6 +1,7 @@
 pub mod approve;
 pub mod bench;
 pub mod bootattest;
+pub mod bootiso;
 pub mod evidence;
 pub mod execute;
 pub mod fleet;
@@ -153,6 +154,10 @@ pub enum Commands {
 
     /// Controller-attested hardware purge (NVMe Sanitize / Format NVM crypto erase)
     Purge(PurgeArgs),
+
+    /// Standalone appliance lifecycle: PID-1 bootstrap, image packing and
+    /// constituent attestation (v0.7.0, Vector 3)
+    Boot(BootArgs),
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -306,6 +311,16 @@ pub struct ExecuteArgs {
     /// arming (Δ448)
     #[arg(long)]
     pub auth_set: Option<PathBuf>,
+
+    /// Thermal throttle threshold in Celsius (default 55) for the
+    /// overwrite pacing governor (v0.7.0, Vector 2).
+    #[arg(long)]
+    pub thermal_throttle_c: Option<i32>,
+
+    /// Thermal abort threshold in Celsius (default 70): at or above it
+    /// the run aborts before certification.
+    #[arg(long)]
+    pub thermal_critical_c: Option<i32>,
 }
 
 #[derive(Args, Debug)]
@@ -421,6 +436,28 @@ pub struct PurgeArgs {
     /// Compile the purge ladder and exit WITHOUT touching the device
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Lights-out freeze remediation (v0.7.0, Vector 2): when the target
+    /// is frozen, walk the cold-bus ladder (LUN delete + host rescan,
+    /// ATA-port runtime-PM cycle) instead of refusing with a power-cycle
+    /// advisory. Destructive-adjacent sysfs operations — the operator
+    /// opts in for unattended racks.
+    #[arg(long)]
+    pub cold_unfreeze: bool,
+
+    /// Thermal throttle threshold in Celsius (default 55): above it the
+    /// run inserts adaptive pacing delays to protect the media.
+    #[arg(long)]
+    pub thermal_throttle_c: Option<i32>,
+
+    /// Thermal abort threshold in Celsius (default 70): at or above it
+    /// the run is refused certification (media health > completion).
+    #[arg(long)]
+    pub thermal_critical_c: Option<i32>,
+
+    /// Disable the thermal guard entirely (NOT recommended; disclosed)
+    #[arg(long)]
+    pub no_thermal_guard: bool,
 }
 
 #[derive(Args, Debug)]
@@ -431,11 +468,22 @@ pub struct ApproveArgs {
 
     /// First officer's Ed25519 private key path
     #[arg(short, long)]
-    pub key: PathBuf,
+    pub key: Option<PathBuf>,
 
     /// Second officer's Ed25519 private key path (two-person integrity)
-    #[arg(short, long)]
+    #[arg(long)]
     pub key2: Option<PathBuf>,
+
+    /// FIRST officer signs ON A HARDWARE TOKEN (PIV/CAC/YubiKey, USB
+    /// CCID) instead of a keyfile: "auto" picks the first PIV reader on
+    /// the bus, or pass the /dev/bus/usb/BBB/DDD node. The PIN is
+    /// prompted on /dev/tty with echo disabled (v0.7.0, Vector 1).
+    #[arg(long)]
+    pub token: Option<String>,
+
+    /// SECOND officer signs on a hardware token (same semantics)
+    #[arg(long)]
+    pub token2: Option<String>,
 
     /// Mark the FIRST officer's signature as originating from a hardware
     /// token (HSM/PIV) for custody-type derivation
@@ -536,6 +584,41 @@ pub struct KeygenArgs {
     pub out: PathBuf,
 }
 
+#[derive(Args, Debug)]
+pub struct BootArgs {
+    #[command(subcommand)]
+    pub sub: BootSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BootSubcommands {
+    /// Run the real PID-1 bootstrap (mounts, entropy seeding, zombie
+    /// reaper) — the /init entry of the RAM-resident appliance
+    Init {
+        /// Print the sequence record and exit (no destructive action
+        /// follows the bootstrap in self-test mode)
+        #[arg(long)]
+        self_test: bool,
+    },
+    /// Pack the appliance initramfs (cpio newc) from a staged static dc
+    /// binary and verify its constituents against the manifest
+    Pack {
+        /// Staged static musl dc binary to embed as /init
+        #[arg(short, long)]
+        dc_bin: PathBuf,
+        /// Output path for the initramfs cpio
+        #[arg(short, long, default_value = "dc-appliance-initramfs.cpio")]
+        out: PathBuf,
+        /// Optional kernel bzImage to hash into a new constituents
+        /// manifest (writes <out>.manifest.json)
+        #[arg(long)]
+        kernel: Option<PathBuf>,
+        /// Existing constituents manifest to verify against instead
+        #[arg(long)]
+        verify_against: Option<PathBuf>,
+    },
+}
+
 pub fn entrypoint() -> ExitCode {
     tracing_subscriber::fmt::init();
 
@@ -608,6 +691,123 @@ pub fn run(cli: Cli) -> Result<(), DcError> {
         }
         Commands::Approve(args) => {
             cmd_approve(args)?;
+            Ok(())
+        }
+        Commands::Boot(args) => {
+            cmd_boot(args)?;
+            Ok(())
+        }
+    }
+}
+
+/// `dc boot` — appliance lifecycle verbs (v0.7.0, Vector 3).
+fn cmd_boot(args: BootArgs) -> Result<(), DcError> {
+    match args.sub {
+        BootSubcommands::Init { self_test } => {
+            use crate::init::LinuxInitBackend;
+            let backend = LinuxInitBackend;
+            let constituents = "appliance-self-test";
+            let (state, record) = crate::init::run_pid1_init_real(&backend, true, constituents)
+                .map_err(|e| {
+                    eprintln!("[BOOT] PID-1 sequence refused: {}", e);
+                    e
+                })?;
+            println!("[BOOT] PID-1 bootstrap sequence complete");
+            for (source, target, fstype) in &record.mounted {
+                println!("       mounted {} on {} ({})", source, target, fstype);
+            }
+            for target in &record.already_mounted {
+                println!("       already mounted: {}", target);
+            }
+            println!(
+                "       entropy credited: {} bytes, zombie reaper installed: {}",
+                record.entropy_bytes_credited, record.zombie_reaper_installed
+            );
+            if self_test {
+                println!(
+                    "[BOOT] self-test: state fingerprint {}",
+                    state.environment_fingerprint
+                );
+                return Ok(());
+            }
+            // Real appliance mode: hand over to the fleet wipe interface.
+            println!(
+                "[BOOT] appliance ready — every physical drive is unmounted; run `dc list` \
+ then `dc execute --target <dev> --profile <profile>`"
+            );
+            Ok(())
+        }
+        BootSubcommands::Pack {
+            dc_bin,
+            out,
+            kernel,
+            verify_against,
+        } => {
+            let binary = crate::bootiso::read_file_bytes(&dc_bin)?;
+            if let Some(manifest_path) = verify_against {
+                let manifest: crate::bootattest::ConstituentsManifest = serde_json::from_str(
+                    &std::fs::read_to_string(&manifest_path)?,
+                )
+                .map_err(|e| {
+                    DcError::Usage(format!(
+                        "invalid constituents manifest '{}': {}",
+                        manifest_path.display(),
+                        e
+                    ))
+                })?;
+                // The kernel is mandatory when the manifest binds a real
+                // kernel hash; a kernel-less (PXE userspace-only) manifest
+                // carries the zero digest and verifies the binary + archive.
+                let kernel_bytes = match &kernel {
+                    Some(k) => crate::bootiso::read_file_bytes(k)?,
+                    None => {
+                        if manifest.kernel_hash != "0".repeat(64) {
+                            return Err(DcError::Usage(
+                                "--kernel is required with --verify-against (the manifest binds \
+                                 a kernel image)"
+                                    .to_string(),
+                            ));
+                        }
+                        Vec::new()
+                    }
+                };
+                let initramfs = crate::bootiso::build_appliance_initramfs(&binary, &manifest);
+                crate::bootiso::verify_constituents(&manifest, &kernel_bytes, &binary, &initramfs)?;
+                std::fs::write(&out, &initramfs)?;
+                println!(
+                    "[BOOT] constituents verified; initramfs written to {}",
+                    out.display()
+                );
+                return Ok(());
+            }
+            // Build a fresh manifest (kernel optional: census hash used).
+            // The embedded copy self-describes with a zeroed initramfs
+            // digest (a hash cannot contain itself), so ONE build is
+            // canonical and `--verify-against` reproduces it exactly.
+            let kernel_bytes = kernel
+                .as_ref()
+                .map(|k| crate::bootiso::read_file_bytes(k))
+                .transpose()?;
+            let mut manifest = crate::bootattest::ConstituentsManifest {
+                kernel_hash: kernel_bytes
+                    .as_ref()
+                    .map(|k| blake3::hash(k).to_hex().to_string())
+                    .unwrap_or_else(|| "0".repeat(64)),
+                initramfs_hash: "0".repeat(64), // zeroed in the embedded projection
+                binary_hash: blake3::hash(&binary).to_hex().to_string(),
+                census_manifest_hash: "0".repeat(64),
+            };
+            let initramfs = crate::bootiso::build_appliance_initramfs(&binary, &manifest);
+            manifest.initramfs_hash = blake3::hash(&initramfs).to_hex().to_string();
+            std::fs::write(&out, &initramfs)?;
+            let manifest_path = out.with_extension("manifest.json");
+            std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+            println!("[BOOT] appliance initramfs written to {}", out.display());
+            println!("       constituents manifest: {}", manifest_path.display());
+            println!(
+                "       dc binary: {} bytes, sha256/blake3 manifest emitted",
+                binary.len()
+            );
             Ok(())
         }
     }
@@ -1684,16 +1884,51 @@ fn cmd_approve(args: ApproveArgs) -> Result<(), DcError> {
     })?;
     let plan_hash = plan.compute_plan_hash()?;
 
-    let officer1 = OperatorKeyPair::load_from_file(&args.key)?;
-
+    // Officer 1: hardware token (PIV/CCID) takes precedence over the
+    // keyfile — the signature is computed inside the secure element and
+    // carries a HardwareCustodyAttestation (v0.7.0, Vector 1).
     let mut auth_set = AuthorizationSet::new(&plan_hash);
-    auth_set.add_signature(approve::PlanApprover::countersign_plan(
-        &plan_hash,
-        &officer1,
-        args.officer1_hardware,
-    ));
+    let mut token_attestations: Vec<String> = Vec::new();
 
-    if let Some(ref key2_path) = args.key2 {
+    match &args.token {
+        Some(spec) => {
+            let (entry, attestation) =
+                sign_plan_on_hardware_token(spec, &plan_hash, dc_cert::PLAN_APPROVAL_DOMAIN)?;
+            token_attestations.push(attestation.summary_line());
+            auth_set.add_signature(entry);
+            // A token officer needs no software keyfile; if one was also
+            // supplied it stays UNUSED for this signature (disclosed).
+            if args.key.is_some() {
+                eprintln!("[NOTE] --key is ignored for officer 1: the --token signature is used.");
+            }
+        }
+        None => {
+            let key_path = args.key.as_ref().ok_or_else(|| {
+                DcError::Usage(
+                    "officer 1 needs a signing source: pass --key <keyfile> or --token \
+                     <usb-node|auto> (hardware PIV custody)"
+                        .to_string(),
+                )
+            })?;
+            let officer1 = OperatorKeyPair::load_from_file(key_path)?;
+            auth_set.add_signature(approve::PlanApprover::countersign_plan(
+                &plan_hash,
+                &officer1,
+                args.officer1_hardware,
+            ));
+        }
+    }
+
+    // Officer 2: token2 (hardware) or key2 (software keyfile).
+    if let Some(spec) = &args.token2 {
+        let (entry, attestation) =
+            sign_plan_on_hardware_token(spec, &plan_hash, dc_cert::PLAN_APPROVAL_DOMAIN)?;
+        token_attestations.push(attestation.summary_line());
+        auth_set.add_signature(entry);
+        if args.key2.is_some() {
+            eprintln!("[NOTE] --key2 is ignored for officer 2: the --token2 signature is used.");
+        }
+    } else if let Some(ref key2_path) = args.key2 {
         let officer2 = OperatorKeyPair::load_from_file(key2_path)?;
         auth_set.add_signature(approve::PlanApprover::countersign_plan(
             &plan_hash,
@@ -1734,9 +1969,124 @@ fn cmd_approve(args: ApproveArgs) -> Result<(), DcError> {
     println!("    Officers:         {}", auth_set.signatures.len());
     println!("    Distinct Keys:    {}", auth_set.distinct_key_count());
     println!("    Custody Type:     {:?}", custody);
+    for line in &token_attestations {
+        println!("    Hardware custody: {}", line);
+    }
     println!("    Output:           {}", out_path.display());
     println!("\nUse with: dc execute --auth-set {}", out_path.display());
     Ok(())
+}
+
+/// Open a hardware token by CLI spec ("auto" = first PIV/CCID reader),
+/// prompt the officer PIN on /dev/tty (echo off) and countersign the plan
+/// inside the secure element (v0.7.0, Vector 1).
+fn sign_plan_on_hardware_token(
+    spec: &str,
+    plan_hash: &str,
+    domain: &[u8],
+) -> Result<
+    (
+        dc_cert::AuthSignatureEntry,
+        dc_cert::HardwareCustodyAttestation,
+    ),
+    DcError,
+> {
+    use dc_cert::ccid::{CcidCardTransport, CcidEndpoint, discover_ccid_interfaces};
+
+    let endpoints = discover_ccid_interfaces();
+    let endpoint: CcidEndpoint = if spec == "auto" {
+        endpoints.into_iter().next().ok_or_else(|| {
+            DcError::Usage(
+                "no CCID/PIV token found on the USB bus (check lsusb; CAC/YubiKey \
+                     readers enumerate as bInterfaceClass 0x0B)"
+                    .to_string(),
+            )
+        })?
+    } else {
+        endpoints
+            .into_iter()
+            .find(|e| e.device_node.display().to_string() == spec)
+            .ok_or_else(|| {
+                DcError::Usage(format!(
+                    "no CCID interface at '{}' (pass --token auto or a /dev/bus/usb node)",
+                    spec
+                ))
+            })?
+    };
+
+    println!(
+        "[TOKEN] Using PIV reader {} (usb {:04x}:{:04x}, serial {:?})",
+        endpoint.device_node.display(),
+        endpoint.id_vendor,
+        endpoint.id_product,
+        endpoint.serial
+    );
+    let mut transport = CcidCardTransport::open(&endpoint)
+        .map_err(|e| DcError::Usage(format!("cannot open CCID transport: {} (root?)", e)))?;
+
+    let pin = prompt_pin_no_echo("officer PIN").map_err(DcError::StdIo)?;
+    let (entry, attestation) = dc_cert::token::countersign_ed25519_on_token(
+        &mut transport,
+        &endpoint,
+        domain,
+        plan_hash,
+        &pin,
+    )
+    .map_err(|e| DcError::CertSigning(format!("hardware token signing failed: {}", e)))?;
+    println!(
+        "[TOKEN] Signed in slot {} via {} (PIN verified in-session)",
+        attestation.slot, attestation.mechanism
+    );
+    Ok((entry, attestation))
+}
+
+/// Read a PIN from the controlling terminal with echo disabled
+/// (termios ECHO off). The PIN never lands in shell history, environment,
+/// or a file. Returns an error when there is no controlling TTY — a PIN
+/// typed into a pipe is a PIN leaked to a log.
+fn prompt_pin_no_echo(prompt: &str) -> std::io::Result<String> {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")?;
+    let fd = tty.as_raw_fd();
+
+    // Save termios, disable ECHO, restore on every path.
+    let mut saved = std::mem::MaybeUninit::<libc::termios>::uninit();
+    if unsafe { libc::tcgetattr(fd, saved.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let saved = unsafe { saved.assume_init() };
+    let mut noecho = saved;
+    noecho.c_lflag &= !libc::ECHO;
+    if unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &noecho) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let mut read_tty = std::fs::File::open("/dev/tty")?;
+    let result: std::io::Result<String> = (|| {
+        let mut out = std::io::BufWriter::new(&tty);
+        write!(out, "[TOKEN] {} (input hidden): ", prompt)?;
+        out.flush()?;
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(&mut read_tty), &mut line)?;
+        // Newline echo after hidden input.
+        let mut out2 = std::io::BufWriter::new(&tty);
+        let _ = writeln!(out2);
+        Ok(line.trim().to_string())
+    })();
+
+    unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &saved) };
+    let pin = result?;
+    if pin.is_empty() {
+        return Err(std::io::Error::other(
+            "empty PIN — hardware custody requires the officer PIN",
+        ));
+    }
+    Ok(pin)
 }
 
 fn cmd_journal(args: JournalArgs) -> Result<(), DcError> {
