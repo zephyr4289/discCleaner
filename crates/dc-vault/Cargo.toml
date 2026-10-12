@@ -1,0 +1,21 @@
+[package]
+name = "dc-vault"
+version = "0.8.0"
+edition = "2024"
+
+[dependencies]
+dc-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.14"
+
+[lints]
+workspace = true
