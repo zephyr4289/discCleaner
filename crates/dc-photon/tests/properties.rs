@@ -127,7 +127,10 @@ proptest! {
 
         // The victim is NECESSARY: corrupt one of its bytes. The XOR
         // peeling decoder must then either fail, or produce an output
-        // that differs from the original — never an identical forgery.
+        // that differs from the CLEAN decode over the FULL padded buffer
+        // (a flip landing in the zero padding beyond payload.len() is
+        // still a divergence — it must never silently reproduce the
+        // clean result byte-for-byte).
         let mut corrupted = LtDecoder::new(k, block_size, seed);
         for &id in &stream {
             let mut sym = enc.encode(id);
@@ -139,7 +142,7 @@ proptest! {
         }
         match corrupted.finish() {
             Err(_) => { /* clean rejection: the good outcome */ }
-            Ok(out) => prop_assert_ne!(&out[..payload.len()], &payload[..]),
+            Ok(out) => prop_assert_ne!(out, clean_out),
         }
     }
 }

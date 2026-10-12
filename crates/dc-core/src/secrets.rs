@@ -65,12 +65,7 @@ impl SecretBuf {
         if len == 0 {
             return;
         }
-        let rc = unsafe {
-            libc::mlock(
-                self.buf.as_ptr().cast::<libc::c_void>(),
-                len,
-            )
-        };
+        let rc = unsafe { libc::mlock(self.buf.as_ptr().cast::<libc::c_void>(), len) };
         self.locked = rc == 0;
         if !self.locked {
             // ENOMEM (RLIMIT_MEMLOCK) is the expected unprivileged case;
@@ -123,10 +118,7 @@ impl Drop for SecretBuf {
             // SAFETY: same pointer/len contract as try_mlock; munlock only
             // un-pins pages.
             unsafe {
-                libc::munlock(
-                    self.buf.as_ptr().cast::<libc::c_void>(),
-                    self.buf.len(),
-                );
+                libc::munlock(self.buf.as_ptr().cast::<libc::c_void>(), self.buf.len());
             }
         }
     }
@@ -148,7 +140,12 @@ impl DerefMut for SecretBuf {
 /// Never leak via formatting — not even in debug/panic paths.
 impl fmt::Debug for SecretBuf {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SecretBuf(len={}, mlock={})", self.buf.len(), self.locked)
+        write!(
+            f,
+            "SecretBuf(len={}, mlock={})",
+            self.buf.len(),
+            self.locked
+        )
     }
 }
 

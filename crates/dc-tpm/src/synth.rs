@@ -274,10 +274,13 @@ impl SynthTpm {
     /// Dispatch: route the v0.9.0 seal command subset to its handler.
     fn dispatch(&mut self, code: u32, tag: u16, r: &mut Reader<'_>) -> Vec<u8> {
         match code {
-            TPM_CC_START_AUTH_SESSION | TPM_CC_POLICY_PCR | TPM_CC_POLICY_GET_DIGEST
-            | TPM_CC_CREATE | TPM_CC_LOAD | TPM_CC_UNSEAL | TPM_CC_FLUSH_CONTEXT => {
-                self.handle_seal_command(code, tag, r)
-            }
+            TPM_CC_START_AUTH_SESSION
+            | TPM_CC_POLICY_PCR
+            | TPM_CC_POLICY_GET_DIGEST
+            | TPM_CC_CREATE
+            | TPM_CC_LOAD
+            | TPM_CC_UNSEAL
+            | TPM_CC_FLUSH_CONTEXT => self.handle_seal_command(code, tag, r),
             _ => self.handle_command_body(code, tag, r),
         }
     }
@@ -410,7 +413,7 @@ impl SynthTpm {
                 private.u32(data.len() as u32);
                 private.bytes(&data);
                 let mut integrity = Sha256::new();
-                integrity.update(&policy_fixed);
+                integrity.update(policy_fixed);
                 integrity.update(&data);
                 private.bytes(&integrity.finalize());
                 let mut body = Writer::new();
@@ -462,7 +465,13 @@ impl SynthTpm {
                 policy_fixed.copy_from_slice(&policy);
                 let handle = self.next_transient;
                 self.next_transient += 1;
-                self.sealed.insert(handle, SynthSealed { policy: policy_fixed, data });
+                self.sealed.insert(
+                    handle,
+                    SynthSealed {
+                        policy: policy_fixed,
+                        data,
+                    },
+                );
                 let name_digest = Sha256::digest(&public);
                 let mut name = vec![0x00, 0x0B];
                 name.extend_from_slice(&name_digest);

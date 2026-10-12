@@ -7,6 +7,7 @@ pub mod execute;
 pub mod fabrics;
 pub mod fleet;
 pub mod init;
+pub mod iscsi;
 pub mod key;
 pub mod photon;
 pub mod profiles;
@@ -108,7 +109,7 @@ fn cli_signal_injection(_event: &str) {}
 #[command(
     name = "diskcleaner",
     author = "Forensic Systems Engineering Team",
-    version = "0.8.0",
+    version = "0.9.0",
     about = "Military-grade storage sanitization and forensic verification suite",
     long_about = "Implements NIST SP 800-88 Rev 1, IEEE 2883-2022, and DoD media sanitization standards with deterministic cryptographic verification and tamper-evident audit logs."
 )]
@@ -188,6 +189,10 @@ pub enum Commands {
     /// discover remote subsystems over RDMA / RoCEv2 / TCP / FC
     /// (v0.8.0, Vector 4)
     Fabrics(FabricsArgs),
+
+    /// Native iSCSI target discovery and in-band remote SCSI
+    /// sanitization (v0.9.0, Phase 4)
+    Iscsi(IscsiArgs),
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -827,6 +832,45 @@ pub enum FabricsSubcommands {
     },
 }
 
+#[derive(Args, Debug)]
+pub struct IscsiArgs {
+    #[command(subcommand)]
+    pub sub: IscsiSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum IscsiSubcommands {
+    /// Discover the iSCSI targets advertised by a portal (SendTargets=All)
+    Discover {
+        /// Portal address: host[:port] (default port 3260)
+        portal: String,
+        /// Login deadline in milliseconds
+        #[arg(long, default_value_t = 10000)]
+        login_ms: u64,
+    },
+    /// In-band remote SANITIZE over iSCSI (report-then-destroy discipline:
+    /// prints the target identity first, requires --execute to arm)
+    Purge {
+        /// Portal address: host[:port]
+        portal: String,
+        /// Target IQN to log into
+        target: String,
+        /// Logical unit number to sanitize
+        #[arg(long, default_value_t = 0)]
+        lun: u16,
+        /// Sanitize method: crypto-erase | block-erase | overwrite
+        #[arg(long, default_value = "crypto-erase")]
+        method: String,
+        /// ARMING FLAG: without it the command only reports the target
+        /// identity and the would-be sanitize verb
+        #[arg(long)]
+        execute: bool,
+        /// SCSI response deadline in milliseconds
+        #[arg(long, default_value_t = 30000)]
+        scsi_ms: u64,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum BootSubcommands {
     /// Run the real PID-1 bootstrap (mounts, entropy seeding, zombie
@@ -990,6 +1034,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Quote(_) => "quote",
         Commands::Photon(_) => "photon",
         Commands::Fabrics(_) => "fabrics",
+        Commands::Iscsi(_) => "iscsi",
     }
 }
 
@@ -1077,6 +1122,10 @@ fn run_with_fleet_slot(
         }
         Commands::Fabrics(args) => {
             fabrics::cmd_fabrics(args)?;
+            Ok(())
+        }
+        Commands::Iscsi(args) => {
+            iscsi::cmd_iscsi(args)?;
             Ok(())
         }
     }

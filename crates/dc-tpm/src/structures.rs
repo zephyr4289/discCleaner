@@ -263,7 +263,11 @@ pub fn encode_start_auth_session(session_type: u16, nonce_caller: &[u8]) -> Vec<
 /// `pcr_digest` is SHA-256 over the concatenation of the selected PCR
 /// values — the *expected* platform state. On a real TPM the command
 /// fails with `TPM_RC_POLICY_FAIL` when the live registers differ.
-pub fn encode_policy_pcr(session_handle: u32, list: &PcrSelectionList, pcr_digest: &[u8]) -> Vec<u8> {
+pub fn encode_policy_pcr(
+    session_handle: u32,
+    list: &PcrSelectionList,
+    pcr_digest: &[u8],
+) -> Vec<u8> {
     let mut auth = Writer::new();
     session_auth(&mut auth, session_handle);
     let mut cmd = Writer::new();

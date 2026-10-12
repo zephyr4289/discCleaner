@@ -10,7 +10,9 @@
 use crate::{KeyArgs, KeySubcommands};
 use dc_core::DcError;
 use dc_core::secrets::SecretBuf;
-use dc_tpm::{TpmRmTransport, TpmTransport, TPM_RM_DEVICE, pcr_list_to_mask, seal, unseal, SealedKeyBlob};
+use dc_tpm::{
+    SealedKeyBlob, TPM_RM_DEVICE, TpmRmTransport, TpmTransport, pcr_list_to_mask, seal, unseal,
+};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -65,11 +67,7 @@ pub fn cmd_key(args: KeyArgs) -> Result<(), DcError> {
     }
 }
 
-fn cmd_key_seal(
-    key: PathBuf,
-    pcrs: Option<String>,
-    out: Option<PathBuf>,
-) -> Result<(), DcError> {
+fn cmd_key_seal(key: PathBuf, pcrs: Option<String>, out: Option<PathBuf>) -> Result<(), DcError> {
     // Read the plaintext key under strict 0600 discipline — the file bytes
     // ride inside a SecretBuf (mlock + zeroize on drop).
     let plaintext = read_key_secret(&key)?;
@@ -80,8 +78,7 @@ fn cmd_key_seal(
     let tpm_desc = tpm.describe();
     let mask = match pcrs.as_deref() {
         None | Some("0-11") => dc_tpm::DC_QUOTE_PCR_MASK,
-        Some(spec) => pcr_list_to_mask(spec)
-            .map_err(|e| DcError::Usage(format!("--pcrs: {e}")))?,
+        Some(spec) => pcr_list_to_mask(spec).map_err(|e| DcError::Usage(format!("--pcrs: {e}")))?,
     };
 
     println!(
@@ -94,8 +91,7 @@ fn cmd_key_seal(
         .map_err(|e| DcError::CertSigning(format!("TPM seal failed: {e}")))?;
 
     let blob_json = serde_json::to_string_pretty(&blob)?;
-    std::fs::write(&out_path, &blob_json)
-        .map_err(|e| DcError::StdIo(e))?;
+    std::fs::write(&out_path, &blob_json)?;
     // The sealed blob is policy-bound ciphertext; 0600 keeps it away from
     // other local principals anyway (defense in depth).
     std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o600))?;
@@ -152,7 +148,8 @@ fn cmd_key_inspect(blob: PathBuf) -> Result<(), DcError> {
     println!("  Schema:        {}", blob.schema);
     println!("  Policy digest: {}", blob.policy_hex);
     println!("  Bound PCRs:    {} (SHA-256 bank)", blob.pcr_list);
-    println!("  Public area:   {} bytes (hex {}...)", 
+    println!(
+        "  Public area:   {} bytes (hex {}...)",
         blob.public_hex.len() / 2,
         &blob.public_hex[..blob.public_hex.len().min(32)]
     );
@@ -180,8 +177,9 @@ fn read_key_secret(path: &Path) -> Result<SecretBuf, DcError> {
         )));
     }
     let content = Zeroizing::new(std::fs::read_to_string(path)?);
-    let bytes = hex::decode(content.trim())
-        .map_err(|e| DcError::CertSigning(format!("invalid keyfile hex '{}': {e}", path.display())))?;
+    let bytes = hex::decode(content.trim()).map_err(|e| {
+        DcError::CertSigning(format!("invalid keyfile hex '{}': {e}", path.display()))
+    })?;
     Ok(SecretBuf::from_vec(bytes))
 }
 

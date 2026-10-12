@@ -19,12 +19,12 @@
 //! immediately after their single use (`REG-SEALRAM-LINGER`).
 
 use crate::constants::*;
-use crate::device::{transact_owned, TpmError, TpmTransport};
+use crate::device::{TpmError, TpmTransport, transact_owned};
 use crate::structures::{
-    encode_create_sealed, encode_flush_context, encode_load, encode_policy_get_digest,
-    encode_policy_pcr, encode_start_auth_session, encode_unseal, parse_create_sealed,
-    parse_load, parse_pcr_read, parse_policy_digest, parse_start_auth_session, parse_unseal,
-    PcrSelectionList,
+    PcrSelectionList, encode_create_sealed, encode_flush_context, encode_load,
+    encode_policy_get_digest, encode_policy_pcr, encode_start_auth_session, encode_unseal,
+    parse_create_sealed, parse_load, parse_pcr_read, parse_policy_digest, parse_start_auth_session,
+    parse_unseal,
 };
 use dc_core::secrets::SecretBuf;
 use serde::{Deserialize, Serialize};
@@ -82,16 +82,12 @@ pub fn seal<T: TpmTransport>(
     // 2. TRIAL session → PolicyPCR → PolicyGetDigest.
     let session = start_session(tpm, TPM_SE_TRIAL)?;
     let policy_digest = run_policy_pcr(tpm, session, &selection, &pcr_digest)?;
-    let _ = transact_owned(
-        tpm,
-        &encode_policy_get_digest(session),
-    )?;
+    let _ = transact_owned(tpm, &encode_policy_get_digest(session))?;
     let policy_hex = hex::encode(&policy_digest);
 
     // 3. Create the sealed object (plaintext rides ONLY in this command
     //    buffer, which is zeroized the moment the TPM answers).
-    let mut create_cmd =
-        encode_create_sealed(TPM_RH_OWNER, &policy_digest, secret);
+    let mut create_cmd = encode_create_sealed(TPM_RH_OWNER, &policy_digest, secret);
     let create_rsp = transact_owned(tpm, &create_cmd);
     create_cmd.zeroize();
     let params = create_rsp?;
@@ -124,10 +120,7 @@ pub fn seal<T: TpmTransport>(
 /// → flush everything. The recovered plaintext is returned inside an
 /// `mlock`-pinned, zeroized-on-drop [`SecretBuf`]; every intermediate
 /// response buffer is wiped after parsing.
-pub fn unseal<T: TpmTransport>(
-    tpm: &mut T,
-    blob: &SealedKeyBlob,
-) -> Result<SecretBuf, TpmError> {
+pub fn unseal<T: TpmTransport>(tpm: &mut T, blob: &SealedKeyBlob) -> Result<SecretBuf, TpmError> {
     if blob.schema != SealedKeyBlob::SCHEMA {
         return Err(TpmError::Policy(format!(
             "unknown sealed-blob schema '{}'",
@@ -191,10 +184,7 @@ fn run_policy_pcr<T: TpmTransport>(
     selection: &PcrSelectionList,
     pcr_digest: &[u8],
 ) -> Result<Vec<u8>, TpmError> {
-    let _ = transact_owned(
-        tpm,
-        &encode_policy_pcr(session, selection, pcr_digest),
-    )?;
+    let _ = transact_owned(tpm, &encode_policy_pcr(session, selection, pcr_digest))?;
     let params = transact_owned(tpm, &encode_policy_get_digest(session))?;
     crate::device::wire_result(parse_policy_digest(&params))
         .map_err(|e| TpmError::Wire(format!("PolicyGetDigest: {e}")))
@@ -205,10 +195,7 @@ fn current_pcr_digest<T: TpmTransport>(
     tpm: &mut T,
     selection: &PcrSelectionList,
 ) -> Result<Vec<u8>, TpmError> {
-    let params = transact_owned(
-        tpm,
-        &crate::structures::encode_pcr_read(selection),
-    )?;
+    let params = transact_owned(tpm, &crate::structures::encode_pcr_read(selection))?;
     let read = crate::device::wire_result(parse_pcr_read(&params))
         .map_err(|e| TpmError::Wire(format!("PCR_Read: {e}")))?;
     if read.digests.is_empty() {
@@ -273,8 +260,7 @@ fn bad_pcr_spec(spec: &str) -> TpmError {
 }
 
 fn decode_mask(hex_str: &str) -> Result<[u8; 4], TpmError> {
-    let bytes = hex::decode(hex_str)
-        .map_err(|e| TpmError::Wire(format!("pcr mask hex: {e}")))?;
+    let bytes = hex::decode(hex_str).map_err(|e| TpmError::Wire(format!("pcr mask hex: {e}")))?;
     if bytes.len() != 4 {
         return Err(TpmError::Wire("pcr mask must be 4 bytes".into()));
     }
@@ -290,8 +276,8 @@ fn decode_mask(hex_str: &str) -> Result<[u8; 4], TpmError> {
 mod tests {
     use super::*;
     use crate::device::TpmTransport;
-    use crate::synth::SynthTpm;
     use crate::structures::encode_pcr_extend;
+    use crate::synth::SynthTpm;
 
     fn rig() -> SynthTpm {
         let mut tpm = SynthTpm::new();
@@ -368,10 +354,7 @@ mod tests {
         let mut tpm = rig();
         let mut blob = seal(&mut tpm, b"seed", MASK).unwrap();
         blob.schema = "dc.tpm-sealed/v0".into();
-        assert!(matches!(
-            unseal(&mut tpm, &blob),
-            Err(TpmError::Policy(_))
-        ));
+        assert!(matches!(unseal(&mut tpm, &blob), Err(TpmError::Policy(_))));
     }
 
     #[test]

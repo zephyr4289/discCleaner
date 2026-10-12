@@ -5,10 +5,10 @@
 //! of the attestation stream or the sealed blob, verification must FAIL
 //! or the parse must be rejected — never accept a doctored artifact.
 
-use dc_tpm::attest::{verify_bundle, TpmAttestor};
+use dc_tpm::TpmTransport;
+use dc_tpm::attest::{TpmAttestor, verify_bundle};
 use dc_tpm::seal::{seal, unseal};
 use dc_tpm::synth::SynthTpm;
-use dc_tpm::TpmTransport;
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
 
@@ -18,9 +18,7 @@ fn measured_rig() -> SynthTpm {
     attestor.measure_into_pcr(8, b"kernel").unwrap();
     attestor.measure_into_pcr(9, b"initramfs").unwrap();
     attestor.measure_into_pcr(10, b"dc-binary").unwrap();
-    attestor
-        .measure_into_pcr(11, b"evidence-tag")
-        .unwrap();
+    attestor.measure_into_pcr(11, b"evidence-tag").unwrap();
     tpm
 }
 
@@ -47,9 +45,8 @@ proptest! {
         doctored.quote_response_hex = hex::encode(&response);
         // Either the wire parse rejects it, or the verification ladder
         // fails, or verify_bundle reports false — never `Ok(true)`.
-        match verify_bundle(&doctored) {
-            Ok(true) => prop_assert!(false, "doctored quote ACCEPTED at byte {}", at),
-            _ => {}
+        if matches!(verify_bundle(&doctored), Ok(true)) {
+            prop_assert!(false, "doctored quote ACCEPTED at byte {at}");
         }
     }
 
@@ -95,7 +92,8 @@ proptest! {
 fn rig_pcr_extend_matches_tpm_law() {
     let mut tpm = SynthTpm::new();
     let d: [u8; 32] = Sha256::digest(b"measurement").into();
-    tpm.transact(&dc_tpm::structures::encode_pcr_extend(8, &d)).unwrap();
+    tpm.transact(&dc_tpm::structures::encode_pcr_extend(8, &d))
+        .unwrap();
     // PCR' = SHA256(0^32 || SHA256(measurement)) per the TPM extend law.
     let mut h = Sha256::new();
     h.update([0u8; 32]);
