@@ -1,0 +1,23 @@
+[package]
+name = "dc-zk"
+version = "0.11.0"
+edition = "2024"
+description = "Zero-knowledge audit receipts (v0.11.0, Frontier 1): Groth16 ZK-SNARKs over a pure-Rust BLS12-381 implementation — prove NIST SP 800-88 purge compliance without revealing drive serials, host topology or operator identity"
+
+[dependencies]
+dc-core = { workspace = true }
+# DRBG + statement digest derivation (workspace-pinned).
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+zeroize = { workspace = true }
+getrandom = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

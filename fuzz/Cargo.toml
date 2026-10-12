@@ -10,6 +10,10 @@ publish = false
 [dependencies]
 libfuzzer-sys = "0.4"
 dc-tpm = { path = "../crates/dc-tpm" }
+dc-zk = { path = "../crates/dc-zk" }
+serde_json = "*"
+serde = "*"
+dc-cxl = { path = "../crates/dc-cxl" }
 dc-photon = { path = "../crates/dc-photon" }
 dc-nvme = { path = "../crates/dc-nvme" }
 dc-hw = { path = "../crates/dc-hw" }
@@ -51,6 +55,27 @@ bench = false
 [[bin]]
 name = "scsi_decoders"
 path = "fuzz_targets/scsi_decoders.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zk_receipt"
+path = "fuzz_targets/zk_receipt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cxl_dvsec"
+path = "fuzz_targets/cxl_dvsec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cxl_mailbox"
+path = "fuzz_targets/cxl_mailbox.rs"
 test = false
 doc = false
 bench = false

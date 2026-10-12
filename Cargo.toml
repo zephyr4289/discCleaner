@@ -23,6 +23,9 @@ members = [
     "crates/dc-pq",
     "crates/dc-web",
     "crates/dc-cloud",
+    "crates/dc-zk",
+    "crates/dc-cxl",
+    "crates/dc-verify-formal",
 ]
 
 [workspace.dependencies]
@@ -46,6 +49,9 @@ dc-iscsi = { path = "crates/dc-iscsi" }
 dc-pq = { path = "crates/dc-pq" }
 dc-web = { path = "crates/dc-web" }
 dc-cloud = { path = "crates/dc-cloud" }
+dc-zk = { path = "crates/dc-zk" }
+dc-cxl = { path = "crates/dc-cxl" }
+dc-verify-formal = { path = "crates/dc-verify-formal" }
 dc-testkit = { path = "crates/dc-testkit" }
 
 # System & I/O

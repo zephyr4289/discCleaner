@@ -44,6 +44,7 @@ pub enum FsmState {
     },
 }
 
+#[derive(Clone)]
 pub struct FsmOrchestrator {
     state: FsmState,
 }

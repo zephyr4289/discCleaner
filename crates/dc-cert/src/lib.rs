@@ -1,5 +1,6 @@
 pub mod ccid;
 pub mod cert;
+pub mod cxl;
 pub mod dualauth;
 pub mod firmware;
 pub mod iso7816;
@@ -14,6 +15,7 @@ pub mod signer;
 pub mod token;
 pub mod tpm;
 pub mod vault;
+pub mod zk;
 pub mod zone_attest;
 
 pub use cert::{

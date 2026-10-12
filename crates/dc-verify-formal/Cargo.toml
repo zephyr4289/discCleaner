@@ -1,0 +1,18 @@
+[package]
+name = "dc-verify-formal"
+version = "0.11.0"
+edition = "2024"
+description = "Formal verification harnesses (v0.11.0, Frontier 3): Kani proof harnesses proving the sanitization FSM cannot certify unverified ranges and SecretBuf never leaks un-zeroized memory, plus an always-on exhaustive model checker"
+
+[dependencies]
+dc-core = { workspace = true }
+dc-verify = { workspace = true }
+dc-io = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
