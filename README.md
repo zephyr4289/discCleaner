@@ -1,6 +1,6 @@
 # diskCleaner (`dc`)
 
-[![Version](https://img.shields.io/badge/version-v0.9.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
+[![Version](https://img.shields.io/badge/version-v0.10.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64--musl-blueviolet.svg)](https://github.com/zephyr4289/discCleaner)
 [![Standards](https://img.shields.io/badge/standards-NIST%20SP%20800--88%20%7C%20IEEE%202883--2022-orange.svg)](diskCleaner.md)
@@ -11,13 +11,13 @@
 `dc` is a self-contained, statically linked, zero-dependency storage sanitization suite engineered for NVMe, SATA, SAS/SCSI, USB-bridged (SAT), eMMC/UFS, TCG Opal self-encrypting (SED), and Host-Managed SMR/ZNS storage. It executes **NIST SP 800-88 Rev 1** Clear and Purge operations, issuing cryptographically signed, third-party-verifiable evidence packages that survive crashes, power loss, and adversarial cross-examination.
 
 ```
-Version       : v0.9.0 (Enterprise Hardening: zeroized/mlocked key RAM · TPM-sealed keys · fuzz+proptest matrices · --json fleet mode · deb/rpm/OCI · native iSCSI)
+Version       : v0.10.0 (Operator Dashboard · AWS EBS cloud lifecycle w/ hybrid-signed receipts · ML-DSA-44 post-quantum audit signatures)
 Target Triples: x86_64-unknown-linux-musl · aarch64-unknown-linux-musl
 Runtime Deps  : Zero external binaries, zero dynamic libraries
-Crates        : 19 modular workspace crates
+Crates        : 22 modular workspace crates
 Tests         : 150+ unit tests + 60 integration suites + pinned regression guards + cargo-fuzz harnesses + proptest property matrices
 Test Driver   : python3 tests/run_tests.py (lit-style discovery, parallel, PASS/FAIL/UNSUPPORTED)
-Verification  : Ed25519 + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3 Archival Embedding + TPM 2.0 quotes
+Verification  : Ed25519+ML-DSA-44 hybrid + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3 Archival Embedding + TPM 2.0 quotes
 ```
 
 ---
@@ -32,6 +32,9 @@ Verification  : Ed25519 + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3 Archival Embeddi
 - [Cryptographic Evidence & Offline Verification](#cryptographic-evidence--offline-verification)
 - [Two-Person Integrity & Key Lifecycle](#two-person-integrity--key-lifecycle)
 - [Fleet Orchestration](#fleet-orchestration)
+- [Operator Dashboard (v0.10.0)](#operator-dashboard-v0100)
+- [Cloud Block-Storage Lifecycle (v0.10.0)](#cloud-block-storage-lifecycle-v0100)
+- [Post-Quantum Audit Signatures (v0.10.0)](#post-quantum-audit-signatures-v0100)
 - [Standalone Boot Environment](#standalone-boot-environment)
 - [Engineering Discipline & Testkit](#engineering-discipline--testkit)
 - [Standards & Compliance](#standards--compliance)
@@ -382,6 +385,56 @@ graph TD
 * **Seam Verification:** The supervisor asserts that `constructed_argv_hash == child_journal_argv_hash`.
 
 ---
+
+## Operator Dashboard (v0.10.0)
+
+Field technicians and e-waste triage operators get a visual, zero-friction surface:
+`dc serve start` runs an embedded HTTP/SSE dashboard on the appliance — device bay
+inventory, one-click certified wipes (typed `ERASE` arming), live job progress over
+Server-Sent Events, and the certificate archive with signature-algorithm badges.
+Single-file SPA compiled into the binary (no CDN — renders air-gapped), bearer-token
+auth with constant-time checks, loopback-by-default binding, and every wipe still
+runs the real `dc execute` engine in an isolated child process: journals, Guardian
+locks and certificates included. See [docs/operator-dashboard.md](docs/operator-dashboard.md).
+
+```bash
+dc serve start                                # http://127.0.0.1:8087 (token printed)
+dc serve start --listen 127.0.0.1:8443 --token-file /etc/diskcleaner/dashboard.token
+```
+
+## Cloud Block-Storage Lifecycle (v0.10.0)
+
+`dc cloud` automates the verified retirement of cloud volumes: **attach →
+sanitize → verify → detach** with a rollback-detach guarantee (a failed wipe never
+leaves a volume dangling on the sanitizer) and signed audit receipts binding the
+cloud context — provider, account, volume id, KMS key ARN, region/AZ — to the
+engine certificate by file hash. AWS EBS ships first (SigV4 + IMDSv2 instance
+identity; `--features cloud-tls` for the HTTPS transport), with the
+`CloudDriver` trait ready for Azure Managed Disks and GCP Persistent Disks.
+`--provider mock` runs the identical state machine offline for drills and CI.
+See [docs/cloud-lifecycle.md](docs/cloud-lifecycle.md).
+
+```bash
+dc cloud describe --provider aws --volume vol-0abc123def
+dc cloud wipe --provider aws --volume vol-0abc123def --device /dev/sdf               --key operator.sk --execute     # report-then-destroy discipline
+```
+
+## Post-Quantum Audit Signatures (v0.10.0)
+
+Certificates must survive decades of legal scrutiny — including the quantum era.
+`dc-pq` implements ML-DSA-44 (FIPS 204, from-scratch Keccak/SHAKE, definitional
+NTT, brute-force-derived hint mechanism — see the engineering notes) and `dc-cert`
+signs every certificate with a **hybrid dual signature**: Ed25519 + ML-DSA-44 over
+the same canonical bytes. `dc keygen` emits the PQ twin alongside the classical
+key; every signing path (execute, purge, resume, reconstruct, cloud receipts)
+upgrades automatically when the twin is present. Verification is strict
+conjunction: both legs, or not authentic. Classical-only certificates remain
+fully valid and verifiable. See [docs/post-quantum.md](docs/post-quantum.md).
+
+```bash
+dc keygen --out operator.sk            # Ed25519 + ML-DSA-44 twin (hybrid-ready)
+dc cert verify --file wipe.cert.json   # verifies both legs when present
+```
 
 ## Standalone Boot Environment
 
