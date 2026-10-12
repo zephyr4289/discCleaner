@@ -1,12 +1,14 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use dc_core::DcError;
+use dc_core::secrets::SecretBuf;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
+use zeroize::{Zeroize, Zeroizing};
 
 pub struct OperatorKeyPair {
     pub signing_key: SigningKey,
@@ -37,7 +39,11 @@ impl OperatorKeyPair {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let hex_bytes = hex::encode(self.signing_key.to_bytes());
+        // SECURITY (v0.9.0 Phase 1a): the hex transcription of the private
+        // seed is SECRET — wrapped in `Zeroizing` so the heap copy is wiped
+        // with volatile stores the moment the write completes (no linger in
+        // freed pages / core dumps).
+        let hex_bytes = Zeroizing::new(hex::encode(self.signing_key.to_bytes()));
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -56,7 +62,9 @@ impl OperatorKeyPair {
     ///
     /// SECURITY: a key file that other local principals can read is treated
     /// as compromised-on-arrival; the operator must fix the mode first.
-    /// (ed25519-dalek's default `zeroize` feature wipes the secret on drop.)
+    /// (ed25519-dalek's default `zeroize` feature wipes the secret on drop;
+    /// v0.9.0 additionally mlock-pins and wipes every intermediate
+    /// transcription below — see REG-KEYRAM-LINGER.)
     pub fn load_from_file(path: &Path) -> Result<Self, DcError> {
         let mode = fs::metadata(path)?.permissions().mode();
         if mode & 0o077 != 0 {
@@ -67,18 +75,27 @@ impl OperatorKeyPair {
                 mode
             )));
         }
-        let content = fs::read_to_string(path)?;
-        let bytes = hex::decode(content.trim())
-            .map_err(|e| DcError::CertSigning(format!("Invalid keyfile hex: {}", e)))?;
-        if bytes.len() != 32 {
+        // SECURITY (v0.9.0 Phase 1a): the file bytes, the decoded seed and
+        // the stack array are all SECRET transcriptions. The heap copies ride
+        // inside `SecretBuf` (mlock-pinned + zeroized on drop); the stack
+        // array is explicitly wiped after the key object is constructed.
+        // Nothing but the `SigningKey` itself (which ed25519-dalek wipes on
+        // drop) survives this function.
+        let content = Zeroizing::new(fs::read_to_string(path)?);
+        let seed_locked = SecretBuf::from_vec(
+            hex::decode(content.trim())
+                .map_err(|e| DcError::CertSigning(format!("Invalid keyfile hex: {}", e)))?,
+        );
+        if seed_locked.len() != 32 {
             return Err(DcError::CertSigning(
                 "Keyfile must be 32 bytes hex".to_string(),
             ));
         }
         let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
+        arr.copy_from_slice(seed_locked.expose());
         let signing_key = SigningKey::from_bytes(&arr);
         let verifying_key = signing_key.verifying_key();
+        arr.zeroize();
         Ok(Self {
             signing_key,
             verifying_key,

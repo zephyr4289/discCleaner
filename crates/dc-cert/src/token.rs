@@ -241,6 +241,10 @@ impl<'a> PivSession<'a> {
     /// VERIFY the cardholder PIN (reference 0x80), padded to 8 bytes with
     /// 0xFF per SP 800-73-4. Returns the remaining retry budget on
     /// rejection so the operator stops before lockout.
+    ///
+    /// SECURITY (v0.9.0 Phase 1a): both the 0xFF-padded PIN buffer and the
+    /// APDU's data field are wiped with volatile stores on every exit path —
+    /// the PIN never survives this call in heap or stack memory.
     pub fn verify_pin(&mut self, pin: &str) -> Result<(), HardwareTokenError> {
         if pin.len() > 8 || pin.is_empty() {
             return Err(HardwareTokenError::CardProtocol(
@@ -249,8 +253,13 @@ impl<'a> PivSession<'a> {
         }
         let mut padded = [0xFFu8; 8];
         padded[..pin.len()].copy_from_slice(pin.as_bytes());
-        let command = CommandApdu::new(0x00, 0x20, 0x00, 0x80).with_data(padded.to_vec());
-        let response = self.exchange(&command)?;
+        let mut command = CommandApdu::new(0x00, 0x20, 0x00, 0x80).with_data(padded.to_vec());
+        let response = self.exchange(&command);
+        // Wipe both PIN transcriptions regardless of the card's answer.
+        command.zeroize_data();
+        use zeroize::Zeroize;
+        padded.zeroize();
+        let response = response?;
         match (response.sw1, response.sw2) {
             (0x90, 0x00) => Ok(()),
             (0x63, _) => {

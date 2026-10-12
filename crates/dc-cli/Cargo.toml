@@ -19,6 +19,7 @@ path = "src/bin/dc.rs"
 
 [dependencies]
 dc-core = { workspace = true }
+zeroize = { workspace = true }
 dc-probe = { workspace = true }
 dc-io = { workspace = true }
 dc-verify = { workspace = true }

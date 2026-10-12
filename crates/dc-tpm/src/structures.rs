@@ -228,6 +228,135 @@ pub fn encode_evict_control(object_handle: u32, persistent_handle: u32) -> Vec<u
 }
 
 // ---------------------------------------------------------------------------
+// v0.9.0 Phase 1b — PCR-policy sealed key storage
+// ---------------------------------------------------------------------------
+
+/// Authorization area naming an EXISTING session (policy or trial): the
+/// session handle with empty nonce/hmac. The session is the proof.
+fn session_auth(w: &mut Writer, session_handle: u32) {
+    w.u32(session_handle);
+    w.tpm2b(&[]); // nonce
+    w.u8(0); // sessionAttributes: continue
+    w.tpm2b(&[]); // hmac
+}
+
+/// `TPM2_StartAuthSession(NULL bind, trial-or-policy, SHA-256)`.
+///
+/// The session is unbound and unsalted (tpmKey/bind = NULL, empty salt) —
+/// exactly the shape tss libraries use for PCR policy sessions on the RM
+/// (the kernel resource manager is the confidentiality boundary between
+/// concurrent userspace callers).
+pub fn encode_start_auth_session(session_type: u16, nonce_caller: &[u8]) -> Vec<u8> {
+    let mut cmd = Writer::new();
+    cmd.u32(TPM_RH_NULL); // tpmKey
+    cmd.u32(TPM_RH_NULL); // bind
+    cmd.tpm2b(nonce_caller); // nonceCaller (freshness)
+    cmd.tpm2b(&[]); // encryptedSalt (unsalted)
+    cmd.u16(session_type); // sessionType: TRIAL or POLICY
+    cmd.u16(TPM_ALG_NULL); // symmetric.algorithm (no session encryption)
+    cmd.u16(TPM_ALG_SHA256); // authHash
+    cmd.into_command(TPM_ST_NO_SESSIONS, TPM_CC_START_AUTH_SESSION)
+}
+
+/// `TPM2_PolicyPCR(policySession, pcrs, pcrDigest)`.
+///
+/// `pcr_digest` is SHA-256 over the concatenation of the selected PCR
+/// values — the *expected* platform state. On a real TPM the command
+/// fails with `TPM_RC_POLICY_FAIL` when the live registers differ.
+pub fn encode_policy_pcr(session_handle: u32, list: &PcrSelectionList, pcr_digest: &[u8]) -> Vec<u8> {
+    let mut auth = Writer::new();
+    session_auth(&mut auth, session_handle);
+    let mut cmd = Writer::new();
+    cmd.u32(session_handle); // policySession
+    cmd.u32(auth.len() as u32);
+    cmd.bytes(auth.as_bytes());
+    list.write(&mut cmd);
+    cmd.tpm2b(pcr_digest);
+    cmd.into_command(TPM_ST_SESSIONS, TPM_CC_POLICY_PCR)
+}
+
+/// `TPM2_PolicyGetDigest(policySession)` — trial sessions use this to
+/// harvest the authPolicy digest for `TPM2_Create`.
+pub fn encode_policy_get_digest(session_handle: u32) -> Vec<u8> {
+    let mut auth = Writer::new();
+    session_auth(&mut auth, session_handle);
+    let mut cmd = Writer::new();
+    cmd.u32(session_handle);
+    cmd.u32(auth.len() as u32);
+    cmd.bytes(auth.as_bytes());
+    cmd.into_command(TPM_ST_SESSIONS, TPM_CC_POLICY_GET_DIGEST)
+}
+
+/// `TPM2_Create(parent, inSensitive{data=secret}, inPublic{KEYEDHASH,
+/// authPolicy=policy, FIXED_TPM|FIXED_PARENT})`.
+///
+/// The sealed object carries NO user auth: unsealing is possible only by
+/// replaying the PCR policy the caller bound at seal time.
+pub fn encode_create_sealed(parent: u32, policy_digest: &[u8], secret: &[u8]) -> Vec<u8> {
+    let mut auth = Writer::new();
+    empty_pw_session(&mut auth);
+
+    // TPMS_SENSITIVE_CREATE: empty userAuth, data = the secret plaintext.
+    let mut sensitive = Writer::new();
+    sensitive.tpm2b(&[]);
+    sensitive.tpm2b(secret);
+
+    // TPMT_PUBLIC for a sealed data object (TPMS_KEYEDHASH_PARMS).
+    let mut public = Writer::new();
+    public.u16(TPM_ALG_KEYEDHASH); // type
+    public.u16(TPM_ALG_SHA256); // nameAlg
+    public.u32(SEALED_OBJECT_ATTRIBUTES);
+    public.tpm2b(policy_digest); // authPolicy — the PCR binding
+    public.u16(TPM_ALG_NULL); // parameters.scheme (plain data, no HMAC)
+    public.tpm2b(&[]); // unique (TPM2B_DIGEST, empty at creation)
+    let pub_bytes = public.as_bytes().to_vec();
+
+    let mut cmd = Writer::new();
+    cmd.u32(parent);
+    cmd.u32(auth.len() as u32);
+    cmd.bytes(auth.as_bytes());
+    cmd.tpm2b(sensitive.as_bytes()); // inSensitive (TPM2B_SENSITIVE_CREATE)
+    cmd.tpm2b(&pub_bytes); // inPublic (TPM2B_TEMPLATE)
+    cmd.tpm2b(&[]); // outsideInfo
+    cmd.u32(0); // creationPCR count
+    cmd.into_command(TPM_ST_SESSIONS, TPM_CC_CREATE)
+}
+
+/// `TPM2_Load(parent, inPrivate, inPublic)`.
+pub fn encode_load(parent: u32, private: &[u8], public: &[u8]) -> Vec<u8> {
+    let mut auth = Writer::new();
+    empty_pw_session(&mut auth);
+    let mut cmd = Writer::new();
+    cmd.u32(parent);
+    cmd.u32(auth.len() as u32);
+    cmd.bytes(auth.as_bytes());
+    cmd.tpm2b(private); // inPrivate (TPM2B_PRIVATE)
+    cmd.tpm2b(public); // inPublic (TPM2B_PUBLIC)
+    cmd.into_command(TPM_ST_SESSIONS, TPM_CC_LOAD)
+}
+
+/// `TPM2_Unseal(objectHandle)` authorized BY THE POLICY SESSION — the
+/// session handle rides in the auth area; the TPM accepts only if the
+/// session satisfied the object's authPolicy (live PCR state).
+pub fn encode_unseal(session_handle: u32, object_handle: u32) -> Vec<u8> {
+    let mut auth = Writer::new();
+    session_auth(&mut auth, session_handle);
+    let mut cmd = Writer::new();
+    cmd.u32(object_handle); // objectHandle
+    cmd.u32(auth.len() as u32);
+    cmd.bytes(auth.as_bytes());
+    cmd.into_command(TPM_ST_SESSIONS, TPM_CC_UNSEAL)
+}
+
+/// `TPM2_FlushContext(flushHandle)` — transient objects and sessions
+/// never outlive the operation that created them.
+pub fn encode_flush_context(handle: u32) -> Vec<u8> {
+    Writer::new()
+        .u32(handle)
+        .into_command(TPM_ST_NO_SESSIONS, TPM_CC_FLUSH_CONTEXT)
+}
+
+// ---------------------------------------------------------------------------
 // Responses
 // ---------------------------------------------------------------------------
 
@@ -455,6 +584,94 @@ pub fn parse_ecdsa_signature(params: &[u8]) -> WireResult<EcdsaSignature> {
         r: r_bytes,
         s: s_bytes,
     })
+}
+
+// ---------------------------------------------------------------------------
+// v0.9.0 Phase 1b — seal-path response parsers
+// ---------------------------------------------------------------------------
+
+/// `TPM2_StartAuthSession` response: the session handle (+ TPM nonce).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartAuthSessionResponse {
+    pub session_handle: u32,
+    pub nonce_tpm: Vec<u8>,
+}
+
+pub fn parse_start_auth_session(params: &[u8]) -> WireResult<StartAuthSessionResponse> {
+    let mut r = Reader::new(params);
+    let session_handle = r.u32()?;
+    // Session handles belong to the 0x03 (HMAC/policy) or 0x04 (policy)
+    // class per the handle-type table; anything else is a broken transport.
+    let class = (session_handle >> 24) as u16;
+    if class != 0x03 {
+        return Err(WireError::Unexpected {
+            what: "session handle class, expected 0x03",
+            value: class,
+        });
+    }
+    let nonce_tpm = r.tpm2b()?;
+    Ok(StartAuthSessionResponse {
+        session_handle,
+        nonce_tpm,
+    })
+}
+
+/// `TPM2_PolicyGetDigest` response: the running policy digest.
+pub fn parse_policy_digest(params: &[u8]) -> WireResult<Vec<u8>> {
+    let mut r = Reader::new(params);
+    r.tpm2b()
+}
+
+/// `TPM2_Create` response: the sealed private blob + public template.
+/// (creationData/creationHash/creationTicket are present but not consumed.)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreateSealedResponse {
+    /// TPM2B_PRIVATE — parent-wrapped ciphertext of the secret.
+    pub private: Vec<u8>,
+    /// TPM2B_PUBLIC — the sealed object's public area (carries authPolicy).
+    pub public: Vec<u8>,
+}
+
+pub fn parse_create_sealed(params: &[u8]) -> WireResult<CreateSealedResponse> {
+    let mut r = Reader::new(params);
+    let private = r.tpm2b()?;
+    let public = r.tpm2b()?;
+    if private.is_empty() || public.is_empty() {
+        return Err(WireError::Truncated {
+            offset: r.offset(),
+            need: 1,
+            have: 0,
+        });
+    }
+    Ok(CreateSealedResponse { private, public })
+}
+
+/// `TPM2_Load` response: the loaded transient object handle (+ name).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadResponse {
+    pub handle: u32,
+    pub name: Vec<u8>,
+}
+
+pub fn parse_load(params: &[u8]) -> WireResult<LoadResponse> {
+    let mut r = Reader::new(params);
+    let handle = r.u32()?;
+    let name = r.tpm2b()?;
+    // Transient objects live in the 0x80 class.
+    let class = (handle >> 24) as u16;
+    if class != 0x80 {
+        return Err(WireError::Unexpected {
+            what: "transient object handle class, expected 0x80",
+            value: class,
+        });
+    }
+    Ok(LoadResponse { handle, name })
+}
+
+/// `TPM2_Unseal` response: the recovered plaintext (TPM2B_SENSITIVE_DATA).
+pub fn parse_unseal(params: &[u8]) -> WireResult<Vec<u8>> {
+    let mut r = Reader::new(params);
+    r.tpm2b()
 }
 
 // ---------------------------------------------------------------------------

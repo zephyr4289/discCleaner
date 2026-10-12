@@ -361,6 +361,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -400,6 +401,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
@@ -418,6 +420,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -582,6 +585,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -608,6 +612,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

@@ -146,6 +146,10 @@ pub enum Commands {
     /// Generate an Ed25519 operator signing keypair
     Keygen(KeygenArgs),
 
+    /// Hardware-attested sealing of operator keys into the platform TPM
+    /// (PCR-policy bound: unseal only in the exact boot state that sealed)
+    Key(KeyArgs),
+
     /// Two-officer Ed25519 countersignature approval of a compiled plan (2PI, Δ448)
     Approve(ApproveArgs),
 
@@ -662,6 +666,40 @@ pub struct QuoteArgs {
     pub sub: QuoteSubcommands,
 }
 
+#[derive(Args, Debug)]
+pub struct KeyArgs {
+    #[command(subcommand)]
+    pub sub: KeySubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KeySubcommands {
+    /// Seal an operator keyfile into the machine's TPM 2.0, bound to the
+    /// current PCR state (firmware + kernel + initramfs + dc binary)
+    Seal {
+        /// Plaintext operator keyfile (32-byte hex, mode 0600) to seal
+        key: PathBuf,
+        /// PCRs to bind the policy to (e.g. '0-11', '0,1,9'); default:
+        /// the full quote bank 0-11
+        #[arg(long)]
+        pcrs: Option<String>,
+        /// Output path for the sealed blob JSON (default: <key>.sealed.json)
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// Recover a sealed key — ONLY if the platform state still matches
+    /// the sealing policy (writes the plaintext key to --out)
+    Unseal {
+        /// Sealed blob JSON produced by `dc key seal`
+        blob: PathBuf,
+        /// Output path for the recovered plaintext keyfile (created 0600)
+        #[arg(short, long)]
+        out: PathBuf,
+    },
+    /// Inspect a sealed blob's policy WITHOUT touching the TPM
+    Inspect { blob: PathBuf },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum QuoteSubcommands {
     /// Measure the appliance artifacts into PCRs 8-11 and produce a
@@ -890,6 +928,10 @@ pub fn run(cli: Cli) -> Result<(), DcError> {
         }
         Commands::Quote(args) => {
             quote::cmd_quote(args)?;
+            Ok(())
+        }
+        Commands::Key(args) => {
+            key::cmd_key(args)?;
             Ok(())
         }
         Commands::Photon(args) => {
@@ -2247,7 +2289,12 @@ fn sign_plan_on_hardware_token(
 /// (termios ECHO off). The PIN never lands in shell history, environment,
 /// or a file. Returns an error when there is no controlling TTY — a PIN
 /// typed into a pipe is a PIN leaked to a log.
-fn prompt_pin_no_echo(prompt: &str) -> std::io::Result<String> {
+///
+/// SECURITY (v0.9.0 Phase 1a): returns `Zeroizing<String>` — the heap copy
+/// of the PIN is wiped with volatile stores when the caller drops it, and
+/// the raw terminal line (including any leading/trailing whitespace the
+/// trim removes) is wiped here before returning.
+fn prompt_pin_no_echo(prompt: &str) -> std::io::Result<zeroize::Zeroizing<String>> {
     use std::io::Write;
     use std::os::fd::AsRawFd;
 
@@ -2279,7 +2326,12 @@ fn prompt_pin_no_echo(prompt: &str) -> std::io::Result<String> {
         // Newline echo after hidden input.
         let mut out2 = std::io::BufWriter::new(&tty);
         let _ = writeln!(out2);
-        Ok(line.trim().to_string())
+        // v0.9.0: the raw line can carry whitespace around the PIN — trim
+        // into a fresh String, then wipe the raw line in place.
+        let pin = line.trim().to_string();
+        use zeroize::Zeroize;
+        line.zeroize();
+        Ok(pin)
     })();
 
     unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &saved) };
@@ -2289,7 +2341,7 @@ fn prompt_pin_no_echo(prompt: &str) -> std::io::Result<String> {
             "empty PIN — hardware custody requires the officer PIN",
         ));
     }
-    Ok(pin)
+    Ok(zeroize::Zeroizing::new(pin))
 }
 
 fn cmd_journal(args: JournalArgs) -> Result<(), DcError> {
