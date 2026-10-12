@@ -160,6 +160,13 @@ pub struct UnsignedCertificate {
     /// Fabric session record for remote NVMe-oF purges (v0.8.0, Vector 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fabric_session: Option<crate::vault::FabricSessionEvidence>,
+    /// CXL Type 3 memory-device sanitize evidence (v0.11.0, Frontier 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cxl: Option<crate::cxl::CxlSanitizeEvidence>,
+    /// Zero-knowledge audit statement (v0.11.0, Frontier 1) — present
+    /// when a Groth16 compliance receipt accompanies this certificate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zk: Option<crate::zk::ZkAuditStatement>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -213,6 +220,13 @@ pub struct SanitizationCertificate {
     /// Fabric session record for remote NVMe-oF purges (v0.8.0, Vector 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fabric_session: Option<crate::vault::FabricSessionEvidence>,
+    /// CXL Type 3 memory-device sanitize evidence (v0.11.0, Frontier 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cxl: Option<crate::cxl::CxlSanitizeEvidence>,
+    /// Zero-knowledge audit statement (v0.11.0, Frontier 1) — present
+    /// when a Groth16 compliance receipt accompanies this certificate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zk: Option<crate::zk::ZkAuditStatement>,
 }
 
 #[derive(Clone, Debug)]
@@ -271,6 +285,8 @@ impl SanitizationCertificate {
             vault_report: None,
             photon_manifest: None,
             fabric_session: None,
+            cxl: None,
+            zk: None,
         }
     }
 
@@ -384,6 +400,8 @@ impl SanitizationCertificate {
             vault_report: self.vault_report.clone(),
             photon_manifest: self.photon_manifest.clone(),
             fabric_session: self.fabric_session.clone(),
+            cxl: self.cxl.clone(),
+            zk: self.zk.clone(),
         }
     }
 
