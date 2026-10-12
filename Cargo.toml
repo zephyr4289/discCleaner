@@ -26,6 +26,9 @@ members = [
     "crates/dc-zk",
     "crates/dc-cxl",
     "crates/dc-verify-formal",
+    "crates/dc-vdf",
+    "crates/dc-sonar",
+    "crates/dc-baremetal",
 ]
 
 [workspace.dependencies]
@@ -52,6 +55,9 @@ dc-cloud = { path = "crates/dc-cloud" }
 dc-zk = { path = "crates/dc-zk" }
 dc-cxl = { path = "crates/dc-cxl" }
 dc-verify-formal = { path = "crates/dc-verify-formal" }
+dc-vdf = { path = "crates/dc-vdf" }
+dc-sonar = { path = "crates/dc-sonar" }
+dc-baremetal = { path = "crates/dc-baremetal" }
 dc-testkit = { path = "crates/dc-testkit" }
 
 # System & I/O

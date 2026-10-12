@@ -33,7 +33,8 @@ pub use journal::{
 pub use orchestrator::{Orchestrator, OrchestratorEffect, OrchestratorState};
 pub use pattern::{
     ChaCha20Pattern, FixedPattern, FixedWordPattern, Pattern, PatternDescriptor, PatternSource,
-    PrngScheme, ZeroPattern, create_pattern_source,
+    PrngScheme, VdfWeaveScheme, ZeroPattern, create_pattern_source, create_vdf_pattern_source,
+    vdf_pass_seed,
 };
 pub use plan::{
     FastPathPolicy, Mechanism, Pass, SanitizationPlan, SanitizationProfile, VerifyLevel,

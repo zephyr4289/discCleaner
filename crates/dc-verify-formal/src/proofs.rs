@@ -184,3 +184,103 @@ mod secrets_harness {
         }
     }
 }
+
+/// v0.12.0 Miracle 1 harnesses: the Montgomery arithmetic bedrock of
+/// the Proof-of-Erasure time-lock chain.
+///
+/// Proved here (symbolic, all executions):
+/// * `montgomery_red_small` — CIOS Montgomery reduction is EXACTLY
+///   (a·b·R⁻¹) mod n for a 2-limb modulus, verified against the
+///   schoolbook triple-multiply reference over ALL symbolic inputs.
+/// * `montgomery_roundtrip_small` — to_mont/from_mont compose to the
+///   identity for every input below the modulus.
+/// * `sonar_pairwise_bit_stability` — Miracle 2: a pairwise ordering
+///   bit is stable under any perturbation smaller than half the
+///   enrolled gap (the fuzzy extractor's soundness lemma).
+#[cfg(kani)]
+mod vdf_harness {
+    use dc_vdf::bigint::{BigUint, Montgomery};
+
+    /// R = 2^128 for L=2; the reference uses u128 arithmetic with one
+    /// extra limb via the wide multiply (fits because a, b < n < 2^63
+    /// keeps a·b < 2^126).
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn montgomery_red_small() {
+        // symbolic small modulus (odd, < 2^63 so products fit u128)
+        let n0: u64 = kani::any();
+        kani::assume(n0 & 1 == 1);
+        kani::assume(n0 >= 3);
+        kani::assume(n0 < (1u64 << 62));
+        let mut n = [0u64; 2];
+        n[0] = n0;
+        let n = BigUint::<2>(n);
+
+        let a0: u64 = kani::any();
+        let b0: u64 = kani::any();
+        kani::assume(a0 < n0);
+        kani::assume(b0 < n0);
+
+        let ctx = Montgomery::<2>::new(n).unwrap();
+        let a = BigUint::<2>::from_bytes_be(&a0.to_be_bytes());
+        let b = BigUint::<2>::from_bytes_be(&b0.to_be_bytes());
+        let got = ctx.from_mont(&ctx.mont_mul(&ctx.to_mont(&a), &ctx.to_mont(&b)));
+
+        let expect = ((a0 as u128) * (b0 as u128)) % (n0 as u128);
+        assert_eq!(
+            got.0[0] as u128, expect,
+            "CIOS must equal schoolbook modular product for every a,b < n"
+        );
+        assert_eq!(got.0[1], 0, "result must be fully reduced");
+    }
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn montgomery_roundtrip_small() {
+        let n0: u64 = kani::any();
+        kani::assume(n0 & 1 == 1);
+        kani::assume(n0 >= 3);
+        kani::assume(n0 < (1u64 << 62));
+        let mut n = [0u64; 2];
+        n[0] = n0;
+        let n = BigUint::<2>(n);
+
+        let x0: u64 = kani::any();
+        kani::assume(x0 < n0);
+        let x = BigUint::<2>::from_bytes_be(&x0.to_be_bytes());
+        let ctx = Montgomery::<2>::new(n).unwrap();
+        let back = ctx.from_mont(&ctx.to_mont(&x));
+        assert_eq!(back, x, "Montgomery conversion must round-trip exactly");
+    }
+}
+
+#[cfg(kani)]
+mod sonar_harness {
+    /// The pairwise-ordering bit (v0.12.0 Miracle 2): for any pair of
+    /// feature values and any per-observation noise strictly smaller
+    /// than half the pair's gap, the comparison bit is unchanged — the
+    /// soundness lemma behind the reliable-pair fuzzy extractor.
+    #[kani::proof]
+    fn sonar_pairwise_bit_stability() {
+        let va: i64 = kani::any();
+        let vb: i64 = kani::any();
+        kani::assume(va > -1_000_000_000);
+        kani::assume(va < 1_000_000_000);
+        kani::assume(vb > -1_000_000_000);
+        kani::assume(vb < 1_000_000_000);
+        let gap = (va - vb).abs();
+        kani::assume(gap >= 2);
+
+        // noise strictly inside the guard band (|noise| < gap/2)
+        let noise: i64 = kani::any();
+        kani::assume(noise >= -(gap / 2 - 1));
+        kani::assume(noise <= gap / 2 - 1);
+
+        let bit_before = va > vb;
+        let bit_after = va + noise > vb - noise;
+        assert_eq!(
+            bit_before, bit_after,
+            "pairwise ordering must be noise-stable within the half-gap band"
+        );
+    }
+}

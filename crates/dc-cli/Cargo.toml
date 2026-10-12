@@ -1,6 +1,6 @@
 [package]
 name = "dc-cli"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 
 [features]
@@ -44,6 +44,8 @@ dc-cloud = { workspace = true }
 dc-zk = { workspace = true }
 dc-cxl = { workspace = true }
 dc-verify-formal = { workspace = true }
+dc-vdf = { workspace = true }
+dc-sonar = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
 tracing = { workspace = true }

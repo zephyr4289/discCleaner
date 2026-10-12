@@ -8,6 +8,20 @@ pub enum PrngScheme {
     ChaCha20WindowV1,
 }
 
+/// Wipe-pass derivation scheme for VDF-woven sanitization (v0.12.0,
+/// Miracle 1). The plan declares the WEAVE (a commitment to the puzzle
+/// parameters); the per-pass keystream key is the VDF state materialized
+/// by the executor between passes and recorded (with its Wesolowski
+/// proof) in the certificate's `vdf` evidence section.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VdfWeaveScheme {
+    /// Per-pass key = BLAKE3(state_i || pass_index); window keystream is
+    /// ChaCha20WindowV1 over that key. States advance by exactly
+    /// `steps_per_pass` sequential modular squarings.
+    WesolowskiRsaUfoV1,
+}
+
 impl std::fmt::Display for PrngScheme {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -34,6 +48,19 @@ pub enum Pattern {
         scheme: PrngScheme,
         #[serde(with = "hex_serde")]
         seed: [u8; 32],
+    },
+    /// VDF-woven pass (v0.12.0, Miracle 1): the bytes written to media
+    /// during this pass are keyed by an intermediate state of a
+    /// time-lock puzzle chain, so the physical write traffic itself
+    /// proves a sequential-squaring wall-clock lower bound. The
+    /// `seed_commitment` binds the puzzle (modulus + challenge); the
+    /// materialized state seed is supplied by the executor (write
+    /// path) or read from the certificate's `vdf` evidence (verify
+    /// path) via `create_vdf_pattern_source`.
+    VdfWoven {
+        scheme: VdfWeaveScheme,
+        #[serde(with = "hex_serde")]
+        seed_commitment: [u8; 32],
     },
 }
 
@@ -226,6 +253,88 @@ impl PatternSource for ChaCha20Pattern {
     }
 }
 
+/// Materialized VDF weave pass source (v0.12.0, Miracle 1).
+///
+/// Pure WITHIN an instance: `fill` is a pure function of (window, len)
+/// for the fixed `state_seed` the instance was constructed with. The
+/// state seed itself is the sequential-squaring VDF output for the
+/// pass — produced between passes by the executor (each state costing
+/// `steps_per_pass` provable non-parallelizable squarings since the
+/// previous one) or re-derived by an auditor from the certificate's
+/// per-pass states and Wesolowski proofs.
+pub struct VdfWeavePattern {
+    pub scheme: VdfWeaveScheme,
+    pub seed_commitment: [u8; 32],
+    /// Pass index this source is bound to.
+    pub pass_index: u8,
+    /// BLAKE3(state_i || pass_index) — the actual 32-byte ChaCha20 key.
+    pub state_seed: [u8; 32],
+}
+
+impl PatternSource for VdfWeavePattern {
+    fn fill(&self, w: u64, buf: &mut [u8]) {
+        // Same keystream geometry as ChaCha20WindowV1 so read-back
+        // verification shares one tested code path — only the key
+        // derivation differs (it comes from the VDF chain).
+        let mut nonce = [0u8; 12];
+        nonce[0..8].copy_from_slice(&w.to_le_bytes());
+        nonce[8..12].copy_from_slice(&[0, 0, 0, 0]);
+
+        buf.fill(0);
+        let mut cipher = ChaCha20::new((&self.state_seed).into(), (&nonce).into());
+        cipher.apply_keystream(buf);
+    }
+
+    fn descriptor(&self) -> PatternDescriptor {
+        PatternDescriptor {
+            name: format!(
+                "VdfWeaveV1(pass {}, seed-fp {})",
+                self.pass_index,
+                &hex::encode(self.state_seed)[..16]
+            ),
+            pattern: Pattern::VdfWoven {
+                scheme: self.scheme,
+                seed_commitment: self.seed_commitment,
+            },
+            description: format!(
+                "VDF-woven pass — ChaCha20 keystream keyed by time-lock state {}",
+                hex::encode(self.state_seed)
+            ),
+        }
+    }
+
+    fn window_invariant(&self) -> bool {
+        false
+    }
+}
+
+/// Derive the 32-byte ChaCha20 key for pass `pass_index` from the
+/// materialized VDF state bytes (canonical big-endian modulus-width).
+/// Used identically by the writer and the verifier, so both sides
+/// always agree on the on-media bytes.
+pub fn vdf_pass_seed(state_bytes: &[u8], pass_index: u8) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"dc-vdf/weave/v1");
+    h.update(state_bytes);
+    h.update(&[pass_index]);
+    *h.finalize().as_bytes()
+}
+
+/// Construct a materialized weave source for one pass.
+pub fn create_vdf_pattern_source(
+    scheme: VdfWeaveScheme,
+    seed_commitment: [u8; 32],
+    pass_index: u8,
+    state_bytes: &[u8],
+) -> Box<dyn PatternSource> {
+    Box::new(VdfWeavePattern {
+        scheme,
+        seed_commitment,
+        pass_index,
+        state_seed: vdf_pass_seed(state_bytes, pass_index),
+    })
+}
+
 pub fn create_pattern_source(pattern: &Pattern) -> Box<dyn PatternSource> {
     match pattern {
         Pattern::Zero => Box::new(ZeroPattern),
@@ -234,5 +343,18 @@ pub fn create_pattern_source(pattern: &Pattern) -> Box<dyn PatternSource> {
         Pattern::DeterministicRandom { scheme, seed } => match scheme {
             PrngScheme::ChaCha20WindowV1 => Box::new(ChaCha20Pattern::new(*seed)),
         },
+        // A VdfWoven pattern is a WEAVE DECLARATION, not a materialized
+        // source: the state seed only exists after the executor advanced
+        // the time-lock chain (or an auditor replays it from the
+        // certificate evidence). Reaching this arm means an unmaterialized
+        // plan leaked into a generic path — fail loudly instead of
+        // writing attacker-predictable bytes to media. The executor and
+        // verifier construct weave sources exclusively through
+        // `create_vdf_pattern_source`, and every CLI path that compiles or
+        // consumes VdfWoven plans validates this first.
+        Pattern::VdfWoven { .. } => panic!(
+            "VdfWoven patterns must be materialized with create_vdf_pattern_source() \
+             (VDF state from the executor's lock or the certificate's vdf evidence)"
+        ),
     }
 }

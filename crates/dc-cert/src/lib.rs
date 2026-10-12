@@ -12,9 +12,11 @@ pub mod project;
 pub mod project2;
 pub mod schema2;
 pub mod signer;
+pub mod sonar;
 pub mod token;
 pub mod tpm;
 pub mod vault;
+pub mod vdf;
 pub mod zk;
 pub mod zone_attest;
 
@@ -493,3 +495,6 @@ mod unit_tests {
         )
     }
 }
+
+pub use sonar::{SonarPufEvidence, SonarVerificationRecord};
+pub use vdf::{VdfPassBinding, VdfTimelineEvidence};

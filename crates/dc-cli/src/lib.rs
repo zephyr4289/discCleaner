@@ -1,4 +1,5 @@
 pub mod approve;
+pub mod baremetalcmd;
 pub mod bench;
 pub mod bootattest;
 pub mod bootiso;
@@ -18,7 +19,9 @@ pub mod profiles;
 pub mod purge;
 pub mod quote;
 pub mod serve;
+pub mod sonarcmd;
 pub mod stick_install;
+pub mod vdfcmd;
 pub mod zkcmd;
 
 pub use profiles::ProfileOption;
@@ -115,7 +118,7 @@ fn cli_signal_injection(_event: &str) {}
 #[command(
     name = "diskcleaner",
     author = "Forensic Systems Engineering Team",
-    version = "0.11.0",
+    version = "0.12.0",
     about = "Military-grade storage sanitization and forensic verification suite",
     long_about = "Implements NIST SP 800-88 Rev 1, IEEE 2883-2022, and DoD media sanitization standards with deterministic cryptographic verification and tamper-evident audit logs."
 )]
@@ -220,6 +223,20 @@ pub enum Commands {
     /// Formal verification: exhaustive model checks and Kani proof
     /// harnesses for the sanitization core (v0.11.0, Frontier 3)
     Formal(FormalArgs),
+
+    /// Cryptographic Proof-of-Erasure: time-lock weave parameters,
+    /// calibration and standalone timeline verification
+    /// (v0.12.0, Miracle 1)
+    Vdf(VdfArgs),
+
+    /// Acoustic hardware fingerprinting: enroll and verify the
+    /// physical chassis of a drive against counterfeit/rogue swaps
+    /// (v0.12.0, Miracle 2)
+    Sonar(SonarArgs),
+
+    /// Ghost Boot: build and deploy the pure-Rust bare-metal UEFI
+    /// wipe payload — no kernel, no drivers, no OS (v0.12.0, Miracle 3)
+    Baremetal(BaremetalArgs),
 }
 
 #[derive(Args, Debug)]
@@ -342,6 +359,136 @@ pub enum FormalSubcommands {
         /// Window count for the exhaustive refinement (max 16)
         #[arg(long, default_value_t = 12)]
         windows: u32,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct VdfArgs {
+    #[command(subcommand)]
+    pub sub: VdfSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum VdfSubcommands {
+    /// One-time parameter ceremony: generate (or import) the RSA
+    /// unknown-order modulus and calibrate steps-per-pass
+    Setup {
+        /// Output path for vdf-params.json
+        #[arg(long, default_value = "vdf-params.json")]
+        out: PathBuf,
+        /// Modulus width: 512 (drills), 1024 or 2048 (production)
+        #[arg(long, default_value_t = 2048)]
+        bits: u16,
+        /// Import an externally-generated modulus (hex) instead of
+        /// running the ceremony here
+        #[arg(long)]
+        modulus: Option<String>,
+        /// Sequential squarings between pass states
+        #[arg(long, default_value_t = 1_000_000)]
+        steps_per_pass: u64,
+        /// Woven passes the parameters are calibrated for
+        #[arg(long, default_value_t = 3)]
+        passes: u8,
+        /// Auto-calibrate steps_per_pass for this per-pass delay (ms)
+        #[arg(long, default_value_t = 0)]
+        hours_per_pass_ms: u64,
+        /// Deterministic seed (hex) — reproducible drill ceremonies
+        #[arg(long)]
+        seed: Option<String>,
+    },
+    /// Measure this machine's Montgomery squaring rate for a modulus
+    Bench {
+        /// Published vdf-params.json
+        #[arg(long)]
+        params: PathBuf,
+        /// Approximate benchmark duration
+        #[arg(long, default_value_t = 2)]
+        seconds: u64,
+    },
+    /// Standalone audit of a certificate's time-lock timeline
+    Verify {
+        /// SanitizationCertificate (JSON) carrying a vdf section
+        #[arg(long)]
+        certificate: PathBuf,
+        /// Require a minimum proven elapsed-time floor (seconds)
+        #[arg(long)]
+        require_min_seconds: Option<f64>,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct SonarArgs {
+    #[command(subcommand)]
+    pub sub: SonarSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SonarSubcommands {
+    /// Enroll the acoustic fingerprint of a physical drive
+    Enroll {
+        /// Target block device (e.g. /dev/sda)
+        #[arg(short, long)]
+        target: PathBuf,
+        /// Output path for sonar-enrollment.json
+        #[arg(long, default_value = "sonar-enrollment.json")]
+        out: PathBuf,
+        /// Independent capture cycles for the enrollment (2..=16)
+        #[arg(long, default_value_t = 4)]
+        captures: usize,
+        /// Probe steps per capture
+        #[arg(long, default_value_t = 64)]
+        probe_steps: usize,
+        /// Media class: hdd | ssd (selects the excitation style)
+        #[arg(long, default_value = "hdd")]
+        media_class: String,
+        /// Fixed enrollment challenge (hex, 32 bytes) for drills
+        #[arg(long)]
+        challenge: Option<String>,
+    },
+    /// Fresh challenge-response against an enrollment
+    Verify {
+        #[arg(short, long)]
+        target: PathBuf,
+        /// sonar-enrollment.json produced by `dc sonar enroll`
+        #[arg(long)]
+        enrollment: PathBuf,
+        #[arg(long, default_value = "hdd")]
+        media_class: String,
+    },
+    /// One-shot diagnostic: what the telemetry sources hear
+    Scan {
+        #[arg(short, long)]
+        target: PathBuf,
+        #[arg(long, default_value_t = 64)]
+        probe_steps: usize,
+        #[arg(long, default_value = "hdd")]
+        media_class: String,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct BaremetalArgs {
+    #[command(subcommand)]
+    pub sub: BaremetalSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BaremetalSubcommands {
+    /// Explain the Ghost Boot payload, protocol and security model
+    Info,
+    /// Compile dc-ghost-efi.efi (target x86_64-unknown-uefi)
+    Build {
+        /// Release profile (opt-level=z, LTO — ~25 KB)
+        #[arg(long, default_value_t = true)]
+        release: bool,
+    },
+    /// Copy the built image to a FAT32 USB stick as EFI/BOOT/BOOTX64.EFI
+    Deploy {
+        /// Mounted FAT32 medium device (or its mount point)
+        #[arg(short, long)]
+        device: PathBuf,
+        #[arg(long, default_value_t = true)]
+        release: bool,
     },
 }
 
@@ -524,6 +671,22 @@ pub struct ExecuteArgs {
     /// Vault posture: require SEV/TDX memory encryption (implies --vault).
     #[arg(long)]
     pub vault_encrypted_required: bool,
+
+    /// VDF time-lock weave (v0.12.0, Miracle 1): bind every overwrite
+    /// pass to a Wesolowski VDF chain state, so the certificate carries
+    /// a mathematical wall-clock lower bound of the run — independent
+    /// of system clocks, NTP and operator honesty.
+    /// Value: vdf-params.json from `dc vdf setup`.
+    #[arg(long)]
+    pub vdf_lock: Option<PathBuf>,
+
+    /// Acoustic PUF guard (v0.12.0, Miracle 2): enroll the drive's
+    /// physical chassis before the wipe and re-verify it mid-run and
+    /// post-run. A rogue swap (counterfeit SSD / reflashed serial)
+    /// aborts certification — fail-closed. Value: sonar-enrollment.json
+    /// (empty = enroll fresh at start).
+    #[arg(long)]
+    pub puf_guard: Option<Option<PathBuf>>,
 }
 
 #[derive(Args, Debug)]
@@ -1286,6 +1449,9 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Zk(_) => "zk",
         Commands::Cxl(_) => "cxl",
         Commands::Formal(_) => "formal",
+        Commands::Vdf(_) => "vdf",
+        Commands::Sonar(_) => "sonar",
+        Commands::Baremetal(_) => "baremetal",
     }
 }
 
@@ -1397,6 +1563,18 @@ fn run_with_fleet_slot(
         }
         Commands::Formal(args) => {
             formalcmd::cmd_formal(args)?;
+            Ok(())
+        }
+        Commands::Vdf(args) => {
+            vdfcmd::cmd_vdf(args)?;
+            Ok(())
+        }
+        Commands::Sonar(args) => {
+            sonarcmd::cmd_sonar(args)?;
+            Ok(())
+        }
+        Commands::Baremetal(args) => {
+            baremetalcmd::cmd_baremetal(args)?;
             Ok(())
         }
     }

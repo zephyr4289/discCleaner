@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "dc-ata"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "dc-core",
@@ -414,8 +414,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-baremetal"
+version = "0.12.0"
+
+[[package]]
 name = "dc-cert"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "base64",
  "blake3",
@@ -439,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "dc-cli"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "assert_cmd",
  "blake3",
@@ -460,10 +464,12 @@ dependencies = [
  "dc-probe",
  "dc-report",
  "dc-scsi",
+ "dc-sonar",
  "dc-testkit",
  "dc-tpm",
  "dc-tui",
  "dc-vault",
+ "dc-vdf",
  "dc-verify",
  "dc-verify-formal",
  "dc-web",
@@ -486,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "dc-cloud"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "dc-cert",
@@ -505,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "dc-core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "chacha20 0.9.1",
@@ -524,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "dc-cxl"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "dc-cert",
@@ -541,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "dc-hw"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "hex",
@@ -553,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "dc-io"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "dc-core",
@@ -566,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "dc-iscsi"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "dc-core",
  "dc-hw",
@@ -581,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "dc-mmc"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "dc-core",
  "dc-hw",
@@ -595,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "dc-nvme"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "dc-core",
  "dc-hw",
@@ -608,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "dc-opal"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "dc-core",
@@ -623,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "dc-photon"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "dc-core",
@@ -638,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "dc-pq"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "dc-core",
  "getrandom 0.2.17",
@@ -648,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "dc-probe"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "dc-core",
  "libc",
@@ -662,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "dc-report"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "dc-cert",
@@ -674,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "dc-scsi"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "dc-core",
  "dc-hw",
@@ -687,8 +693,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-sonar"
+version = "0.12.0"
+dependencies = [
+ "blake3",
+ "dc-core",
+ "getrandom 0.2.17",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "dc-testkit"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "assert_cmd",
  "base64",
@@ -713,7 +734,7 @@ dependencies = [
 
 [[package]]
 name = "dc-tpm"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "dc-core",
@@ -733,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "dc-tui"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "dc-core",
@@ -743,7 +764,7 @@ dependencies = [
 
 [[package]]
 name = "dc-vault"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "dc-core",
@@ -759,8 +780,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-vdf"
+version = "0.12.0"
+dependencies = [
+ "blake3",
+ "chacha20 0.9.1",
+ "dc-core",
+ "getrandom 0.2.17",
+ "hex",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "dc-verify"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "dc-core",
@@ -776,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "dc-verify-formal"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "dc-core",
  "dc-io",
@@ -788,7 +827,7 @@ dependencies = [
 
 [[package]]
 name = "dc-web"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "dc-core",
  "getrandom 0.2.17",
@@ -800,7 +839,7 @@ dependencies = [
 
 [[package]]
 name = "dc-zk"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "dc-core",

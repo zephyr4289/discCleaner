@@ -11,7 +11,7 @@
 `dc` is a self-contained, statically linked, zero-dependency storage sanitization suite engineered for NVMe, SATA, SAS/SCSI, USB-bridged (SAT), eMMC/UFS, TCG Opal self-encrypting (SED), and Host-Managed SMR/ZNS storage. It executes **NIST SP 800-88 Rev 1** Clear and Purge operations, issuing cryptographically signed, third-party-verifiable evidence packages that survive crashes, power loss, and adversarial cross-examination.
 
 ```
-Version       : v0.11.0 (Zero-knowledge audit receipts · CXL Type 3 memory sanitization · formal verification)
+Version       : v0.12.0 (VDF proof-of-erasure · acoustic PUF fingerprinting · Ghost Boot)
 Target Triples: x86_64-unknown-linux-musl · aarch64-unknown-linux-musl
 Runtime Deps  : Zero external binaries, zero dynamic libraries
 Crates        : 22 modular workspace crates
@@ -38,6 +38,9 @@ Verification  : Ed25519+ML-DSA-44 hybrid + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3
 - [Zero-Knowledge Audit Receipts (v0.11.0)](#zero-knowledge-audit-receipts-v0110)
 - [CXL Type 3 Memory Sanitization (v0.11.0)](#cxl-type-3-memory-sanitization-v0110)
 - [Formal Verification (v0.11.0)](#formal-verification-v0110)
+- [VDF Proof-of-Erasure (v0.12.0)](#vdf-proof-of-erasure-v0120)
+- [Sonar Acoustic Fingerprinting (v0.12.0)](#sonar-acoustic-fingerprinting-v0120)
+- [Ghost Boot — Bare-Metal Wipe Payload (v0.12.0)](#ghost-boot--bare-metal-wipe-payload-v0120)
 - [Standalone Boot Environment](#standalone-boot-environment)
 - [Engineering Discipline & Testkit](#engineering-discipline--testkit)
 - [Standards & Compliance](#standards--compliance)
@@ -499,6 +502,69 @@ dc formal verify-model --windows 12
 ```
 
 See [docs/formal-verification.md](docs/formal-verification.md).
+
+## VDF Proof-of-Erasure (v0.12.0)
+
+Every wipe certificate ever issued carries one fatal flaw: **timestamp
+spoofing** — a rogue sysadmin or compromised provider can set the clock
+to 2024 and forge "destroyed on August 15th at 14:00". `dc vdf` replaces
+trust in clocks with immutable mathematics: a Wesolowski verifiable
+delay function over a safe-prime RSA unknown-order group (factors
+zeroized at ceremony time) **weaves the overwrite passes into the delay
+chain** — each pass's on-media keystream is keyed by an intermediate
+chain state, so the bytes themselves prove `n·s` non-parallelizable
+modular squarings elapsed between the first and last woven write. A
+court, auditor or counterparty verifies the whole timeline in
+milliseconds: `y ≡ π^ℓ · x^r (mod N)` per link, independent of system
+clocks, NTP, networks and operator honesty.
+
+```bash
+dc vdf setup --bits 2048 --hours-per-pass-ms 3600000 --out vdf-params.json  # offline ceremony
+dc execute --target /dev/sda --profile dod-522022m --vdf-lock vdf-params.json
+dc vdf verify --certificate wipe.cert.json        # the timeline audit
+```
+
+See [docs/vdf-timelock.md](docs/vdf-timelock.md) for the construction,
+adversary hardware model and honest threat analysis.
+
+## Sonar Acoustic Fingerprinting (v0.12.0)
+
+Counterfeit SSDs and reflashed HDDs spoof serials and WWNs in firmware —
+but they cannot fake the **physical resonance of the chassis**.
+`dc sonar` challenges the drive with a seek micro-stepping I/O score,
+listens through motherboard accelerometers (IIO) and hwmon telemetry,
+and extracts harmonic fingerprints with a hand-written radix-2 FFT. A
+pairwise-ordering fuzzy extractor turns the most stable resonance
+orderings into a challenge–response PUF: enroll the physical chassis
+once, then prove at any later time that the same silicon body is (still)
+under the write head. `--puf-guard` re-verifies mid-wipe and post-wipe —
+a rogue swap aborts certification (fail-closed).
+
+```bash
+dc sonar enroll --target /dev/sda --out sonar-enrollment.json
+dc execute --target /dev/sda --profile nist-clear --puf-guard sonar-enrollment.json
+```
+
+See [docs/sonar-puf.md](docs/sonar-puf.md).
+
+## Ghost Boot — Bare-Metal Wipe Payload (v0.12.0)
+
+Wiping bricked, corrupted or unbootable machines previously required a
+live Linux ISO (kernel, drivers, rootfs — 800+ MB that itself must
+boot). **Ghost Boot** is a 100% pure-Rust bare-metal UEFI payload — no
+kernel, no drivers, no OS — that boots straight into Ring 0 long mode at
+**~25 KB**: PCIe scan over CF8/CFC, AHCI + NVMe driven directly over
+BARs with bus-mastering DMA, Format NVM crypto-erase + ChaCha20(RDRAND)
+pattern passes, framebuffer UI, and ACPI S5 poweroff. Every hardware
+state machine is CI-tested against a register-accurate simulated bus;
+the payload never executes code from the target's disks.
+
+```bash
+dc baremetal build                     # x86_64-unknown-uefi, ~25 KB
+dc baremetal deploy --device /dev/sdX  # EFI/BOOT/BOOTX64.EFI on FAT32
+```
+
+See [docs/baremetal-ghost-boot.md](docs/baremetal-ghost-boot.md).
 
 ## Standalone Boot Environment
 

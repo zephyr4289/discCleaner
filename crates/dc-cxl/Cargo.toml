@@ -1,6 +1,6 @@
 [package]
 name = "dc-cxl"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "CXL 2.0/3.0 Type 3 memory device sanitization (v0.11.0, Frontier 2): DVSEC/sysfs discovery, Memory Device Mailbox Sanitize (0x4400) and Secure Erase (0x4401) over MMIO, cache-line writeback verification, component register binding into certificates"
 
