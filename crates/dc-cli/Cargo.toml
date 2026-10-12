@@ -1,6 +1,6 @@
 [package]
 name = "dc-cli"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 
 [features]
@@ -49,6 +49,8 @@ dc-testkit = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
+# t25 hardware-token matrix: ECDSA P-256 custody co-proof fixtures.
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 [lints]
 workspace = true

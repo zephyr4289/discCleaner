@@ -28,10 +28,12 @@
 //!   (PDF/A-3) archival copy embedding the certificate and journal.
 
 use crate::{PurgeArgs, chrono_now_iso, cli_signal_injection, signal_was_seen};
+use dc_ata::coldbus::{ColdBusOutcome, ColdBusStepRecord};
 use dc_ata::purge::{AtaPurgeClient, AtaPurgeMechanism, AtaPurgePermit, LinuxSatPurge};
 use dc_cert::{
-    ExecutionDetails, HealthSnapshotEvidence, OperatorKeyPair, PurgeCertificateEvidence,
-    PurgeFallbackRecord, SanitizationCertificate,
+    AtaDeviceStatisticsEvidence, ExecutionDetails, FirmwareAttestationEvidence, FirmwareIdentity,
+    HealthSnapshotEvidence, NvmeTelemetryEvidence, OperatorKeyPair, PurgeCertificateEvidence,
+    PurgeFallbackRecord, SanitizationCertificate, TelemetrySnapshot,
 };
 use dc_core::{
     AuditLogger, AuditOutcome, AuditRecord, BusType, DcError, DeviceIdentity, EngineTuning,
@@ -39,6 +41,7 @@ use dc_core::{
     VerifyLevel,
 };
 use dc_io::Engine as _;
+use dc_nvme::NvmeAdminTransport;
 use dc_nvme::purge::{NvmePurgeClient, PurgeMechanism};
 use dc_nvme::{
     HealthSnapshot, LinuxNvmeAdmin, attest_capabilities, controller_char_dev_for,
@@ -203,6 +206,254 @@ fn health_evidence(h: &HealthSnapshot) -> HealthSnapshotEvidence {
     }
 }
 
+/// Thermal limits from CLI flags (Vector 2).
+fn thermal_limits_from_args(args: &PurgeArgs) -> dc_ata::ThermalLimits {
+    let mut limits = dc_ata::ThermalLimits::default();
+    if let Some(t) = args.thermal_throttle_c {
+        limits.throttle_c = t;
+    }
+    if let Some(c) = args.thermal_critical_c {
+        limits.critical_c = c;
+    }
+    limits
+}
+
+/// Live thermal monitor for controller-driven purges: reads the kernel
+/// hwmon view (no fd contention with the SG_IO/admin transports), paces
+/// between sanitize polls, and flags critical temperatures that must
+/// block certification. Owned by the progress-sink closure.
+struct PurgeThermalMonitor {
+    governor: dc_ata::ThermalGovernor,
+    thermometer: dc_ata::SysfsHwmonThermometer,
+    pub max_temperature_c: Option<i32>,
+    pub paced_ms: u64,
+    pub critical: Option<(i32, i32)>,
+}
+
+impl PurgeThermalMonitor {
+    fn new(limits: dc_ata::ThermalLimits, block_name: &str) -> Self {
+        Self {
+            governor: dc_ata::ThermalGovernor::with_limits(limits),
+            thermometer: dc_ata::SysfsHwmonThermometer::discover(block_name),
+            max_temperature_c: None,
+            paced_ms: 0,
+            critical: None,
+        }
+    }
+
+    fn on_poll(&mut self) {
+        let Some(reading) = self.thermometer.read() else {
+            return; // inert when the kernel exposes no temperature
+        };
+        self.max_temperature_c = Some(
+            self.max_temperature_c
+                .map_or(reading.temperature_c, |m| m.max(reading.temperature_c)),
+        );
+        match self.governor.evaluate(&reading) {
+            dc_ata::ThermalDecision::Continue => {}
+            dc_ata::ThermalDecision::Pace(delay) => {
+                self.paced_ms += delay.as_millis() as u64;
+                std::thread::sleep(delay);
+            }
+            dc_ata::ThermalDecision::Abort {
+                temperature_c,
+                limit_c,
+            } => {
+                self.critical = Some((temperature_c, limit_c));
+            }
+        }
+    }
+
+    fn report(&self) -> Option<String> {
+        self.max_temperature_c.map(|max| {
+            if let Some((t, limit)) = self.critical {
+                format!(
+                    "CRITICAL {} C (limit {} C) — certification refused",
+                    t, limit
+                )
+            } else if self.paced_ms > 0 {
+                format!("max {} C, throttled {} ms", max, self.paced_ms)
+            } else {
+                format!("max {} C", max)
+            }
+        })
+    }
+}
+
+/// Deep controller forensics captured around a purge (Vector 4):
+/// firmware identity pre/post + transport-specific telemetry snapshots.
+struct TransportForensics {
+    identity: FirmwareIdentity,
+    telemetry: Option<NvmeTelemetryEvidence>,
+    telemetry_raw: Vec<u8>,
+    devstat: Option<AtaDeviceStatisticsEvidence>,
+    devstat_raw: Vec<u8>,
+}
+
+impl TransportForensics {
+    /// NVMe: Identify Controller (FR + SSVID/SSVID product identity) and
+    /// the Telemetry Host-Initiated log (LID 0x07) snapshot.
+    fn capture_nvme(
+        admin: &mut LinuxNvmeAdmin,
+        id: &dc_hw::NvmeIdentifyController,
+    ) -> Result<Self, String> {
+        let identity = FirmwareIdentity {
+            bus: "nvme".to_string(),
+            model: id.mn.clone(),
+            serial: id.sn.clone(),
+            firmware_revision: id.fr.clone(),
+            subsystem_vendor: Some(format!("{:04x}", id.ssvid)),
+            subsystem_device: None,
+        };
+        let mut telemetry = None;
+        let mut telemetry_raw = Vec::new();
+        // Create a fresh host-initiated snapshot (LSP bit 0) and read the
+        // 512-byte header.
+        let cmd = dc_hw::NvmeCodec::encode_get_telemetry_log(true);
+        if let Ok(raw) = admin.admin_passthrough(&cmd)
+            && let Ok(header) = dc_hw::NvmeCodec::decode_telemetry_header(&raw)
+        {
+            telemetry = Some(NvmeTelemetryEvidence {
+                reason_identifier: header.reason_identifier.clone(),
+                generation: header.generation,
+                data_areas_supported: header.data_areas_supported,
+                area1_last_block: header.area1_last_block,
+                area2_last_block: header.area2_last_block,
+                area3_last_block: header.area3_last_block,
+            });
+            telemetry_raw = raw;
+        }
+        Ok(Self {
+            identity,
+            telemetry,
+            telemetry_raw,
+            devstat: None,
+            devstat_raw: Vec::new(),
+        })
+    }
+
+    /// ATA/SAT: IDENTIFY firmware string + Device Statistics pages 0x00
+    /// (General) and 0x04 (Solid State Device Statistics).
+    fn capture_ata(sat: &mut LinuxSatPurge) -> Result<Self, String> {
+        let id = AtaPurgeClient::new(sat).identify()?;
+        let identity = FirmwareIdentity {
+            bus: "ata".to_string(),
+            model: id.model.clone(),
+            serial: id.serial.clone(),
+            firmware_revision: id.firmware.clone(),
+            subsystem_vendor: None,
+            subsystem_device: None,
+        };
+        let mut devstat = AtaDeviceStatisticsEvidence::default();
+        let mut raw: Vec<u8> = Vec::new();
+        let mut has_any = false;
+        if let Ok((page0, page_raw)) = AtaPurgeClient::new(sat).read_device_statistics(0x00) {
+            raw.extend_from_slice(&page_raw);
+            has_any = true;
+            if let Some(e) = page0.entry(0x0004) {
+                devstat.logical_sectors_written = Some(e.value);
+            }
+            if let Some(e) = page0.entry(0x0005) {
+                devstat.write_commands = Some(e.value);
+            }
+            if let Some(e) = page0.entry(0x0006) {
+                devstat.logical_sectors_read = Some(e.value);
+            }
+            if let Some(e) = page0.entry(0x0007) {
+                devstat.read_commands = Some(e.value);
+            }
+            if let Some(e) = page0.entry(0x0002) {
+                devstat.power_on_hours = Some(e.value);
+            }
+        }
+        if let Ok((page4, page_raw)) = AtaPurgeClient::new(sat).read_device_statistics(0x04) {
+            raw.extend_from_slice(&page_raw);
+            has_any = true;
+            devstat.ssd_statistics_page_present = true;
+            devstat.percentage_used_endurance = page4.percentage_used_endurance();
+        }
+        let devstat = if has_any { Some(devstat) } else { None };
+        Ok(Self {
+            identity,
+            telemetry: None,
+            telemetry_raw: Vec::new(),
+            devstat,
+            devstat_raw: raw,
+        })
+    }
+
+    /// SCSI/SAS: standard INQUIRY identity (vendor/product/revision).
+    fn capture_scsi(scsi: &mut LinuxScsiPurge) -> Result<Self, String> {
+        let id = ScsiPurgeClient::new(scsi).identify()?;
+        Ok(Self {
+            identity: FirmwareIdentity {
+                bus: "scsi".to_string(),
+                model: format!("{} {}", id.vendor, id.product),
+                serial: String::new(),
+                firmware_revision: id.revision.clone(),
+                subsystem_vendor: None,
+                subsystem_device: None,
+            },
+            telemetry: None,
+            telemetry_raw: Vec::new(),
+            devstat: None,
+            devstat_raw: Vec::new(),
+        })
+    }
+
+    /// Build the certificate evidence block from pre/post captures and
+    /// the raw snapshot digests.
+    fn into_evidence(
+        pre: TransportForensics,
+        post: TransportForensics,
+    ) -> FirmwareAttestationEvidence {
+        let mut raw_snapshots = Vec::new();
+        if !pre.telemetry_raw.is_empty() {
+            raw_snapshots.push(TelemetrySnapshot {
+                label: format!(
+                    "nvme-telemetry-host-0x07-pre-{}",
+                    pre.telemetry.as_ref().map(|t| t.generation).unwrap_or(0)
+                ),
+                blake3_hex: blake3::hash(&pre.telemetry_raw).to_hex().to_string(),
+                len_bytes: pre.telemetry_raw.len() as u64,
+            });
+        }
+        if !post.telemetry_raw.is_empty() {
+            raw_snapshots.push(TelemetrySnapshot {
+                label: format!(
+                    "nvme-telemetry-host-0x07-post-{}",
+                    post.telemetry.as_ref().map(|t| t.generation).unwrap_or(0)
+                ),
+                blake3_hex: blake3::hash(&post.telemetry_raw).to_hex().to_string(),
+                len_bytes: post.telemetry_raw.len() as u64,
+            });
+        }
+        if !pre.devstat_raw.is_empty() {
+            raw_snapshots.push(TelemetrySnapshot {
+                label: "ata-devstat-0x04-pre".to_string(),
+                blake3_hex: blake3::hash(&pre.devstat_raw).to_hex().to_string(),
+                len_bytes: pre.devstat_raw.len() as u64,
+            });
+        }
+        if !post.devstat_raw.is_empty() {
+            raw_snapshots.push(TelemetrySnapshot {
+                label: "ata-devstat-0x04-post".to_string(),
+                blake3_hex: blake3::hash(&post.devstat_raw).to_hex().to_string(),
+                len_bytes: post.devstat_raw.len() as u64,
+            });
+        }
+        FirmwareAttestationEvidence {
+            pre: pre.identity,
+            post: post.identity,
+            nvme_telemetry_pre: pre.telemetry,
+            nvme_telemetry_post: post.telemetry,
+            ata_devstat_pre: pre.devstat,
+            ata_devstat_post: post.devstat,
+            raw_snapshots,
+        }
+    }
+}
+
 /// The execution outcome every transport runner returns; the certificate
 /// assembly is transport-uniform.
 struct PurgeRunOutcome {
@@ -215,6 +466,12 @@ struct PurgeRunOutcome {
     /// Extra advisory lines (e.g. lifeline disclosure instructions).
     operator_notes: Vec<String>,
     duration_ms: u64,
+    /// Cold-bus freeze remediation steps executed before arming
+    /// (v0.7.0, Vector 2) — recorded into the certificate.
+    coldbus_steps: Vec<ColdBusStepRecord>,
+    /// Thermal monitor statistics (max temperature, pacing time) when a
+    /// thermometer was observable during the run.
+    thermal_report: Option<String>,
 }
 
 pub fn cmd_purge(args: PurgeArgs, audit: &mut Option<AuditLogger>) -> Result<(), DcError> {
@@ -353,6 +610,8 @@ fn assemble_purge_certificate(
     defense_warnings: Vec<String>,
     health: Option<(HealthSnapshotEvidence, HealthSnapshotEvidence)>,
     verify_level_note: &str,
+    firmware: Option<FirmwareAttestationEvidence>,
+    extra_attachments: &[(String, Vec<u8>, &'static str)],
 ) -> Result<(), DcError> {
     use dc_verify::StreamVerifier;
 
@@ -433,6 +692,11 @@ fn assemble_purge_certificate(
     if let Some((pre, post)) = health {
         cert = cert.with_health(Some(pre), Some(post));
     }
+    if let Some(fw) = firmware {
+        // with_firmware_attestation derives the firmware-drift defense
+        // warnings into the signed payload (Vector 4).
+        cert = cert.with_firmware_attestation(fw);
+    }
     cert.sign(keypair)?;
 
     let cert_json = serde_json::to_string_pretty(&cert)?;
@@ -444,9 +708,84 @@ fn assemble_purge_certificate(
     let cert_path = args.out_dir.join(format!("{}.cert.json", stem));
     std::fs::write(&cert_path, &cert_json)?;
 
-    // ISO 19005-3 (PDF/A-3) archival copy: certificate + journal embedded
-    // as verifiable attachments (v0.6.0).
+    // ISO 19005-3 (PDF/A-3) archival copy: certificate + journal + the
+    // raw controller forensics embedded as verifiable attachments
+    // (v0.6.0 core; v0.7.0 adds telemetry/devstat snapshots).
     let journal_bytes = std::fs::read(journal_path).unwrap_or_default();
+    let mut visual_fields: Vec<(String, String)> = vec![
+        (
+            "Executed mechanism".to_string(),
+            outcome.executed_mechanism.clone(),
+        ),
+        (
+            "Completion evidence".to_string(),
+            outcome.completion_evidence.clone(),
+        ),
+        (
+            "Controller device".to_string(),
+            outcome.controller_device.clone(),
+        ),
+        (
+            "Sanitize progress".to_string(),
+            format!("{} permille", outcome.progress_permille),
+        ),
+        (
+            "Read-back expectation".to_string(),
+            outcome.readback_expectation.clone(),
+        ),
+        ("Plan hash".to_string(), cert.plan_hash.clone()),
+        (
+            "Operator key".to_string(),
+            cert.operator.key_fingerprint_blake3.clone(),
+        ),
+        (
+            "Journal chain head".to_string(),
+            journal.current_chain_head(),
+        ),
+    ];
+    if let Some(fw) = cert.firmware_attestation.as_ref() {
+        visual_fields.extend(fw.field_lines());
+    }
+    if let Some(ref report) = outcome.thermal_report {
+        visual_fields.push(("Thermal monitor".to_string(), report.clone()));
+    }
+    let mut attachments_storage: Vec<dc_report::ArchiveAttachment> = vec![
+        dc_report::ArchiveAttachment {
+            filename: "certificate.json",
+            bytes: cert_json.as_bytes(),
+            mime: "application/json",
+            relationship: "Source",
+        },
+        dc_report::ArchiveAttachment {
+            filename: "journal.dcj",
+            bytes: &journal_bytes,
+            mime: "application/octet-stream",
+            relationship: "Supplement",
+        },
+    ];
+    for (name, bytes, mime) in extra_attachments {
+        attachments_storage.push(dc_report::ArchiveAttachment {
+            filename: name,
+            bytes,
+            mime,
+            relationship: "Supplement",
+        });
+    }
+    // Cold-bus remediation evidence (v0.7.0, Vector 2): the sysfs reset
+    // ladder steps ride as a signed-context attachment.
+    let coldbus_json: Vec<u8> = if outcome.coldbus_steps.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::to_vec(&outcome.coldbus_steps).unwrap_or_default()
+    };
+    if !coldbus_json.is_empty() {
+        attachments_storage.push(dc_report::ArchiveAttachment {
+            filename: "coldbus-reset-steps.json",
+            bytes: &coldbus_json,
+            mime: "application/json",
+            relationship: "Supplement",
+        });
+    }
     let pdf_bytes = dc_report::render_sanitization_archive(
         if cert.verification.mismatch_count > 0 {
             "Sanitization Report — VERIFICATION FAILED"
@@ -464,53 +803,10 @@ fn assemble_purge_certificate(
         ),
         "Purge",
         cert.verification.mismatch_count == 0,
-        &[
-            (
-                "Executed mechanism".to_string(),
-                outcome.executed_mechanism.clone(),
-            ),
-            (
-                "Completion evidence".to_string(),
-                outcome.completion_evidence.clone(),
-            ),
-            (
-                "Controller device".to_string(),
-                outcome.controller_device.clone(),
-            ),
-            (
-                "Sanitize progress".to_string(),
-                format!("{} permille", outcome.progress_permille),
-            ),
-            (
-                "Read-back expectation".to_string(),
-                outcome.readback_expectation.clone(),
-            ),
-            ("Plan hash".to_string(), cert.plan_hash.clone()),
-            (
-                "Operator key".to_string(),
-                cert.operator.key_fingerprint_blake3.clone(),
-            ),
-            (
-                "Journal chain head".to_string(),
-                journal.current_chain_head(),
-            ),
-        ],
+        &visual_fields,
         &outcome.operator_notes,
         &finished_time_str,
-        &[
-            dc_report::ArchiveAttachment {
-                filename: "certificate.json",
-                bytes: cert_json.as_bytes(),
-                mime: "application/json",
-                relationship: "Source",
-            },
-            dc_report::ArchiveAttachment {
-                filename: "journal.dcj",
-                bytes: &journal_bytes,
-                mime: "application/octet-stream",
-                relationship: "Supplement",
-            },
-        ],
+        &attachments_storage,
     );
     let pdf_path = args.out_dir.join(format!("{}.pdf", stem));
     std::fs::write(&pdf_path, pdf_bytes)?;
@@ -682,6 +978,8 @@ fn run_nvme_purge(
     }
 
     let health_pre = read_health(&mut admin).ok();
+    // Vector 4 pre-forensics: firmware identity + telemetry snapshot.
+    let forensics_pre = TransportForensics::capture_nvme(&mut admin, &id_ctrl).ok();
     let expected_token = confirm_destructive_purge(&args, &identity, &mechanism_label)?;
 
     // Arm + lock the block node (O_EXCL), then journal.
@@ -716,8 +1014,31 @@ fn run_nvme_purge(
         identity.stable.serial.as_deref().unwrap_or(""),
         now_unix(),
     );
+    let no_progress = args.no_progress;
+    let thermal_shared: Option<std::rc::Rc<std::cell::RefCell<PurgeThermalMonitor>>> =
+        if args.no_thermal_guard {
+            None
+        } else {
+            Some(std::rc::Rc::new(std::cell::RefCell::new(
+                PurgeThermalMonitor::new(thermal_limits_from_args(&args), &identity.kernel_name),
+            )))
+        };
+    let sink_thermal = thermal_shared.clone();
     let summary = NvmePurgeClient::new(&mut admin)
         .with_poll_budget(24 * 60 * 4, Duration::from_millis(250)) // up to 24h of polling
+        .with_progress_sink(move |permille| {
+            if !no_progress {
+                eprint!(
+                    "\r    sanitize progress: {:>3}.{}%   ",
+                    permille / 10,
+                    permille % 10
+                );
+            }
+            // Thermal pacing between Log 0x81 polls (Vector 2).
+            if let Some(monitor) = sink_thermal.as_ref() {
+                monitor.borrow_mut().on_poll();
+            }
+        })
         .execute_purge_ladder(&permit, primary)
         .map_err(|reason| {
             let _ = journal.append(&dc_core::JournalRecord::Failed {
@@ -737,6 +1058,8 @@ fn run_nvme_purge(
         })?;
 
     let health_post = read_health(&mut admin).ok();
+    // Vector 4 post-forensics: firmware identity + telemetry generation.
+    let forensics_post = TransportForensics::capture_nvme(&mut admin, &id_ctrl).ok();
     let readback_expectation = match summary.executed_mechanism {
         PurgeMechanism::FormatNvmCryptoErase => "Zeros",
         _ => "VendorRandom",
@@ -810,7 +1133,37 @@ fn run_nvme_purge(
         controller_device: ctrl_path.to_string_lossy().to_string(),
         operator_notes: Vec::new(),
         duration_ms: started.elapsed().as_millis() as u64,
+        coldbus_steps: Vec::new(),
+        thermal_report: thermal_shared.as_ref().and_then(|t| t.borrow().report()),
     };
+
+    // Thermal critical: refuse certification (media health over
+    // completion, v0.7.0 Vector 2).
+    if let Some(monitor) = thermal_shared.as_ref() {
+        let monitor = monitor.borrow();
+        if monitor.critical.is_some() {
+            let _ = journal.append(&dc_core::JournalRecord::Failed {
+                code: "THERMAL_CRITICAL".to_string(),
+                errno: None,
+                op: Some("thermal-monitor".to_string()),
+                at_lba: None,
+                detail: format!(
+                    "drive temperature reached the critical limit (max {} C); the purge \
+                     may have completed but certification is refused",
+                    monitor.max_temperature_c.unwrap_or(0)
+                ),
+            });
+            return Err(DcError::Guardian(dc_core::GuardianRefusal {
+                code: "THERMAL_CRITICAL",
+                detail: format!(
+                    "drive temperature reached the critical limit (max observed {} C) — \
+                     refusing to certify the purge",
+                    monitor.max_temperature_c.unwrap_or(0)
+                ),
+                hint: "let the drive cool, verify media state, and re-run the purge".to_string(),
+            }));
+        }
+    }
 
     let health = health_pre
         .as_ref()
@@ -821,6 +1174,35 @@ fn run_nvme_purge(
     } else {
         "Controller-attested (sanitize-status-log)"
     };
+
+    // Vector 4: firmware attestation evidence + raw telemetry PDF
+    // attachments (pre/post snapshots).
+    let telemetry_pre_raw = forensics_pre
+        .as_ref()
+        .map(|f| f.telemetry_raw.clone())
+        .unwrap_or_default();
+    let telemetry_post_raw = forensics_post
+        .as_ref()
+        .map(|f| f.telemetry_raw.clone())
+        .unwrap_or_default();
+    let firmware = forensics_pre
+        .zip(forensics_post)
+        .map(|(pre, post)| TransportForensics::into_evidence(pre, post));
+    let mut extra_attachments: Vec<(String, Vec<u8>, &'static str)> = Vec::new();
+    if !telemetry_pre_raw.is_empty() {
+        extra_attachments.push((
+            "nvme-telemetry-pre.bin".to_string(),
+            telemetry_pre_raw,
+            "application/octet-stream",
+        ));
+    }
+    if !telemetry_post_raw.is_empty() {
+        extra_attachments.push((
+            "nvme-telemetry-post.bin".to_string(),
+            telemetry_post_raw,
+            "application/octet-stream",
+        ));
+    }
 
     assemble_purge_certificate(
         &args,
@@ -835,6 +1217,8 @@ fn run_nvme_purge(
         Vec::new(),
         health,
         verify_note,
+        firmware,
+        &extra_attachments,
     )?;
 
     if let Some(a) = audit {
@@ -910,7 +1294,7 @@ fn run_ata_purge(
     identity: DeviceIdentity,
     audit: &mut Option<AuditLogger>,
 ) -> Result<(), DcError> {
-    let mut sat = LinuxSatPurge::open(&args.target).map_err(|e| {
+    let transport_refusal = |e: String| {
         DcError::Guardian(dc_core::GuardianRefusal {
             code: "PURGE_TRANSPORT_UNAVAILABLE",
             detail: format!(
@@ -922,15 +1306,88 @@ fn run_ata_purge(
                    bridges on USB docks are supported; /dev/sg* is refused)"
                 .to_string(),
         })
-    })?;
+    };
+    let mut sat = LinuxSatPurge::open(&args.target).map_err(transport_refusal)?;
 
-    let identify = AtaPurgeClient::new(&mut sat).identify().map_err(|e| {
+    let mut identify = AtaPurgeClient::new(&mut sat).identify().map_err(|e| {
         DcError::Guardian(dc_core::GuardianRefusal {
             code: "PURGE_IDENTIFY_FAILED",
             detail: format!("SAT IDENTIFY DEVICE failed: {}", e),
             hint: "the drive or bridge did not answer the identify command".to_string(),
         })
     })?;
+
+    // ------------------------------------------------------------------
+    // COLD-BUS FREEZE REMEDIATION (v0.7.0, Vector 2): a frozen drive
+    // gets the sysfs reset ladder instead of the manual power-cycle
+    // advisory when --cold-unfreeze is set (lights-out racks).
+    // ------------------------------------------------------------------
+    let mut coldbus_steps: Vec<ColdBusStepRecord> = Vec::new();
+    if identify.security.frozen && args.cold_unfreeze {
+        if !args.no_progress {
+            eprintln!(
+                "[COLDBUS] Freeze lock detected and --cold-unfreeze set: walking the \
+                 LUN-delete + host-rescan / ATA-port runtime-PM ladder..."
+            );
+        }
+        // The LUN delete removes the node: drop the SG_IO fd first.
+        let block_name = identity.kernel_name.clone();
+        drop(sat);
+        let target_path = args.target.clone();
+        let recheck = || {
+            // Bounded wait for the (possibly renumbered) node: we insist
+            // the SAME node re-appears; a renumbered drive is disclosed,
+            // not silently chased.
+            for _ in 0..20 {
+                if let Ok(mut probe) = LinuxSatPurge::open(&target_path)
+                    && let Ok(id) = AtaPurgeClient::new(&mut probe).identify()
+                {
+                    return Ok(id.security.frozen);
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            Err(format!(
+                "device {} did not re-appear with a readable IDENTIFY after the cold-bus \
+                 step (it may have renumbered — run `dc list` and re-target)",
+                target_path.display()
+            ))
+        };
+        let outcome = dc_ata::attempt_cold_unfreeze(&dc_ata::RealSysfs, &block_name, recheck);
+        match outcome {
+            ColdBusOutcome::Cleared { steps } => {
+                coldbus_steps = steps;
+                sat = LinuxSatPurge::open(&args.target).map_err(transport_refusal)?;
+                identify = AtaPurgeClient::new(&mut sat).identify().map_err(|e| {
+                    DcError::Guardian(dc_core::GuardianRefusal {
+                        code: "PURGE_IDENTIFY_FAILED",
+                        detail: format!("post-coldbus SAT IDENTIFY DEVICE failed: {}", e),
+                        hint: "the cold-bus reset dropped the link; re-run the purge".to_string(),
+                    })
+                })?;
+                if !args.no_progress {
+                    println!(
+                        "[COLDBUS] Freeze lock cleared after {} step(s); ladder proceeding.",
+                        coldbus_steps.len()
+                    );
+                }
+            }
+            ColdBusOutcome::StillFrozen { steps, advisory } => {
+                coldbus_steps = steps;
+                return Err(DcError::Guardian(dc_core::GuardianRefusal {
+                    code: "PURGE_FROZEN",
+                    detail: format!(
+                        "cold-bus ladder exhausted after {} step(s): the freeze lock \
+                         survived. {}",
+                        coldbus_steps.len(),
+                        advisory
+                    ),
+                    hint: "hot-plug the drive or attach it to a controller that does not \
+                           assert freeze-lock at power-on, then retry"
+                        .to_string(),
+                }));
+            }
+        }
+    }
 
     let caps = dc_core::AttestedCapabilities {
         supports_sanitize_crypto: identify.sanitize.crypto_scramble_supported,
@@ -988,11 +1445,20 @@ fn run_ata_purge(
             ),
         );
         if identify.security.frozen {
-            println!(
-                "[!] FREEZE LOCK active: the purge will refuse at intake. Power-cycle \
-                   the host without firmware re-freeze (hot-plug or a non-freezing \
-                   controller) and retry."
-            );
+            if args.cold_unfreeze {
+                println!(
+                    "[!] FREEZE LOCK active: with --cold-unfreeze the run will walk the \
+                       cold-bus sysfs reset ladder (LUN delete + host rescan, ATA-port \
+                       runtime-PM cycle) before arming."
+                );
+            } else {
+                println!(
+                    "[!] FREEZE LOCK active: the purge will refuse at intake. Power-cycle \
+                       the host without firmware re-freeze (hot-plug or a non-freezing \
+                       controller) and retry — or re-run with --cold-unfreeze for the \
+                       autonomous sysfs reset ladder."
+                );
+            }
         }
         return Ok(());
     }
@@ -1024,6 +1490,10 @@ fn run_ata_purge(
             .unwrap_or_else(|| "auto".to_string()),
     )?;
 
+    // Vector 4 pre-forensics: IDENTIFY firmware string + Device
+    // Statistics wear snapshots (best-effort; absence is disclosed).
+    let forensics_pre = TransportForensics::capture_ata(&mut sat).ok();
+
     if !args.no_progress {
         println!(
             "[>] Executing the ATA purge ladder on {} (sanitize progress is \
@@ -1039,6 +1509,15 @@ fn run_ata_purge(
     );
 
     let no_progress = args.no_progress;
+    let thermal_shared: Option<std::rc::Rc<std::cell::RefCell<PurgeThermalMonitor>>> =
+        if args.no_thermal_guard {
+            None
+        } else {
+            Some(std::rc::Rc::new(std::cell::RefCell::new(
+                PurgeThermalMonitor::new(thermal_limits_from_args(&args), &identity.kernel_name),
+            )))
+        };
+    let sink_thermal = thermal_shared.clone();
     let summary = {
         let client = AtaPurgeClient::new(&mut sat).with_progress_sink(move |permille| {
             if !no_progress {
@@ -1047,6 +1526,10 @@ fn run_ata_purge(
                     permille / 10,
                     permille % 10
                 );
+            }
+            // Thermal pacing between Sanitize Status polls (Vector 2).
+            if let Some(monitor) = sink_thermal.as_ref() {
+                monitor.borrow_mut().on_poll();
             }
         });
         client.execute_purge_ladder(&permit, requested)
@@ -1139,10 +1622,76 @@ fn run_ata_purge(
                     summary.geometry.stages.len()
                 ));
             }
+            for step in &coldbus_steps {
+                notes.push(format!(
+                    "Cold-bus step {} executed: {} sysfs write(s) — {}",
+                    step.step,
+                    step.sysfs_writes.len(),
+                    step.outcome
+                ));
+            }
             notes
         },
         duration_ms: started.elapsed().as_millis() as u64,
+        coldbus_steps: coldbus_steps.clone(),
+        thermal_report: thermal_shared.as_ref().and_then(|t| t.borrow().report()),
     };
+
+    // Thermal critical: refuse certification (v0.7.0, Vector 2).
+    if let Some(monitor) = thermal_shared.as_ref() {
+        let monitor = monitor.borrow();
+        if monitor.critical.is_some() {
+            let _ = journal.append(&dc_core::JournalRecord::Failed {
+                code: "THERMAL_CRITICAL".to_string(),
+                errno: None,
+                op: Some("thermal-monitor".to_string()),
+                at_lba: None,
+                detail: format!(
+                    "drive temperature reached the critical limit (max {} C); the purge \
+                     may have completed but certification is refused",
+                    monitor.max_temperature_c.unwrap_or(0)
+                ),
+            });
+            return Err(DcError::Guardian(dc_core::GuardianRefusal {
+                code: "THERMAL_CRITICAL",
+                detail: format!(
+                    "drive temperature reached the critical limit (max observed {} C) — \
+                     refusing to certify the purge",
+                    monitor.max_temperature_c.unwrap_or(0)
+                ),
+                hint: "let the drive cool, verify media state, and re-run the purge".to_string(),
+            }));
+        }
+    }
+
+    // Vector 4 post-forensics + evidence assembly.
+    let forensics_post = TransportForensics::capture_ata(&mut sat).ok();
+    let devstat_pre_raw = forensics_pre
+        .as_ref()
+        .map(|f| f.devstat_raw.clone())
+        .unwrap_or_default();
+    let devstat_post_raw = forensics_post
+        .as_ref()
+        .map(|f| f.devstat_raw.clone())
+        .unwrap_or_default();
+    let firmware = forensics_pre
+        .zip(forensics_post)
+        .map(|(pre, post)| TransportForensics::into_evidence(pre, post));
+    let mut extra_attachments: Vec<(String, Vec<u8>, &'static str)> = Vec::new();
+    if !devstat_pre_raw.is_empty() {
+        extra_attachments.push((
+            "ata-devstat-pre.bin".to_string(),
+            devstat_pre_raw,
+            "application/octet-stream",
+        ));
+    }
+    if !devstat_post_raw.is_empty() {
+        extra_attachments.push((
+            "ata-devstat-post.bin".to_string(),
+            devstat_post_raw,
+            "application/octet-stream",
+        ));
+    }
 
     assemble_purge_certificate(
         &args,
@@ -1164,6 +1713,8 @@ fn run_ata_purge(
                 "Controller-attested (blocking-erase-return)"
             }
         },
+        firmware,
+        &extra_attachments,
     )?;
 
     if let Some(a) = audit {
@@ -1279,6 +1830,9 @@ fn run_scsi_purge(
             .unwrap_or_else(|| "auto".to_string()),
     )?;
 
+    // Vector 4 pre-forensics: INQUIRY identity (vendor/product/revision).
+    let forensics_pre = TransportForensics::capture_scsi(&mut scsi).ok();
+
     if !args.no_progress {
         println!(
             "[>] Executing the SCSI purge ladder on {} (progress is polled from \
@@ -1298,6 +1852,15 @@ fn run_scsi_purge(
     );
 
     let no_progress = args.no_progress;
+    let thermal_shared: Option<std::rc::Rc<std::cell::RefCell<PurgeThermalMonitor>>> =
+        if args.no_thermal_guard {
+            None
+        } else {
+            Some(std::rc::Rc::new(std::cell::RefCell::new(
+                PurgeThermalMonitor::new(thermal_limits_from_args(&args), &identity.kernel_name),
+            )))
+        };
+    let sink_thermal = thermal_shared.clone();
     let summary = {
         let client = ScsiPurgeClient::new(&mut scsi).with_progress_sink(move |permille| {
             if !no_progress {
@@ -1306,6 +1869,10 @@ fn run_scsi_purge(
                     permille / 10,
                     permille % 10
                 );
+            }
+            // Thermal pacing between sense polls (Vector 2).
+            if let Some(monitor) = sink_thermal.as_ref() {
+                monitor.borrow_mut().on_poll();
             }
         });
         client.execute_purge_ladder(&permit, requested)
@@ -1353,7 +1920,42 @@ fn run_scsi_purge(
         controller_device: args.target.to_string_lossy().to_string(),
         operator_notes: Vec::new(),
         duration_ms: started.elapsed().as_millis() as u64,
+        coldbus_steps: Vec::new(),
+        thermal_report: thermal_shared.as_ref().and_then(|t| t.borrow().report()),
     };
+
+    // Thermal critical: refuse certification (v0.7.0, Vector 2).
+    if let Some(monitor) = thermal_shared.as_ref() {
+        let monitor = monitor.borrow();
+        if monitor.critical.is_some() {
+            let _ = journal.append(&dc_core::JournalRecord::Failed {
+                code: "THERMAL_CRITICAL".to_string(),
+                errno: None,
+                op: Some("thermal-monitor".to_string()),
+                at_lba: None,
+                detail: format!(
+                    "drive temperature reached the critical limit (max {} C); the purge \
+                     may have completed but certification is refused",
+                    monitor.max_temperature_c.unwrap_or(0)
+                ),
+            });
+            return Err(DcError::Guardian(dc_core::GuardianRefusal {
+                code: "THERMAL_CRITICAL",
+                detail: format!(
+                    "drive temperature reached the critical limit (max observed {} C) — \
+                     refusing to certify the purge",
+                    monitor.max_temperature_c.unwrap_or(0)
+                ),
+                hint: "let the drive cool, verify media state, and re-run the purge".to_string(),
+            }));
+        }
+    }
+
+    // Vector 4 post-forensics: re-run INQUIRY for the firmware identity.
+    let forensics_post = TransportForensics::capture_scsi(&mut scsi).ok();
+    let firmware = forensics_pre
+        .zip(forensics_post)
+        .map(|(pre, post)| TransportForensics::into_evidence(pre, post));
 
     assemble_purge_certificate(
         &args,
@@ -1375,6 +1977,8 @@ fn run_scsi_purge(
                 "Controller-attested (blocking-format-return)"
             }
         },
+        firmware,
+        &[],
     )?;
 
     if let Some(a) = audit {
