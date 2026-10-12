@@ -1061,9 +1061,54 @@ All exit codes are deterministic, non-overlapping constants:
 2. **Verification Ceilings on Lying Bridges:** If a proprietary USB bridge consistently conceals physical sectors across all ATA/SCSI commands, `dc` discloses the testing ceiling performed and residual risks.
 3. **DM-SMR Timing Suspicion:** Drive-Managed SMR is flagged as `suspected-managed-smr` based on statistical write-collapse ratios, never fraudulently claimed as absolute hardware detection.
 4. **Hardware-Protected RPMB:** eMMC/UFS Replay Protected Memory Blocks are formally classified as `key-protected-inaccessible`, never laundered as erased.
-5. **Two-Person Integrity Scope:** Cryptographic keys prove software origin; institutional policies prove human custody.
+5. **Two-Person Integrity Scope:** Cryptographic keys prove software origin; institutional policies prove human custody. Since v0.7.0, PIV/CAC hardware-token custody proves the signature was computed by a non-exportable secure-element key with the PIN verified in-session — but "hardware" is only fully provable against a CA-anchored certificate chain, which stays outside the embedded-evidence model; an adversary holding the physical token AND the PIN can always re-sign.
 
 ---
+
+## 22b. v0.7.0 Deepening Vectors (Hardware Custody, Cold-Bus, Appliance, Forensics)
+
+### 22b.1 Hardware Token Custody (PIV/CAC over raw usbfs CCID)
+The 2PI gate no longer accepts a self-attested `is_hardware_token` boolean.
+Hardware custody requires a `HardwareCustodyAttestation`: a PIV applet
+session (SP 800-73-4) over the USB CCID bulk protocol (linux/usbdevice_fs.h
+ioctls — no PKCS#11 shared library, no supply-chain door), where the card
+verified the officer PIN in-session and computed the approval signature in
+slot 9C (Ed25519, alg 0xE0 — YubiKey 5.2.3+ — where the officer key IS the
+token key; or ECDSA P-256, alg 0x11 — CAC — as a custody co-signature over
+`DC-2PI1-HW-CUSTODY || officer_pubkey || plan_hash`). Verification binds the
+message hash, the disclosed slot key, and the APDU transcript; the honest
+trust boundary (a root adversary with the token AND the PIN can re-sign) is
+disclosed rather than hidden — that envelope is inherent to every hardware
+wallet/HSM design.
+
+### 22b.2 Cold-Bus Freeze Remediation & Thermal Stewardship
+`--cold-unfreeze` walks the two kernel-sanctioned remediation steps — SCSI
+LUN delete + host rescan (libata COMRESET of the link) and the ATA-port
+runtime-PM cycle (`/sys/class/ata_port/ataN/power/control` auto → suspended
+→ on) — with a fresh IDENTIFY re-probe after each; a controller that keeps
+the lock gets the manual power-cycle advisory, never a fabricated success.
+The thermal governor (55 °C adaptive pacing / 70 °C critical abort) reads
+SMART 194/190, NVMe Health composite temperature, SCSI LOG SENSE 0x0D, and
+the kernel hwmon view for the overwrite engines (zero fd contention).
+
+### 22b.3 The RAM-Resident Appliance (Real PID-1)
+`dc boot init` performs the actual PID-1 duties: mount(2) of
+proc/sysfs/devtmpfs/devpts/efivarfs (idempotent), hardware entropy harvest
+(RDRAND//dev/hwrng) credited via RNDADDENTROPY — starvation is a hard
+refusal — and the SIGCHLD zombie reaper. `scripts/build-appliance.sh` packs
+the static musl `dc` (the entire userspace) into a deterministic cpio newc
+initramfs whose constituents manifest (kernel/binary/archive BLAKE3) is
+re-verified at boot; the whole OS runs from RAM, leaving every physical
+drive unmounted and sanitizable.
+
+### 22b.4 Deep Controller Forensics
+Certificates embed pre/post firmware identity (NVMe FR+SSVID, ATA IDENTIFY
+words 23-26, SCSI INQUIRY), NVMe Telemetry Host-Initiated (LID 0x07)
+snapshots with reason identifier and generation counters, and ATA Device
+Statistics (GP Log 0x04) wear evidence (Percentage Used Endurance, Logical
+Sectors Written). Firmware drift inside the sanitization window and
+silent-counter anomalies are signed DEFENSE_WARNINGs; raw telemetry bytes
+ride as PDF/A-3 attachments.
 
 ## 23. Engineering Discipline & The Empty Drawer Ledger
 

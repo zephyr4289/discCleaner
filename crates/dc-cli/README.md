@@ -65,6 +65,32 @@ journals, purge refusals never fabricate evidence, and all guards are pinned
 in `r900_regression_guards.rs` + `t14_fleet_parallel_matrix.rs`.
 
 
+## v0.7.0 — hardware custody, cold-bus remediation, appliance boot, forensics
+
+- `dc approve --token <usb-node|auto> [--token2]`: officer signatures computed
+  inside PIV hardware tokens (YubiKey Ed25519 / CAC ECDSA P-256) over raw
+  usbfs CCID + ISO 7816-4; `is_hardware_token` claims without a verifying
+  `HardwareCustodyAttestation` are refused fail-closed
+  (REG-TOKEN-CUSTODY-PROOF).
+- `dc purge --cold-unfreeze`: the lights-out freeze remediation ladder
+  (LUN delete + host rescan, ATA-port runtime-PM cycle) with per-step
+  re-probes and full certificate disclosure (REG-COLDBUS-RESET-LADDER).
+- Thermal stewardship on every sanitization path: SMART 194 / NVMe Health /
+  SCSI LOG SENSE 0x0D / kernel hwmon thermometers feed a governor that
+  paces above 55 C and refuses certification at 70 C
+  (REG-THERMAL-GOVERNOR); `--thermal-throttle-c`, `--thermal-critical-c`,
+  `--no-thermal-guard` on execute and purge.
+- `dc boot init|pack`: the real PID-1 bootstrap (mounts, RNDADDENTROPY
+  credit, zombie reaper) and the pure-Rust cpio appliance builder with
+  constituents attestation (REG-PID1-INIT-SEQUENCE, REG-APPLIANCE-IMAGE);
+  `scripts/build-appliance.sh` assembles the RAM-resident ISO.
+- Firmware attestation: pre/post NVMe Telemetry (0x07), ATA Device
+  Statistics (GP 0x04) wear deltas, SCSI INQUIRY identity; firmware drift
+  and silent-counter disclosures are signed defense warnings, raw logs are
+  PDF/A-3 attachments (REG-FIRMWARE-ATTESTATION).
+- Fixed: `dc approve` clap short-flag collision between `--key`/`--key2`
+  (pre-v0.7.0 debug builds panicked on any `dc approve --help`).
+
 ## v0.6.0 — universal purge dispatch, defense policy gate, G-List audit
 
 - **`dc purge` is bus-universal**: one verb dispatches to the NVMe admin

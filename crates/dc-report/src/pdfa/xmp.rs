@@ -92,7 +92,7 @@ mod tests {
         let x = build_xmp(
             "Certificate of Sanitization",
             "Hardware Purge — SN-1",
-            "diskcleaner dc-report/0.6.0",
+            "diskcleaner dc-report/0.7.0",
             "2026-10-12T07:33:00Z",
             &[("certificate.json", 512, "application/json")],
         );
