@@ -1,0 +1,19 @@
+[package]
+name = "dc-web"
+version = "0.10.0"
+edition = "2024"
+description = "Zero-dependency operator dashboard: embedded HTTP/SSE server, REST control plane and audit-report visualization (v0.10.0)"
+
+[dependencies]
+dc-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Bearer-token generation for the dashboard auth handshake.
+getrandom = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
