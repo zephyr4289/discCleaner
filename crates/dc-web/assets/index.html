@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>discCleaner Ops Center</title>
+<style>
+:root {
+  --bg: #0b0f14; --panel: #121820; --panel2: #0e141b; --line: #1d2833;
+  --text: #c7d3de; --dim: #6b7a89; --accent: #22d3ee; --accent2: #34d399;
+  --warn: #fbbf24; --danger: #f87171; --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; min-height: 100vh; }
+a { color: var(--accent); }
+header { display: flex; align-items: center; gap: 18px; padding: 14px 22px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #10161d, var(--bg)); }
+header h1 { font-size: 16px; letter-spacing: .06em; color: #e8eef4; }
+header h1 .dc { color: var(--accent); }
+.chip { font: 11px/1 var(--mono); padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--dim); background: var(--panel2); white-space: nowrap; }
+.chip b { color: var(--text); font-weight: 600; }
+#authchip.ok { color: var(--accent2); border-color: #14532d; }
+#authchip.bad { color: var(--danger); border-color: #7f1d1d; }
+main { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); gap: 18px; padding: 18px 22px; max-width: 1500px; margin: 0 auto; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .14em; color: var(--dim); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+#bays { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.bay { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+.bay .node { font: 600 15px var(--mono); color: #e8eef4; }
+.bay .meta { font: 11px var(--mono); color: var(--dim); word-break: break-all; }
+.bay .size { color: var(--text); }
+.stat { font: 10px var(--mono); padding: 3px 7px; border-radius: 4px; align-self: flex-start; }
+.stat.idle { background: #0c2a1e; color: var(--accent2); }
+.stat.sanitizing { background: #0c2434; color: var(--accent); animation: pulse 1.2s infinite; }
+.stat.locked, .stat.protected { background: #341210; color: var(--danger); }
+.stat.error { background: #3a2405; color: var(--warn); }
+@keyframes pulse { 50% { opacity: .55; } }
+.bay button { margin-top: 8px; }
+button { font: 600 12px/1 inherit; padding: 9px 14px; border-radius: 6px; border: 1px solid #233; background: #182430; color: var(--text); cursor: pointer; }
+button:hover { border-color: var(--accent); color: var(--accent); }
+button.primary { background: #0c3a4a; border-color: #155e75; color: #a5f3fc; }
+button.danger { background: #3f1210; border-color: #7f1d1d; color: #fecaca; }
+button:disabled { opacity: .4; cursor: not-allowed; }
+#rightcol { display: flex; flex-direction: column; gap: 18px; }
+.job { border: 1px solid var(--line); background: var(--panel2); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.job .row1 { display: flex; justify-content: space-between; font: 12px var(--mono); }
+.job .row1 .id { color: var(--dim); }
+.job .dev { color: #e8eef4; font-weight: 600; }
+.bar { height: 8px; background: #0a0e13; border-radius: 4px; overflow: hidden; margin: 8px 0 4px; border: 1px solid var(--line); }
+.bar > div { height: 100%; background: linear-gradient(90deg, #0891b2, #22d3ee); width: 0; transition: width .5s; }
+.job .sub { font: 11px var(--mono); color: var(--dim); display: flex; justify-content: space-between; }
+.job .state { font-weight: 600; }
+.state.completed, .state.Completed { color: var(--accent2); }
+.state.failed, .state.Failed { color: var(--danger); }
+.state.running, .state.Running { color: var(--accent); }
+table { width: 100%; border-collapse: collapse; font: 11.5px var(--mono); }
+th { text-align: left; color: var(--dim); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+td { padding: 5px 6px; border-bottom: 1px solid #141b23; white-space: nowrap; }
+tr:hover td { background: #131c25; }
+.pq { color: var(--accent2); }
+#console { background: #05080b; border: 1px solid var(--line); border-radius: 8px; font: 11px/1.6 var(--mono); color: #8aa3b8; padding: 10px 12px; height: 220px; overflow-y: auto; }
+#console .t { color: #3f5568; margin-right: 6px; }
+#console .warn { color: var(--warn); } #console .err { color: var(--danger); } #console .ok { color: var(--accent2); }
+#grid-lower { grid-column: 1 / -1; }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 22px; width: min(520px, 92vw); }
+dialog::backdrop { background: rgba(2, 6, 10, .8); }
+dialog h3 { font-size: 15px; margin-bottom: 14px; color: #e8eef4; }
+label { display: block; font-size: 11px; color: var(--dim); margin: 12px 0 4px; text-transform: uppercase; letter-spacing: .1em; }
+select, input[type=text] { width: 100%; background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 9px 10px; font: 13px var(--mono); }
+#armhint { font: 11px var(--mono); color: var(--warn); margin-top: 8px; }
+.dlg-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+#certpre { white-space: pre-wrap; font: 11px/1.5 var(--mono); background: #05080b; border: 1px solid var(--line); border-radius: 8px; padding: 12px; max-height: 60vh; overflow: auto; color: #9fb8cc; }
+.empty { color: var(--dim); font: 12px var(--mono); padding: 12px 0; text-align: center; }
+footer { text-align: center; color: #3f5568; font: 11px var(--mono); padding: 20px; }
+@media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dc">dc</span> — discCleaner Ops Center</h1>
+  <span class="chip" id="sysmode">…</span>
+  <span class="chip" id="sysver">…</span>
+  <span class="chip" id="uptime">…</span>
+  <span class="chip" id="locks">…</span>
+  <span class="chip" id="pq">…</span>
+  <span class="chip" id="authchip" class="bad">not authenticated</span>
+</header>
+
+<main>
+  <section>
+    <h2>Drive Bays <span id="devcount" class="chip">0</span></h2>
+    <div id="bays"><div class="empty">scanning…</div></div>
+  </section>
+
+  <div id="rightcol">
+    <section>
+      <h2>Sanitization Jobs <span id="jobcount" class="chip">0</span></h2>
+      <div id="jobs"><div class="empty">no jobs yet</div></div>
+    </section>
+    <section>
+      <h2>Audit Certificates <span id="certcount" class="chip">0</span></h2>
+      <div style="overflow-x:auto"><table id="certs"><thead><tr>
+        <th>created</th><th>device</th><th>profile</th><th>signatures</th><th>cloud</th>
+      </tr></thead><tbody></tbody></table></div>
+    </section>
+  </div>
+
+  <section id="grid-lower">
+    <h2>Live Event Console <span class="chip" id="ssechip">connecting…</span></h2>
+    <div id="console"></div>
+  </section>
+</main>
+
+<footer>discCleaner — forensic-grade storage sanitization · evidence chain: journals → certificates → hybrid signatures</footer>
+
+<dialog id="startDlg">
+  <h3>Sanitize <span id="dlgNode" style="color:var(--accent)"></span></h3>
+  <div id="dlgMeta" style="font:11.5px var(--mono); color:var(--dim); margin-bottom:6px; word-break:break-all"></div>
+  <label for="selProfile">Sanitization profile</label>
+  <select id="selProfile"></select>
+  <label for="fldLabel">Operator label (recorded in the audit stream)</label>
+  <input type="text" id="fldLabel" placeholder="e.g. bay-4 decommission, ticket #991">
+  <label for="fldSerial">Serial confirmation (optional — recommended)</label>
+  <input type="text" id="fldSerial" placeholder="drive serial to confirm">
+  <label for="fldConfirm">Type ERASE to arm</label>
+  <input type="text" id="fldConfirm" placeholder="ERASE" autocomplete="off">
+  <div id="armhint">the job runs the same certified engine as <b>dc execute</b> — journals, Guardian locks and signing included</div>
+  <div class="dlg-actions">
+    <button id="btnCancel" type="button">Cancel</button>
+    <button id="btnArm" class="danger" type="button" disabled>Arm Sanitization</button>
+  </div>
+</dialog>
+
+<dialog id="certDlg">
+  <h3>Certificate <span id="certId" style="color:var(--accent)"></span></h3>
+  <pre id="certpre">…</pre>
+  <div class="dlg-actions">
+    <button id="btnCertCopy" type="button">Copy JSON</button>
+    <button id="btnCertClose" type="button" class="primary">Close</button>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let TOKEN = sessionStorage.getItem("dc-token") || "";
+let state = { devices: [], jobs: [], certs: [] };
+
+// ---------- auth ----------
+function ensureToken(cb) {
+  if (TOKEN) return cb(true);
+  const t = prompt("Operator token\n(pasted once per browser session; printed by `dc serve` on startup):");
+  if (!t) return cb(false);
+  TOKEN = t.trim();
+  // validate immediately
+  api("GET", "/api/v1/system", null, (ok) => {
+    if (ok) { sessionStorage.setItem("dc-token", TOKEN); }
+    cb(ok);
+  });
+}
+
+function api(method, path, body, cb) {
+  const opts = { method, headers: { "Authorization": "Bearer " + TOKEN } };
+  if (body !== null) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+  fetch(path, opts)
+    .then((r) => r.status === 401 && !path.startsWith("/healthz") ? Promise.reject("unauthorized") : r.json())
+    .then((j) => cb(true, j))
+    .catch((e) => { if (e === "unauthorized") { TOKEN = ""; sessionStorage.removeItem("dc-token"); } cb(false, null); });
+}
+
+// ---------- rendering ----------
+function fmtSize(n) {
+  if (!n && n !== 0) return "?";
+  const u = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + " " + u[i];
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+function renderSystem(sys) {
+  $("sysmode").innerHTML = "mode <b>" + esc(sys.mode) + "</b>";
+  $("sysver").innerHTML = esc(sys.version);
+  const h = Math.floor(sys.uptime_secs / 3600), m = Math.floor((sys.uptime_secs % 3600) / 60);
+  $("uptime").innerHTML = "up <b>" + h + "h " + m + "m</b>";
+  $("locks").innerHTML = "guardian locks <b>" + sys.guardian_locks_active + "</b>";
+  $("pq").innerHTML = sys.post_quantum_ready
+    ? '<span class="pq">ML-DSA-44 hybrid signing ready</span>'
+    : "classical signatures only";
+}
+
+function renderDevices() {
+  $("devcount").textContent = state.devices.length;
+  const el = $("bays");
+  if (!state.devices.length) { el.innerHTML = '<div class="empty">no block devices visible</div>'; return; }
+  el.innerHTML = state.devices.map((d) => {
+    const busy = d.status && d.status.kind === "sanitizing";
+    const cls = d.protected ? "protected" : (d.status ? d.status.kind : "idle");
+    const label = d.protected ? ("PROTECTED — " + (d.protection_reason || "guardian hold"))
+      : (d.status ? d.status.kind + (busy ? " · " + d.status.job_id.slice(0, 8) : "") : "idle");
+    return '<div class="bay">'
+      + '<div class="node">' + esc(d.node) + ' <span class="stat ' + cls + '">' + esc(label) + '</span></div>'
+      + '<div class="meta size">' + fmtSize(d.capacity_bytes) + " · " + esc(d.transport) + (d.model ? " · " + esc(d.model) : "") + "</div>"
+      + '<div class="meta">serial: ' + esc(d.serial || "unknown") + "</div>"
+      + '<div class="meta">' + esc(d.dev_path) + "</div>"
+      + (busy || d.protected
+          ? '<button disabled>' + (busy ? "sanitizing…" : "locked") + "</button>"
+          : '<button class="primary" onclick="uiStart(\'' + esc(d.id) + '\')">Sanitize…</button>')
+      + "</div>";
+  }).join("");
+}
+
+function renderJobs() {
+  $("jobcount").textContent = state.jobs.length;
+  const el = $("jobs");
+  if (!state.jobs.length) { el.innerHTML = '<div class="empty">no jobs yet</div>'; return; }
+  el.innerHTML = state.jobs.map((j) => {
+    const pct = j.progress_pct == null ? (j.state.kind === "completed" ? 100 : 0) : j.progress_pct;
+    const st = j.state.kind;
+    const sub = [];
+    if (j.current_pass != null) sub.push("pass " + j.current_pass + "/" + (j.total_passes || "?"));
+    if (j.throughput_mib_s != null) sub.push(j.throughput_mib_s.toFixed(0) + " MiB/s");
+    if (j.certificate) sub.push('<a href="#" onclick="uiCert(\'' + esc(j.certificate) + '\');return false">' + esc(j.certificate.slice(0, 14)) + "…</a>");
+    if (j.error) sub.push('<span class="err">' + esc(j.error) + "</span>");
+    return '<div class="job"><div class="row1">'
+      + '<span class="dev">' + esc(j.dev_path) + '<span class="id"> · ' + esc(j.id.slice(0, 8)) + "</span></span>"
+      + '<span class="state ' + st + '">' + st + "</span></div>"
+      + '<div class="bar"><div style="width:' + pct + '%"></div></div>'
+      + '<div class="sub"><span>' + esc(j.profile) + "</span><span>" + sub.join(" · ") + "</span></div>"
+      + ((st === "running" || st === "queued")
+          ? '<button style="margin-top:8px" onclick="uiCancel(\'' + esc(j.id) + '\')">Cancel</button>' : "")
+      + "</div>";
+  }).join("");
+}
+
+function renderCerts() {
+  $("certcount").textContent = state.certs.length;
+  const tb = $("certs").querySelector("tbody");
+  tb.innerHTML = state.certs.map((c) => "<tr onclick=\"uiCert('" + esc(c.id) + '\')" style="cursor:pointer">'
+    + "<td>" + esc((c.created_utc || "").replace("T", " ").slice(5, 19)) + "</td>"
+    + "<td>" + esc(c.device_serial || c.dev_path) + "</td>"
+    + "<td>" + esc(c.profile) + "</td>"
+    + "<td>" + c.signature_algs.map((a) => a === "ML-DSA-44" ? '<span class="pq">' + a + "</span>" : esc(a)).join(" + ") + "</td>"
+    + "<td>" + esc(c.cloud_provider || "—") + "</td></tr>").join("");
+}
+
+// ---------- polling + SSE ----------
+function pollAll() {
+  api("GET", "/api/v1/system", null, (ok, sys) => ok && renderSystem(sys));
+  api("GET", "/api/v1/devices", null, (ok, ds) => { if (ok) { state.devices = ds; renderDevices(); } });
+  api("GET", "/api/v1/jobs", null, (ok, js) => { if (ok) { state.jobs = js; renderJobs(); } });
+  api("GET", "/api/v1/certificates", null, (ok, cs) => { if (ok) { state.certs = cs; renderCerts(); } });
+}
+
+function connectSSE() {
+  if (!TOKEN) { setTimeout(connectSSE, 2000); return; }
+  const es = new EventSource("/api/v1/events?token=" + encodeURIComponent(TOKEN));
+  es.onopen = () => { $("ssechip").textContent = "live"; $("ssechip").style.color = "#34d399"; };
+  es.onerror = () => { $("ssechip").textContent = "reconnecting…"; $("ssechip").style.color = "#fbbf24"; };
+  const push = (ev, cls) => { const c = $("console"); const d = new Date().toISOString().slice(11, 19);
+    c.insertAdjacentHTML("beforeend", '<div><span class="t">' + d + "</span>" + ev + "</div>");
+    while (c.childNodes.length > 400) c.removeChild(c.firstChild); c.scrollTop = c.scrollHeight; };
+  for (const name of ["job.started", "job.progress", "job.completed", "job.failed", "job.cancelled", "device.updated", "log"]) {
+    es.addEventListener(name, (e) => {
+      let msg = e.data;
+      try { const j = JSON.parse(e.data); msg = j.message || e.data; } catch (_) {}
+      push('<span class="' + (name.endsWith("failed") ? "err" : name.endsWith("completed") ? "ok" : "") + '">[' + name + "]</span> " + esc(msg), name);
+      if (name.startsWith("job.") || name === "device.updated") pollAll();
+    });
+  }
+}
+
+// ---------- job start dialog ----------
+function uiStart(devId) {
+  const d = state.devices.find((x) => x.id === devId);
+  if (!d) return;
+  $("dlgNode").textContent = d.node;
+  $("dlgMeta").textContent = (d.model || "unknown model") + " · serial " + (d.serial || "unknown") + " · " + fmtSize(d.capacity_bytes);
+  $("selProfile").innerHTML = d.supported_profiles.map((p) => '<option value="' + esc(p) + '">' + esc(p) + "</option>").join("");
+  $("fldLabel").value = ""; $("fldSerial").value = (d.serial || ""); $("fldConfirm").value = "";
+  armCheck();
+  $("startDlg").showModal();
+}
+function armCheck() { $("btnArm").disabled = $("fldConfirm").value !== "ERASE"; }
+$("fldConfirm").addEventListener("input", armCheck);
+$("btnCancel").onclick = () => $("startDlg").close();
+$("btnArm").onclick = () => {
+  const devId = $("dlgNode").textContent;
+  const d = state.devices.find((x) => x.node === devId);
+  const body = {
+    device: devId,
+    profile: $("selProfile").value,
+    label: $("fldLabel").value || null,
+    serial_confirm: $("fldSerial").value || null,
+    confirm: "ERASE",
+  };
+  api("POST", "/api/v1/jobs", body, (ok, j) => {
+    if (!ok || j && j.error) { alert("job refused: " + (j && j.error ? j.error.message : "unknown")); return; }
+    $("startDlg").close(); pollAll();
+  });
+};
+function uiCancel(jobId) {
+  if (!confirm("Cancel job " + jobId.slice(0, 8) + "?")) return;
+  api("POST", "/api/v1/jobs/" + encodeURIComponent(jobId) + "/cancel", {}, () => pollAll());
+}
+
+// ---------- certificate dialog ----------
+function uiCert(id) {
+  api("GET", "/api/v1/certificates/" + encodeURIComponent(id), null, (ok, j) => {
+    if (!ok || !j) return;
+    $("certId").textContent = id.slice(0, 16);
+    $("certpre").textContent = JSON.stringify(j.json, null, 2);
+    $("certDlg").showModal();
+  });
+}
+$("btnCertClose").onclick = () => $("certDlg").close();
+$("btnCertCopy").onclick = () => navigator.clipboard && navigator.clipboard.writeText($("certpre").textContent);
+
+// ---------- boot ----------
+ensureToken((ok) => {
+  const chip = $("authchip");
+  if (ok) { chip.textContent = "authenticated"; chip.className = "chip ok"; }
+  else { chip.textContent = "not authenticated"; chip.className = "chip bad"; }
+  pollAll(); connectSSE();
+  setInterval(pollAll, 5000);
+});
+window.uiStart = uiStart; window.uiCancel = uiCancel; window.uiCert = uiCert;
+</script>
+</body>
+</html>

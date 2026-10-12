@@ -977,7 +977,7 @@ fn assemble_purge_certificate(
     if let Some(fabric) = fabric_evidence {
         cert = cert.with_fabric_session(fabric);
     }
-    cert.sign(keypair)?;
+    crate::hybridsign::sign_certificate(&mut cert, keypair, args.key.as_deref())?;
 
     let cert_json = serde_json::to_string_pretty(&cert)?;
     let stem = format!(

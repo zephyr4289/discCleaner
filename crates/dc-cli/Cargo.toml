@@ -1,10 +1,12 @@
 [package]
 name = "dc-cli"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 
 [features]
 default = []
+# v0.10.0: production TLS transport for `dc cloud` AWS operations.
+cloud-tls = ["dc-cloud/cloud-tls"]
 # Fault-injection hooks (DC_CRASH_AT / DC_SIGNAL_AT) for release-profile
 # test rigs; debug builds enable them automatically via debug_assertions.
 fault-injection = ["dc-core/fault-injection", "dc-io/fault-injection"]
@@ -36,6 +38,9 @@ dc-tpm = { workspace = true }
 dc-vault = { workspace = true }
 dc-photon = { workspace = true }
 dc-iscsi = { workspace = true }
+dc-pq = { workspace = true }
+dc-web = { workspace = true }
+dc-cloud = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
 tracing = { workspace = true }
