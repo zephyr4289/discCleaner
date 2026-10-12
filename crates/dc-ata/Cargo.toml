@@ -1,6 +1,6 @@
 [package]
 name = "dc-ata"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "Native Linux ATA & SAT purge executor and no-harm FSM for diskcleaner"
 

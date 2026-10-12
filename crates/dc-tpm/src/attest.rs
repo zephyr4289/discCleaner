@@ -398,11 +398,17 @@ pub fn verify_quote(bundle: &QuoteBundle, attest: &QuoteAttestation) -> Result<b
         .map_err(|e| TpmError::Verification(format!("sig s hex: {e}")))?;
     let mut der = Vec::with_capacity(72);
     for part in [&r, &s] {
-        let lead = if part.first().map(|b| b & 0x80 != 0).unwrap_or(false) {
-            1
-        } else {
-            0
-        };
+        // v0.9.0 fix (found by the proptest matrix): DER INTEGERs must be
+        // MINIMAL — a leading zero byte is legal only when the next byte
+        // has its high bit set. TPM2B components are fixed-width 32 bytes
+        // (leading zeros whenever r or s < 2^248, ~0.8% of signatures),
+        // which produced non-minimal DER that `Signature::from_der`
+        // rejects — genuine quotes failed verification ~1 in 256 runs.
+        let mut part = part.as_slice();
+        while part.len() > 1 && part[0] == 0 {
+            part = &part[1..];
+        }
+        let lead = usize::from(part.first().map(|b| b & 0x80 != 0).unwrap_or(false));
         der.push(0x02);
         der.push((part.len() + lead) as u8);
         if lead == 1 {
@@ -427,12 +433,75 @@ pub fn verify_quote(bundle: &QuoteBundle, attest: &QuoteAttestation) -> Result<b
 
 /// Re-verify a persisted bundle offline: parse the archived quote response
 /// and run the full verification ladder against the stored AIK key.
+///
+/// SECURITY (v0.9.0, Phase 2): the ECDSA signature EMBEDDED in the archived
+/// response is now verified, and required to be bit-identical to the
+/// archived `signature_r/s` fields. Previously the ladder verified only the
+/// archived components, so mutations of the response's trailing signature
+/// region were ignored (found by the proptest non-malleability matrix —
+/// a doctored response signature could never again ride on the archived
+/// copy). Any single flipped byte in the response now fails verification
+/// or parsing.
 pub fn verify_bundle(bundle: &QuoteBundle) -> Result<bool, TpmError> {
     let response = hex::decode(&bundle.quote_response_hex)
         .map_err(|e| TpmError::Verification(format!("quote response hex: {e}")))?;
+    // v0.9.0: the header's declared size must equal the archived length —
+    // a doctored size word (or a truncated/spliced response) is refused
+    // before any structure is parsed.
+    if response.len() < 10 {
+        return Err(TpmError::Verification(
+            "archived response shorter than a TPM header".into(),
+        ));
+    }
+    let declared =
+        u32::from_be_bytes([response[2], response[3], response[4], response[5]]) as usize;
+    if declared != response.len() {
+        return Err(TpmError::Verification(format!(
+            "declared response size {declared} != archived length {} — response doctored",
+            response.len()
+        )));
+    }
+    // Sessions-tagged responses carry a parameterSize word between the
+    // header and the parameters; its VALUE is pinned to the parameter
+    // area length (flipping it must not pass silently).
+    let tag = u16::from_be_bytes([response[0], response[1]]);
+    if tag == TPM_ST_SESSIONS_RSP {
+        if response.len() < 14 {
+            return Err(TpmError::Verification(
+                "sessions response truncated before parameterSize".into(),
+            ));
+        }
+        let param_size =
+            u32::from_be_bytes([response[10], response[11], response[12], response[13]]) as usize;
+        if param_size + 14 != response.len() {
+            return Err(TpmError::Verification(format!(
+                "declared parameterSize {param_size} inconsistent with response length {} — \
+                 response doctored",
+                response.len()
+            )));
+        }
+    }
     let params = crate::device::classify_response(&response)?;
     let attest = wire_result(parse_attestation(params))
         .map_err(|e| TpmError::Wire(format!("replay: {e}")))?;
+    // The response layout is `TPMS_ATTEST || TPMT_SIGNATURE`; the
+    // attestation structure reports its own serialized length.
+    let sig_area = &params[attest.raw.len().min(params.len())..];
+    let embedded = wire_result(parse_ecdsa_signature(sig_area))
+        .map_err(|e| TpmError::Wire(format!("replay signature: {e}")))?;
+    if embedded.alg != TPM_ALG_ECDSA || embedded.hash_alg != TPM_ALG_SHA256 {
+        return Err(TpmError::Verification(format!(
+            "embedded signature scheme {:#06x}/{:#06x} is not ECDSA-SHA256 — response doctored",
+            embedded.alg, embedded.hash_alg
+        )));
+    }
+    if hex::encode(&embedded.r) != bundle.signature_r_hex
+        || hex::encode(&embedded.s) != bundle.signature_s_hex
+    {
+        return Err(TpmError::Verification(
+            "embedded quote signature differs from archived components — response doctored".into(),
+        ));
+    }
     verify_quote(bundle, &attest)
 }
 

@@ -1,0 +1,41 @@
+name: Fuzz Smoke
+
+# v0.9.0 Phase 2 — codec robustness CI.
+#
+# Weekly (and on demand): build every cargo-fuzz target with the nightly
+# sanitizer toolchain and run each for a bounded 90-second smoke budget.
+# Findings land in the run log; extend -max_total_time for deep campaigns.
+# The fuzz workspace is deliberately OUTSIDE the main workspace so the
+# stable-toolchain CI never needs libFuzzer.
+
+on:
+  schedule:
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: cargo-fuzz targets
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - tpm_response
+          - photon_frame
+          - photon_lt_decoder
+          - nvme_fabrics
+          - scsi_decoders
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Smoke-run ${{ matrix.target }} (90s)
+        working-directory: fuzz
+        run: |
+          cargo +nightly fuzz run ${{ matrix.target }} \
+            -- -max_total_time=90 -rss_limit_mb=2048

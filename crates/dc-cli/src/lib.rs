@@ -7,6 +7,7 @@ pub mod execute;
 pub mod fabrics;
 pub mod fleet;
 pub mod init;
+pub mod iscsi;
 pub mod key;
 pub mod photon;
 pub mod profiles;
@@ -108,13 +109,21 @@ fn cli_signal_injection(_event: &str) {}
 #[command(
     name = "diskcleaner",
     author = "Forensic Systems Engineering Team",
-    version = "0.8.0",
+    version = "0.9.0",
     about = "Military-grade storage sanitization and forensic verification suite",
     long_about = "Implements NIST SP 800-88 Rev 1, IEEE 2883-2022, and DoD media sanitization standards with deterministic cryptographic verification and tamper-evident audit logs."
 )]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
+
+    /// Non-interactive fleet mode (v0.9.0 Phase 3): stdout carries
+    /// EXACTLY ONE machine-parsable JSON envelope (human-readable output
+    /// is redirected to stderr), and the process exit code preserves the
+    /// documented bucket map — designed for Ansible, SaltStack and
+    /// Kubernetes DaemonSet harvesting.
+    #[arg(long, global = true)]
+    pub json: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -146,6 +155,10 @@ pub enum Commands {
     /// Generate an Ed25519 operator signing keypair
     Keygen(KeygenArgs),
 
+    /// Hardware-attested sealing of operator keys into the platform TPM
+    /// (PCR-policy bound: unseal only in the exact boot state that sealed)
+    Key(KeyArgs),
+
     /// Two-officer Ed25519 countersignature approval of a compiled plan (2PI, Δ448)
     Approve(ApproveArgs),
 
@@ -176,6 +189,10 @@ pub enum Commands {
     /// discover remote subsystems over RDMA / RoCEv2 / TCP / FC
     /// (v0.8.0, Vector 4)
     Fabrics(FabricsArgs),
+
+    /// Native iSCSI target discovery and in-band remote SCSI
+    /// sanitization (v0.9.0, Phase 4)
+    Iscsi(IscsiArgs),
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -662,6 +679,40 @@ pub struct QuoteArgs {
     pub sub: QuoteSubcommands,
 }
 
+#[derive(Args, Debug)]
+pub struct KeyArgs {
+    #[command(subcommand)]
+    pub sub: KeySubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KeySubcommands {
+    /// Seal an operator keyfile into the machine's TPM 2.0, bound to the
+    /// current PCR state (firmware + kernel + initramfs + dc binary)
+    Seal {
+        /// Plaintext operator keyfile (32-byte hex, mode 0600) to seal
+        key: PathBuf,
+        /// PCRs to bind the policy to (e.g. '0-11', '0,1,9'); default:
+        /// the full quote bank 0-11
+        #[arg(long)]
+        pcrs: Option<String>,
+        /// Output path for the sealed blob JSON (default: <key>.sealed.json)
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// Recover a sealed key — ONLY if the platform state still matches
+    /// the sealing policy (writes the plaintext key to --out)
+    Unseal {
+        /// Sealed blob JSON produced by `dc key seal`
+        blob: PathBuf,
+        /// Output path for the recovered plaintext keyfile (created 0600)
+        #[arg(short, long)]
+        out: PathBuf,
+    },
+    /// Inspect a sealed blob's policy WITHOUT touching the TPM
+    Inspect { blob: PathBuf },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum QuoteSubcommands {
     /// Measure the appliance artifacts into PCRs 8-11 and produce a
@@ -781,6 +832,45 @@ pub enum FabricsSubcommands {
     },
 }
 
+#[derive(Args, Debug)]
+pub struct IscsiArgs {
+    #[command(subcommand)]
+    pub sub: IscsiSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum IscsiSubcommands {
+    /// Discover the iSCSI targets advertised by a portal (SendTargets=All)
+    Discover {
+        /// Portal address: host[:port] (default port 3260)
+        portal: String,
+        /// Login deadline in milliseconds
+        #[arg(long, default_value_t = 10000)]
+        login_ms: u64,
+    },
+    /// In-band remote SANITIZE over iSCSI (report-then-destroy discipline:
+    /// prints the target identity first, requires --execute to arm)
+    Purge {
+        /// Portal address: host[:port]
+        portal: String,
+        /// Target IQN to log into
+        target: String,
+        /// Logical unit number to sanitize
+        #[arg(long, default_value_t = 0)]
+        lun: u16,
+        /// Sanitize method: crypto-erase | block-erase | overwrite
+        #[arg(long, default_value = "crypto-erase")]
+        method: String,
+        /// ARMING FLAG: without it the command only reports the target
+        /// identity and the would-be sanitize verb
+        #[arg(long)]
+        execute: bool,
+        /// SCSI response deadline in milliseconds
+        #[arg(long, default_value_t = 30000)]
+        scsi_ms: u64,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum BootSubcommands {
     /// Run the real PID-1 bootstrap (mounts, entropy seeding, zombie
@@ -817,7 +907,40 @@ pub fn entrypoint() -> ExitCode {
     dc_io::reset_global_cancel();
     install_signal_handlers();
 
-    let cli = Cli::parse();
+    // v0.9.0: in fleet mode even ARGUMENT-PARSING failures (unknown
+    // profile, missing values) must yield the JSON envelope — an
+    // automation agent must never face a usage dump instead of the
+    // harvest contract. (Clap's `parse()` would print+exit itself.)
+    let fleet_mode = std::env::args_os().any(|a| a == "--json");
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            if !fleet_mode {
+                e.exit();
+            }
+            let exit_code = e.exit_code();
+            let envelope = serde_json::json!({
+                "schema": "dc.fleet/v1",
+                "tool": "diskcleaner",
+                "version": env!("CARGO_PKG_VERSION"),
+                "command": "(unparsed)",
+                "status": "error",
+                "exit_code": exit_code,
+                "duration_ms": 0u64,
+                "error": {
+                    "code": "USAGE",
+                    "message": e.to_string(),
+                },
+                "data": serde_json::Value::Null,
+            });
+            println!("{}", envelope);
+            return ExitCode::from(exit_code as u8);
+        }
+    };
+
+    if cli.json {
+        return fleet_json_entrypoint(cli);
+    }
     match run(cli) {
         Ok(()) => ExitCode::from(0),
         Err(err) => {
@@ -828,12 +951,109 @@ pub fn entrypoint() -> ExitCode {
     }
 }
 
+/// `--json` fleet entrypoint: run any command with stdout fully
+/// redirected to stderr, then emit ONE JSON envelope on the original
+/// stdout. Machines harvest a single deterministic document; humans
+/// watching a terminal lose nothing (the human output still renders on
+/// stderr).
+fn fleet_json_entrypoint(cli: Cli) -> ExitCode {
+    let started = std::time::Instant::now();
+    let command = command_name(&cli.command).to_string();
+
+    // Redirect stdout -> stderr for the whole run. SAFETY: classic
+    // fd juggling — dup(1) preserves the original stdout, dup2(2, 1)
+    // clones stderr onto the stdout descriptor; both are plain
+    // descriptor-table operations on fds we own, single-threaded at
+    // this point, with no concurrent writers to race.
+    let saved = unsafe { libc::dup(1) };
+    if saved < 0 {
+        // Cannot set up the redirect: fall back to the human path —
+        // a fleet agent gets the envelope on stderr instead of stdout,
+        // which is a diagnosable (and extremely unlikely) failure.
+        eprintln!("[JSON] fd redirect failed: falling back to human output");
+        return match run(cli) {
+            Ok(()) => ExitCode::from(0),
+            Err(err) => ExitCode::from(err.exit_code() as u8),
+        };
+    }
+    unsafe { libc::dup2(2, 1) };
+
+    // The fleet data slot: commands may attach structured payloads
+    // (e.g. `list` device inventories) for the envelope's "data" field.
+    let mut fleet_data: Option<serde_json::Value> = None;
+    let result = run_with_fleet_slot(cli, &mut fleet_data);
+
+    // Restore stdout, then write the envelope on the ORIGINAL fd.
+    unsafe { libc::dup2(saved, 1) };
+    unsafe { libc::close(saved) };
+
+    let (status, exit_code, error) = match &result {
+        Ok(()) => ("ok", 0i32, serde_json::Value::Null),
+        Err(err) => {
+            let code = err.exit_code();
+            let e = serde_json::json!({
+                "code": err.machine_code(),
+                "message": err.to_string(),
+            });
+            ("error", code, e)
+        }
+    };
+    let envelope = serde_json::json!({
+        "schema": "dc.fleet/v1",
+        "tool": "diskcleaner",
+        "version": env!("CARGO_PKG_VERSION"),
+        "command": command,
+        "status": status,
+        "exit_code": exit_code,
+        "duration_ms": started.elapsed().as_millis() as u64,
+        "error": error,
+        "data": fleet_data,
+    });
+    println!("{}", envelope);
+    ExitCode::from(exit_code as u8)
+}
+
+/// Machine name of the active subcommand for the fleet envelope.
+fn command_name(command: &Commands) -> &'static str {
+    match command {
+        Commands::List => "list",
+        Commands::Check(_) => "check",
+        Commands::Plan(_) => "plan",
+        Commands::Execute(_) => "execute",
+        Commands::Resume(_) => "resume",
+        Commands::Verify(_) => "verify",
+        Commands::Cert(_) => "cert",
+        Commands::Journal(_) => "journal",
+        Commands::Keygen(_) => "keygen",
+        Commands::Key(_) => "key",
+        Commands::Approve(_) => "approve",
+        Commands::Profiles => "profiles",
+        Commands::Bench(_) => "bench",
+        Commands::Purge(_) => "purge",
+        Commands::Boot(_) => "boot",
+        Commands::Quote(_) => "quote",
+        Commands::Photon(_) => "photon",
+        Commands::Fabrics(_) => "fabrics",
+        Commands::Iscsi(_) => "iscsi",
+    }
+}
+
 pub fn run(cli: Cli) -> Result<(), DcError> {
+    let mut fleet_slot: Option<serde_json::Value> = None;
+    run_with_fleet_slot(cli, &mut fleet_slot)
+}
+
+/// Shared dispatch: identical to `run`, with an optional fleet data slot
+/// (`--json` mode) commands can attach structured payloads to.
+fn run_with_fleet_slot(
+    cli: Cli,
+    fleet_slot: &mut Option<serde_json::Value>,
+) -> Result<(), DcError> {
     let mut audit = AuditLogger::open_or_create(Path::new("audit-chain.log")).ok();
 
     match cli.command {
         Commands::List => {
-            cmd_list();
+            cmd_list(fleet_slot);
             Ok(())
         }
         Commands::Check(args) => {
@@ -892,12 +1112,20 @@ pub fn run(cli: Cli) -> Result<(), DcError> {
             quote::cmd_quote(args)?;
             Ok(())
         }
+        Commands::Key(args) => {
+            key::cmd_key(args)?;
+            Ok(())
+        }
         Commands::Photon(args) => {
             photon::cmd_photon(args)?;
             Ok(())
         }
         Commands::Fabrics(args) => {
             fabrics::cmd_fabrics(args)?;
+            Ok(())
+        }
+        Commands::Iscsi(args) => {
+            iscsi::cmd_iscsi(args)?;
             Ok(())
         }
     }
@@ -1016,9 +1244,40 @@ fn cmd_boot(args: BootArgs) -> Result<(), DcError> {
     }
 }
 
-fn cmd_list() {
+fn cmd_list(fleet_slot: &mut Option<serde_json::Value>) {
     println!("Scanning physical block devices...");
     let devices = InventoryScanner::scan_all();
+
+    // v0.9.0 fleet mode: always attach the structured inventory to the
+    // slot — in `--json` mode the envelope harvests it as "data"
+    // (human output is already redirected to stderr); in human mode the
+    // slot is a throwaway (stdout is untouched).
+    {
+        let entries: Vec<serde_json::Value> = devices
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "dev_path": d.dev_path,
+                    "kernel_name": d.kernel_name,
+                    "bus": d.stable.bus.to_string(),
+                    "size_bytes": d.stable.size_bytes,
+                    "model": d.stable.model,
+                    "serial": d.stable.serial,
+                    "wwn": d.stable.wwn,
+                    "logical_block_size": d.logical_block_size,
+                    "physical_block_size": d.physical_block_size,
+                    "kernel_major": d.kernel.major,
+                    "kernel_minor": d.kernel.minor,
+                })
+            })
+            .collect();
+        let inventory = serde_json::json!({
+            "device_count": entries.len(),
+            "devices": entries,
+        });
+        *fleet_slot = Some(inventory);
+    }
+
     if devices.is_empty() {
         println!("No whole-disk block devices detected.");
         return;
@@ -2247,7 +2506,12 @@ fn sign_plan_on_hardware_token(
 /// (termios ECHO off). The PIN never lands in shell history, environment,
 /// or a file. Returns an error when there is no controlling TTY — a PIN
 /// typed into a pipe is a PIN leaked to a log.
-fn prompt_pin_no_echo(prompt: &str) -> std::io::Result<String> {
+///
+/// SECURITY (v0.9.0 Phase 1a): returns `Zeroizing<String>` — the heap copy
+/// of the PIN is wiped with volatile stores when the caller drops it, and
+/// the raw terminal line (including any leading/trailing whitespace the
+/// trim removes) is wiped here before returning.
+fn prompt_pin_no_echo(prompt: &str) -> std::io::Result<zeroize::Zeroizing<String>> {
     use std::io::Write;
     use std::os::fd::AsRawFd;
 
@@ -2279,7 +2543,12 @@ fn prompt_pin_no_echo(prompt: &str) -> std::io::Result<String> {
         // Newline echo after hidden input.
         let mut out2 = std::io::BufWriter::new(&tty);
         let _ = writeln!(out2);
-        Ok(line.trim().to_string())
+        // v0.9.0: the raw line can carry whitespace around the PIN — trim
+        // into a fresh String, then wipe the raw line in place.
+        let pin = line.trim().to_string();
+        use zeroize::Zeroize;
+        line.zeroize();
+        Ok(pin)
     })();
 
     unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &saved) };
@@ -2289,7 +2558,7 @@ fn prompt_pin_no_echo(prompt: &str) -> std::io::Result<String> {
             "empty PIN — hardware custody requires the officer PIN",
         ));
     }
-    Ok(pin)
+    Ok(zeroize::Zeroizing::new(pin))
 }
 
 fn cmd_journal(args: JournalArgs) -> Result<(), DcError> {

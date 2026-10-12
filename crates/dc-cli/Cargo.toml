@@ -1,6 +1,6 @@
 [package]
 name = "dc-cli"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 
 [features]
@@ -19,6 +19,7 @@ path = "src/bin/dc.rs"
 
 [dependencies]
 dc-core = { workspace = true }
+zeroize = { workspace = true }
 dc-probe = { workspace = true }
 dc-io = { workspace = true }
 dc-verify = { workspace = true }
@@ -34,6 +35,7 @@ dc-report = { workspace = true }
 dc-tpm = { workspace = true }
 dc-vault = { workspace = true }
 dc-photon = { workspace = true }
+dc-iscsi = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
 tracing = { workspace = true }
@@ -57,3 +59,49 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 [lints]
 workspace = true
+
+# ---------------------------------------------------------------------------
+# v0.9.0 Phase 3 — Enterprise distribution metadata (cargo-deb)
+# Build: cargo deb -p dc-cli  →  target/debian/diskcleaner_0.9.0-1_amd64.deb
+# ---------------------------------------------------------------------------
+[package.metadata.deb]
+maintainer = "Forensic Systems Engineering Team <zephyr4289@users.noreply.github.com>"
+section = "admin"
+priority = "optional"
+license-file = ["../LICENSE", "0"]
+depends = "$auto"
+extended-description = """\
+Forensic-grade storage sanitization for Linux: NIST SP 800-88 Rev 1 Clear \
+and Purge, IEEE 2883-2022, with cryptographically signed evidence packages \
+(TPM 2.0 attestation, hardware-token custody, ISO PDF/A-3 archival)."""
+assets = [
+    ["../target/release/dc", "usr/bin/dc", "755"],
+    ["../target/release/diskcleaner", "usr/bin/diskcleaner", "755"],
+    ["../README.md", "usr/share/doc/diskcleaner/README.md", "644"],
+]
+
+# ---------------------------------------------------------------------------
+# v0.9.0 Phase 3 — cargo-generate-rpm metadata
+# Build: cargo generate-rpm -p dc-cli  →  target/generate-rpm/*.rpm
+# ---------------------------------------------------------------------------
+[package.metadata.generate-rpm]
+summary = "Forensic-grade storage sanitization and verification suite"
+license = "MIT OR Apache-2.0"
+url = "https://github.com/zephyr4289/discCleaner"
+post_install_script = "echo 'dc: run `dc list` (as root) to inventory sanitizable devices'"
+
+[[package.metadata.generate-rpm.assets]]
+source = "../target/release/dc"
+dest = "/usr/bin/dc"
+mode = "755"
+
+[[package.metadata.generate-rpm.assets]]
+source = "../target/release/diskcleaner"
+dest = "/usr/bin/diskcleaner"
+mode = "755"
+
+[[package.metadata.generate-rpm.assets]]
+source = "../README.md"
+dest = "/usr/share/doc/diskcleaner/README.md"
+doc = true
+mode = "644"

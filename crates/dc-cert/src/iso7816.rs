@@ -30,6 +30,17 @@ pub struct CommandApdu {
 }
 
 impl CommandApdu {
+    /// SECURITY (v0.9.0 Phase 1a): wipe the command data field with volatile
+    /// stores. Called by the PIV layer after a VERIFY APDU (whose data field
+    /// is the raw PIN) has been exchanged, so the PIN never lingers in a freed
+    /// heap allocation after the card transaction completes.
+    pub fn zeroize_data(&mut self) {
+        use zeroize::Zeroize;
+        self.data.zeroize();
+    }
+}
+
+impl CommandApdu {
     pub fn new(cla: u8, ins: u8, p1: u8, p2: u8) -> Self {
         Self {
             cla,

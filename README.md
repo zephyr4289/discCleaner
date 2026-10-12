@@ -1,6 +1,6 @@
 # diskCleaner (`dc`)
 
-[![Version](https://img.shields.io/badge/version-v0.8.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
+[![Version](https://img.shields.io/badge/version-v0.9.0-blue.svg)](https://github.com/zephyr4289/discCleaner)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64--musl-blueviolet.svg)](https://github.com/zephyr4289/discCleaner)
 [![Standards](https://img.shields.io/badge/standards-NIST%20SP%20800--88%20%7C%20IEEE%202883--2022-orange.svg)](diskCleaner.md)
@@ -11,13 +11,13 @@
 `dc` is a self-contained, statically linked, zero-dependency storage sanitization suite engineered for NVMe, SATA, SAS/SCSI, USB-bridged (SAT), eMMC/UFS, TCG Opal self-encrypting (SED), and Host-Managed SMR/ZNS storage. It executes **NIST SP 800-88 Rev 1** Clear and Purge operations, issuing cryptographically signed, third-party-verifiable evidence packages that survive crashes, power loss, and adversarial cross-examination.
 
 ```
-Version       : v0.8.0 (Sovereign Air-Gap: TPM 2.0 attestation · KVM vault · photon bridge · NVMe-oF purge)
+Version       : v0.9.0 (Enterprise Hardening: zeroized/mlocked key RAM · TPM-sealed keys · fuzz+proptest matrices · --json fleet mode · deb/rpm/OCI · native iSCSI)
 Target Triples: x86_64-unknown-linux-musl · aarch64-unknown-linux-musl
 Runtime Deps  : Zero external binaries, zero dynamic libraries
-Crates        : 18 modular workspace crates (30,000+ Rust LOC)
-Tests         : 120+ unit tests + 55 integration suites + 34 pinned regression guards
+Crates        : 19 modular workspace crates
+Tests         : 150+ unit tests + 60 integration suites + pinned regression guards + cargo-fuzz harnesses + proptest property matrices
 Test Driver   : python3 tests/run_tests.py (lit-style discovery, parallel, PASS/FAIL/UNSUPPORTED)
-Verification  : Ed25519 + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3 Archival Embedding
+Verification  : Ed25519 + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3 Archival Embedding + TPM 2.0 quotes
 ```
 
 ---
@@ -220,6 +220,22 @@ The highest-classification facilities forbid plugging *anything* into a machine 
 ### 15. Enterprise SAN / NVMe-over-Fabrics Remote Purge (v0.8.0, Vector 4)
 
 Government datacenters decommission multi-petabyte SANs, not just local drives. `dc purge --target nvme+tcp://10.0.0.5:4420/nqn.2014-08.org.example:sub1` (also `nvme+rdma://`, `nvme+fc://`, `nvme+loop://`) drives the kernel's fabric host stack **directly over generic netlink** — no libnvme, no nvme-cli: the family id is resolved through the nlctrl GETFAMILY dance, `NVME_CMD_CONNECT` is marshaled byte-exactly with the pinned NVMF attribute set (TRANSPORT/TRADDR/TRSVCID/NQN/HOST_TRADDR/KATO), and the new controller is awaited in `/sys/class/nvme` under a hard appearance deadline. The remote namespace then purges through the SAME controller-attested ladder (in-band Sanitize/Format admin commands over the fabrics controller), after which `NVME_CMD_DISCONNECT` always fires — including on failure — and the certificate records the full fabric session (transport, addresses, NQN, controller, connect/disconnect timestamps, clean-disconnect verdict). `dc fabrics discover` walks the discovery NQN and decodes the LID 0x70 log; `dc fabrics connect/disconnect/list` manage sessions; FC topology evidence (local HBA WWPNs, remote ports) is read from sysfs into the certificate. Every step is deadline-guarded — a wedged fabric fails the purge in seconds, never hangs a lights-out run.
+
+### 16. Memory-Security Hardening: Zeroization + mlock + TPM-Sealed Keys (v0.9.0, Phase 1)
+
+Every secret that transits `dc` userspace now lives inside a **`dc-core::secrets::SecretBuf`** — a heap guard that `mlock(2)`-pins its pages for its lifetime (private keys can never be paged out to swap where they would outlive the run) and wipes them with volatile stores on drop (the audited `zeroize` crate; compiler-reorder-proof, never elided). The operator Ed25519 keyfile paths wipe every intermediate transcription (file bytes, hex decode, stack array — `REG-KEYRAM-LINGER`); the PIV PIN buffer and its APDU data field are wiped on every exit path of `verify_pin`; the PIN prompt returns a `Zeroizing<String>` and wipes the raw terminal line; the vault session key scrubs through the same audited primitive. Beyond hygiene, **`dc key seal` binds the operator key inside the motherboard's TPM 2.0** (`TPM2_Create` under the owner hierarchy, `FIXED_TPM|FIXED_PARENT`, NO `USER_WITH_AUTH` — the PCR policy is the only door): the authPolicy is harvested from a TRIAL `PolicyPCR` session over the live platform registers, and `dc key unseal` replays the policy against the *current* state — any firmware, kernel, initramfs or binary change refuses the unseal with `TPM_RC_POLICY_FAIL`. The sealed-blob ladder (trial session → PolicyPCR → PolicyGetDigest → Create → Load → policy session → Unseal → FlushContext) is implemented byte-exactly in the native wire stack and pinned by a synthetic-TPM regression matrix including PCR-drift, spliced-blob and non-malleability cases.
+
+### 17. Fuzzing & Property-Based Proof Matrices (v0.9.0, Phase 2)
+
+Because `dc` parses raw binary protocols from untrusted hardware and network targets, every codec now carries a **cargo-fuzz harness** (separate fuzz workspace: the TPM response parsers, the photon frame decoder + LT fountain unpacker, the NVMe-oF URI/genl parsers, and the SCSI sense/inquiry/defect/thermal/ATA-descriptor decoders — run weekly in CI with a bounded smoke budget). On top of the fuzzers, **proptest property matrices** pin code-level invariants over the whole input space: fountain reconstruction survives 25% random symbol loss of a 3x stream for any payload/block-size/seed (envelope calibrated empirically at 0/400 failures), decode is arrival-order independent, and corrupted *necessary* symbols never silently mimic the payload. The cryptographic non-malleability matrices (any single-byte flip of a quote response or sealed blob must fail verification or parsing) found and fixed two real defects: non-minimal DER INTEGERs (genuine quotes failed verification ~1/256 when an ECDSA component carried a leading zero byte) and unverified response regions (the header size word, parameterSize word and the embedded signature scheme/r/s bytes were not covered by the replay ladder — all now pinned).
+
+### 18. Fleet Automation & Enterprise Distribution (v0.9.0, Phase 3)
+
+`dc --json <any command>` is the automation contract for Ansible, SaltStack and Kubernetes DaemonSets: **stdout carries exactly one machine-parsable JSON envelope** (`dc.fleet/v1`: tool, version, command, status, exit_code, duration_ms, machine-readable error class, structured data — `list` attaches the full device inventory) while the human-readable output is relocated to stderr, terminal operators lose nothing. Even argument-parse failures emit the envelope, and the documented exit-code bucket map (2 Guardian, 3 Interrupted, 4 VerificationFailed, 5 Io, 6 Journal, 7 IdentityDrift, 8 Usage, 10 CertInvalid) is preserved for scripting. Distribution is now turnkey: **`.deb` (cargo-deb) and `.rpm` (cargo-generate-rpm) packages**, **static musl binaries** for x86_64 and aarch64, and a **distroless-class OCI image** (non-root by default, `dc --json` entrypoint contract) pushed to ghcr.io — the release pipeline attaches every artifact with SHA-256 manifests to the GitHub Release.
+
+### 19. Native iSCSI Remote Sanitization (v0.9.0, Phase 4)
+
+The remote block-storage picture completes with a **native iSCSI initiator** (`dc-iscsi`, RFC 3720 spoken directly over TCP — no open-iscsi, no kernel transport, zero dynamic linking): `dc iscsi discover` performs the SessionType=Discovery login and `SendTargets=All` exchange (multi-PDU TTT continuation included), parsing the target/address inventory; `dc iscsi purge` opens an operational session and drives the SCSI SANITIZE/FORMAT verbs in-band through the same `dc-hw` codecs as the local SG_IO path — identity-first discipline (INQUIRY report before any destructive verb, `--execute` arming), Data-In reassembly, sense extraction (including SANITIZE-in-progress 2/04/1B polling state), and the deadline discipline shared with the TPM/NVMe-oF stacks: a wedged target fails the run in seconds, never hangs it.
 
 ### 8. Hardware Token Custody — PIV/CAC/YubiKey 2PI (v0.7.0)
 

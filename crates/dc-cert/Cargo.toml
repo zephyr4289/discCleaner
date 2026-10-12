@@ -1,6 +1,6 @@
 [package]
 name = "dc-cert"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 
 [dependencies]
@@ -21,6 +21,7 @@ tracing = { workspace = true }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 sha2 = { workspace = true }
 libc = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.14"

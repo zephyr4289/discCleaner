@@ -23,6 +23,20 @@ use sha2::{Digest as _, Sha256};
 /// Deterministic test AIK seed (documented test material, never secret).
 const SYNTH_AIK_SEED: [u8; 32] = [0x5A; 32];
 
+/// State of one authorization session (v0.9.0 Phase 1b seal ladder).
+#[derive(Clone)]
+struct SynthSession {
+    kind: u16, // TPM_SE_TRIAL or TPM_SE_POLICY
+    policy_digest: [u8; 32],
+}
+
+/// A sealed object living inside the synthetic TPM.
+#[derive(Clone)]
+struct SynthSealed {
+    policy: [u8; 32],
+    data: Vec<u8>,
+}
+
 pub struct SynthTpm {
     aik: SigningKey,
     /// SHA-256 PCR bank (24 PCRs is the spec-legal maximum we touch).
@@ -35,6 +49,11 @@ pub struct SynthTpm {
     /// Test hook: when set, quotes sign a DOCTORED attestation — the
     /// verification ladder must reject it.
     pub tamper_mode: bool,
+    // v0.9.0 Phase 1b: sessions + sealed objects.
+    sessions: std::collections::BTreeMap<u32, SynthSession>,
+    sealed: std::collections::BTreeMap<u32, SynthSealed>,
+    next_session: u32,
+    next_transient: u32,
 }
 
 impl Default for SynthTpm {
@@ -54,6 +73,10 @@ impl SynthTpm {
             restart_count: 1,
             firmware_version: 0x0001_0002_0003_0004,
             tamper_mode: false,
+            sessions: std::collections::BTreeMap::new(),
+            sealed: std::collections::BTreeMap::new(),
+            next_session: 0x0300_0001,
+            next_transient: 0x8000_0100,
         }
     }
 
@@ -82,6 +105,12 @@ impl SynthTpm {
         let tag = r.u16().unwrap_or(0);
         let _size = r.u32().unwrap_or(0);
         let code = r.u32().unwrap_or(TPM_ALG_ERROR as u32);
+        self.dispatch(code, tag, &mut r)
+    }
+
+    /// The v0.8.0 attestation command subset (original dispatcher).
+    fn handle_command_body(&mut self, code: u32, tag: u16, r: &mut Reader<'_>) -> Vec<u8> {
+        let r = &mut *r; // single reborrow across all arms
         match code {
             TPM_CC_STARTUP => {
                 if self.started {
@@ -105,7 +134,7 @@ impl SynthTpm {
                 ok_response(tag, body.as_bytes())
             }
             TPM_CC_PCR_READ => {
-                let list = PcrSelectionList::read(&mut r)
+                let list = PcrSelectionList::read(r)
                     .unwrap_or_else(|_| PcrSelectionList::single_sha256([0, 0, 0, 0]));
                 let selected = self.selected_pcrs(&list);
                 let mut body = Writer::new();
@@ -183,7 +212,7 @@ impl SynthTpm {
                     return error_response(0x0002);
                 }
                 let qualifying = r.tpm2b().unwrap_or_default();
-                let list = PcrSelectionList::read(&mut r)
+                let list = PcrSelectionList::read(r)
                     .unwrap_or_else(|_| PcrSelectionList::single_sha256([0, 0, 0, 0]));
                 let selected = self.selected_pcrs(&list);
                 let mut h = Sha256::new();
@@ -239,6 +268,248 @@ impl SynthTpm {
                 sessions_response(rsp.as_bytes())
             }
             _ => error_response(0x0000_0143), // TPM_RC_COMMAND_CODE
+        }
+    }
+
+    /// Dispatch: route the v0.9.0 seal command subset to its handler.
+    fn dispatch(&mut self, code: u32, tag: u16, r: &mut Reader<'_>) -> Vec<u8> {
+        match code {
+            TPM_CC_START_AUTH_SESSION
+            | TPM_CC_POLICY_PCR
+            | TPM_CC_POLICY_GET_DIGEST
+            | TPM_CC_CREATE
+            | TPM_CC_LOAD
+            | TPM_CC_UNSEAL
+            | TPM_CC_FLUSH_CONTEXT => self.handle_seal_command(code, tag, r),
+            _ => self.handle_command_body(code, tag, r),
+        }
+    }
+
+    /// Digest of the selected PCR values concatenated in selection order —
+    /// the `pcrs` input of the PolicyPCR digest update.
+    fn pcr_digest_of_selection(&self, list: &PcrSelectionList) -> Vec<u8> {
+        let selected = self.selected_pcrs(list);
+        let mut h = Sha256::new();
+        for pcr in selected {
+            h.update(self.pcrs[pcr]);
+        }
+        h.finalize().to_vec()
+    }
+
+    /// v0.9.0 Phase 1b: the seal/unseal command subset.
+    fn handle_seal_command(&mut self, code: u32, tag: u16, r: &mut Reader<'_>) -> Vec<u8> {
+        match code {
+            TPM_CC_START_AUTH_SESSION => {
+                let _tpm_key = r.u32().unwrap_or(0);
+                let _bind = r.u32().unwrap_or(0);
+                let nonce_caller = r.tpm2b().unwrap_or_default();
+                let _salt = r.tpm2b().unwrap_or_default();
+                let session_type = r.u16().unwrap_or(TPM_SE_HMAC);
+                let _sym = r.u16().unwrap_or(TPM_ALG_NULL);
+                let _auth_hash = r.u16().unwrap_or(TPM_ALG_SHA256);
+                if session_type != TPM_SE_TRIAL && session_type != TPM_SE_POLICY {
+                    return error_response(0x0000_0143);
+                }
+                let handle = self.next_session;
+                self.next_session += 1;
+                self.sessions.insert(
+                    handle,
+                    SynthSession {
+                        kind: session_type,
+                        policy_digest: [0u8; 32],
+                    },
+                );
+                let mut body = Writer::new();
+                body.u32(handle);
+                body.tpm2b(&nonce_caller); // nonceTPM (echo — deterministic rig)
+                ok_response(tag, body.as_bytes())
+            }
+            TPM_CC_POLICY_PCR => {
+                let session_handle = r.u32().unwrap_or(0);
+                let auth_size = r.u32().unwrap_or(0) as usize;
+                if r.raw(auth_size).is_err() {
+                    return error_response(0x0002);
+                }
+                let list = PcrSelectionList::read(r)
+                    .unwrap_or_else(|_| PcrSelectionList::single_sha256([0, 0, 0, 0]));
+                let pcr_digest = r.tpm2b().unwrap_or_default();
+                let Some((kind, old_digest)) = self
+                    .sessions
+                    .get(&session_handle)
+                    .map(|s| (s.kind, s.policy_digest))
+                else {
+                    return error_response(0x0000_0098); // TPM_RC_VALUE (bad handle)
+                };
+                // POLICY sessions assert against live registers; TRIAL
+                // sessions only compute (TPM 2.0 Part 3, 23.7.4).
+                if kind == TPM_SE_POLICY {
+                    let actual = self.pcr_digest_of_selection(&list);
+                    if actual != pcr_digest {
+                        return error_response(TPM_RC_POLICY_FAIL);
+                    }
+                }
+                // policyDigestNew = H(old || ccPolicyPCR || pcrs)
+                let mut h = Sha256::new();
+                h.update(old_digest);
+                h.update(TPM_CC_POLICY_PCR.to_be_bytes());
+                h.update(&pcr_digest);
+                let new_digest: [u8; 32] = h.finalize().into();
+                if let Some(session) = self.sessions.get_mut(&session_handle) {
+                    session.policy_digest = new_digest;
+                }
+                ok_response(tag, &[])
+            }
+            TPM_CC_POLICY_GET_DIGEST => {
+                let session_handle = r.u32().unwrap_or(0);
+                let auth_size = r.u32().unwrap_or(0) as usize;
+                if r.raw(auth_size).is_err() {
+                    return error_response(0x0002);
+                }
+                let Some(session) = self.sessions.get(&session_handle) else {
+                    return error_response(0x0000_0098);
+                };
+                let mut body = Writer::new();
+                body.tpm2b(&session.policy_digest);
+                ok_response(tag, body.as_bytes())
+            }
+            TPM_CC_CREATE => {
+                let parent = r.u32().unwrap_or(0);
+                let auth_size = r.u32().unwrap_or(0) as usize;
+                if r.raw(auth_size).is_err() {
+                    return error_response(0x0002);
+                }
+                let sensitive = r.tpm2b().unwrap_or_default();
+                let public = r.tpm2b().unwrap_or_default();
+                if parent != TPM_RH_OWNER {
+                    return error_response(0x0000_00B5); // TPM_RC_HIERARCHY
+                }
+                // inSensitive: userAuth TPM2B + data TPM2B
+                let mut sr = Reader::new(&sensitive);
+                let _user_auth = sr.tpm2b().unwrap_or_default();
+                let data = sr.tpm2b().unwrap_or_default();
+                if data.is_empty() || data.len() > DC_SEALED_SECRET_MAX {
+                    return error_response(TPM_RC_SIZE);
+                }
+                // inPublic: type, nameAlg, attrs, authPolicy, scheme, unique
+                let mut pr = Reader::new(&public);
+                if pr.u16().unwrap_or(0) != TPM_ALG_KEYEDHASH
+                    || pr.u16().unwrap_or(0) != TPM_ALG_SHA256
+                    || pr.u32().unwrap_or(0) != SEALED_OBJECT_ATTRIBUTES
+                {
+                    return error_response(0x0000_0002); // TPM_RC_ATTRIBUTES
+                }
+                let policy = pr.tpm2b().unwrap_or_default();
+                if policy.len() != 32 {
+                    return error_response(0x0000_0044); // TPM_RC_HASH
+                }
+                let mut policy_fixed = [0u8; 32];
+                policy_fixed.copy_from_slice(&policy);
+                // "Parent-wrapped" private blob (deterministic stand-in for
+                // the real TPM's AES-CFB parent encryption — never exported
+                // from the rig as a production artifact):
+                //   policy(32) || len(u32) || data || H(policy||data)(32)
+                let mut private = Writer::new();
+                private.bytes(&policy_fixed);
+                private.u32(data.len() as u32);
+                private.bytes(&data);
+                let mut integrity = Sha256::new();
+                integrity.update(policy_fixed);
+                integrity.update(&data);
+                private.bytes(&integrity.finalize());
+                let mut body = Writer::new();
+                body.tpm2b(private.as_bytes());
+                body.tpm2b(&public); // outPublic echoes the template
+                ok_response(tag, body.as_bytes())
+            }
+            TPM_CC_LOAD => {
+                let parent = r.u32().unwrap_or(0);
+                let auth_size = r.u32().unwrap_or(0) as usize;
+                if r.raw(auth_size).is_err() {
+                    return error_response(0x0002);
+                }
+                let private = r.tpm2b().unwrap_or_default();
+                let public = r.tpm2b().unwrap_or_default();
+                if parent != TPM_RH_OWNER {
+                    return error_response(0x0000_00B5);
+                }
+                let mut lr = Reader::new(&private);
+                let policy = lr.raw(32).unwrap_or(&[]).to_vec();
+                let len = lr.u32().unwrap_or(u32::MAX) as usize;
+                let data = if lr.remaining() >= len {
+                    lr.raw(len).unwrap_or(&[]).to_vec()
+                } else {
+                    Vec::new()
+                };
+                let tag_bytes = lr.raw(32).unwrap_or(&[]).to_vec();
+                if policy.len() != 32 || len != data.len() || len == 0 || len > DC_SEALED_SECRET_MAX
+                {
+                    return error_response(0x0003); // malformed private blob
+                }
+                let mut expect = Sha256::new();
+                expect.update(&policy);
+                expect.update(&data);
+                if tag_bytes != expect.finalize().to_vec() {
+                    return error_response(0x0000_0097); // TPM_RC_INTEGRITY
+                }
+                // The public template's authPolicy must match the private
+                // blob's policy — a spliced blob is refused.
+                let mut pr = Reader::new(&public);
+                let _type = pr.u16();
+                let _name = pr.u16();
+                let _attrs = pr.u32();
+                let public_policy = pr.tpm2b().unwrap_or_default();
+                if public_policy != policy {
+                    return error_response(0x0000_0097);
+                }
+                let mut policy_fixed = [0u8; 32];
+                policy_fixed.copy_from_slice(&policy);
+                let handle = self.next_transient;
+                self.next_transient += 1;
+                self.sealed.insert(
+                    handle,
+                    SynthSealed {
+                        policy: policy_fixed,
+                        data,
+                    },
+                );
+                let name_digest = Sha256::digest(&public);
+                let mut name = vec![0x00, 0x0B];
+                name.extend_from_slice(&name_digest);
+                let mut body = Writer::new();
+                body.u32(handle);
+                body.tpm2b(&name);
+                ok_response(tag, body.as_bytes())
+            }
+            TPM_CC_UNSEAL => {
+                let object_handle = r.u32().unwrap_or(0);
+                let auth_size = r.u32().unwrap_or(0) as usize;
+                // The auth area names the POLICY session (the proof).
+                let mut ar = Reader::new(r.raw(auth_size).unwrap_or(&[]));
+                let session_handle = ar.u32().unwrap_or(0);
+                let Some(session) = self.sessions.get(&session_handle) else {
+                    return error_response(0x0000_0098);
+                };
+                // Trial sessions cannot authorize anything (Part 3 §15.4).
+                if session.kind != TPM_SE_POLICY {
+                    return error_response(0x0000_0098);
+                }
+                let Some(object) = self.sealed.get(&object_handle) else {
+                    return error_response(0x0000_0098);
+                };
+                if session.policy_digest != object.policy {
+                    return error_response(TPM_RC_POLICY_FAIL);
+                }
+                let mut body = Writer::new();
+                body.tpm2b(&object.data);
+                ok_response(tag, body.as_bytes())
+            }
+            TPM_CC_FLUSH_CONTEXT => {
+                let handle = r.u32().unwrap_or(0);
+                self.sessions.remove(&handle);
+                self.sealed.remove(&handle);
+                ok_response(tag, &[])
+            }
+            _ => unreachable!("handle_seal_command dispatch bug"),
         }
     }
 
@@ -387,6 +658,12 @@ mod tests {
         let s = hex::decode(&bundle.signature_s_hex).unwrap();
         let mut der = Vec::new();
         for part in [&r, &s] {
+            // Minimal DER INTEGERs (same v0.9.0 fix as the verify ladder:
+            // fixed-width components with leading zeros must be stripped).
+            let mut part = part.as_slice();
+            while part.len() > 1 && part[0] == 0 {
+                part = &part[1..];
+            }
             let lead = usize::from(part.first().map(|b| b & 0x80 != 0).unwrap_or(false));
             der.push(0x02);
             der.push((part.len() + lead) as u8);

@@ -51,12 +51,25 @@ pub const TPM_CC_CREATE_PRIMARY: u32 = 0x0000_0131;
 pub const TPM_CC_READ_PUBLIC: u32 = 0x0000_0173;
 pub const TPM_CC_EVICT_CONTROL: u32 = 0x0000_0120;
 pub const TPM_CC_QUOTE: u32 = 0x0000_0158;
+// v0.9.0 Phase 1b: PCR-policy sealed key storage (TPM2_Create / TPM2_Unseal).
+pub const TPM_CC_CREATE: u32 = 0x0000_015A;
+pub const TPM_CC_LOAD: u32 = 0x0000_0157;
+pub const TPM_CC_UNSEAL: u32 = 0x0000_015E;
+pub const TPM_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
+pub const TPM_CC_START_AUTH_SESSION: u32 = 0x0000_0176;
+pub const TPM_CC_POLICY_PCR: u32 = 0x0000_017F;
+pub const TPM_CC_POLICY_GET_DIGEST: u32 = 0x0000_0189;
 
 // --- Response codes ---------------------------------------------------------
 pub const TPM_RC_SUCCESS: u32 = 0x0000_0000;
 /// `TPM_RC_INITIALIZE` — startup already performed (treated as benign for
 /// `TPM2_Startup`: the device is in the state we wanted anyway).
 pub const TPM_RC_INITIALIZE: u32 = 0x0000_0100;
+/// `TPM_RC_POLICY_FAIL` — the authorization policy (PCR binding) did not
+/// match; the sealed key stays sealed.
+pub const TPM_RC_POLICY_FAIL: u32 = 0x0000_0099;
+/// `TPM_RC_SIZE` — command/response size violation (oversized secret).
+pub const TPM_RC_SIZE: u32 = 0x0000_01D5;
 
 // --- NIST P-256 curve id (TPM_ECC_NIST_P256) --------------------------------
 pub const TPM_ECC_NIST_P256: u16 = 0x0003;
@@ -80,3 +93,34 @@ pub const AIK_OBJECT_ATTRIBUTES: u32 = 0x0005_0072;
 /// extends its own measurements into PCR 8 (kernel), 9 (initramfs),
 /// 10 (dc binary) and 11 (plan evidence) before quoting.
 pub const DC_QUOTE_PCR_MASK: [u8; 4] = [0xFF, 0x0F, 0x00, 0x00];
+
+// --- v0.9.0 Phase 1b: sealed-key storage constants ---------------------------
+/// `TPM_ALG_KEYEDHASH` — the object type of a sealed data blob.
+pub const TPM_ALG_KEYEDHASH: u16 = 0x0008;
+/// `TPM_ALG_CFB` — the only session-symmetric mode this stack offers.
+pub const TPM_ALG_CFB: u16 = 0x0043;
+
+/// `TPM_SE_HMAC` — HMAC authorization session.
+pub const TPM_SE_HMAC: u16 = 0x0000;
+/// `TPM_SE_POLICY` — policy authorization session (enforced at Unseal).
+pub const TPM_SE_POLICY: u16 = 0x0001;
+/// `TPM_SE_TRIAL` — trial policy session (computes the authPolicy digest
+/// for `TPM2_Create` without enforcing anything).
+pub const TPM_SE_TRIAL: u16 = 0x0003;
+
+/// First transient-session handle class (0x0000_0003 range is reserved
+/// for loaded sessions by the handle-type table; we only sanity-check the
+/// high nibble in the parser).
+pub const TPM_HR_HMAC_SESSION: u32 = 0x0300_0000;
+
+/// Object attributes for a sealed data object: FIXED_TPM | FIXED_PARENT —
+/// no USER_WITH_AUTH and no ADMIN_WITH_AUTH. A key sealed with these bits
+/// can ONLY be unsealed by satisfying its authPolicy (the PCR policy):
+/// no owner password, no empty-password escape hatch, ever.
+pub const SEALED_OBJECT_ATTRIBUTES: u32 = 0x0000_0012;
+
+/// Hard cap on sealed payload size. Real TPMs marshal `TPM2_Create`
+/// sensitive data through the parent's symmetric encryption, which caps
+/// plaintext at 128 bytes for the ubiquitous AES-128 primaries — the
+/// operator Ed25519 seed (32 bytes) fits with 4x headroom.
+pub const DC_SEALED_SECRET_MAX: usize = 128;

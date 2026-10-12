@@ -27,6 +27,7 @@
 pub mod attest;
 pub mod constants;
 pub mod device;
+pub mod seal;
 pub mod structures;
 pub mod synth;
 pub mod wire;
@@ -40,6 +41,7 @@ pub use constants::{
     TPM_ALG_SHA256, TPM_CC_QUOTE, TPM_GENERATED, TPM_ST_ATTEST_QUOTE,
 };
 pub use device::{TpmError, TpmRmTransport, TpmTransport};
+pub use seal::{SealedKeyBlob, mask_to_pcr_list, pcr_list_to_mask, seal, unseal};
 pub use structures::{PcrSelection, PcrSelectionList, QuoteAttestation};
 
 /// Where `dc` looks for the TPM resource manager.

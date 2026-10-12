@@ -241,12 +241,12 @@ impl VaultSession {
 
 impl Drop for VaultSession {
     fn drop(&mut self) {
-        // Zeroize the host-side key copy with volatile stores.
+        // SECURITY (v0.9.0 Phase 1a): zeroize performs the same volatile
+        // stores as the previous hand-rolled loop, standardized through the
+        // audited `zeroize` crate (compiler-reorder-proof, never elided) so
+        // every secret holder workspace-wide uses ONE wiped-memory idiom.
         if let Some(key) = self.session_key.as_mut() {
-            for b in key.iter_mut() {
-                // SAFETY: plain volatile store, no aliasing.
-                unsafe { std::ptr::write_volatile(b, 0u8) };
-            }
+            zeroize::Zeroize::zeroize(key);
         }
     }
 }

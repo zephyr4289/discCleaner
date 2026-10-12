@@ -7,6 +7,7 @@ pub mod journal;
 pub mod orchestrator;
 pub mod pattern;
 pub mod plan;
+pub mod secrets;
 pub mod strategy;
 pub mod tool;
 
