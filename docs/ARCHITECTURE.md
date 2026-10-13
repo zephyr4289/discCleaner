@@ -54,7 +54,23 @@ Three new layers extend the evidence chain without weakening the layer law:
   model checking of the real FSM (INV-1/2/3 run in every
   `cargo test --workspace`), a verified-abstraction refinement check for the
   window accounting, and `#[cfg(kani)]` bounded symbolic proofs (FSM guards,
-  SecretBuf zeroization). Proof artifacts land in `proofs/`.
+  SecretBuf zeroization, v0.12.0: Montgomery CIOS exactness + sonar pairwise
+  bit stability). Proof artifacts land in `proofs/`.
+* **`dc-vdf`** — Cryptographic Proof-of-Erasure (v0.12.0, Miracle 1): a
+  pure-Rust Wesolowski VDF over a safe-prime RSA unknown-order group
+  (fixed-limb CIOS Montgomery arithmetic, fused streaming division+modexp
+  prover, Fermat-shortcut verifier, zeroized-factor ceremony) and the
+  executor's time-lock weave — overwrite passes keyed by chain states, so
+  certificates carry a wall-clock lower bound independent of system clocks.
+* **`dc-sonar`** — acoustic hardware fingerprinting (v0.12.0, Miracle 2):
+  challenge-driven seek micro-stepping probes, IIO/hwmon telemetry capture,
+  hand-written radix-2 FFT feature extraction and a pairwise-ordering
+  fuzzy extractor — the physical-chassis PUF behind `--puf-guard`.
+* **`dc-baremetal`** — Ghost Boot (v0.12.0, Miracle 3): a no_std
+  pure-Rust UEFI payload (~25 KB) that boots straight into Ring 0 and
+  sanitizes PCIe-attached storage with no kernel, no drivers and no OS.
+  Every hardware state machine (PCI/AHCI/NVMe/ACPI) runs in CI against a
+  register-accurate simulated bus (`hal::SimBus`).
 
 ## The evidence chain
 

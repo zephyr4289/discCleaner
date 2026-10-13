@@ -1,0 +1,22 @@
+[package]
+name = "dc-sonar"
+version = "0.12.0"
+edition = "2024"
+description = "Acoustic & ultrasonic hardware fingerprinting via drive actuator resonance (v0.12.0, Miracle 2): challenge-response physical unclonable functions binding wipe certificates to the physical silicon body of a drive — counterfeit SSDs and reflashed serials cannot fake the resonance of the chassis"
+
+[dependencies]
+dc-core = { workspace = true }
+# Challenge / fingerprint hashing.
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+getrandom = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

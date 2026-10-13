@@ -61,6 +61,9 @@ pub struct ExecuteShared {
     pub vault: bool,
     /// v0.8.0 Vector 2: require SEV/TDX memory encryption in the vault.
     pub vault_encrypted_required: bool,
+    /// v0.12.0 Miracle 1: published VDF weave parameters (the plan's
+    /// passes were rewritten as VdfWoven before arming).
+    pub vdf_params: Option<std::sync::Arc<dc_vdf::VdfParams>>,
 }
 
 /// A device that passed the all-or-nothing precheck.
@@ -171,6 +174,28 @@ pub fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result
         allow_member: args.allow_member,
     };
 
+    // ---------------------------------------------------------------
+    // v0.12.0 Miracle 1: VDF time-lock weave parameters.
+    // ---------------------------------------------------------------
+    let vdf_params: Option<std::sync::Arc<dc_vdf::VdfParams>> = match &args.vdf_lock {
+        Some(path) => {
+            let data = std::fs::read_to_string(path)
+                .map_err(|e| DcError::Usage(format!("cannot read {}: {}", path.display(), e)))?;
+            let p: dc_vdf::VdfParams = serde_json::from_str(&data).map_err(|e| {
+                DcError::Usage(format!("malformed vdf-params {}: {}", path.display(), e))
+            })?;
+            p.context()
+                .map_err(|e| DcError::Usage(format!("vdf params: {e}")))?;
+            eprintln!(
+                "[vdf] time-lock weave ARMED: {} steps/pass, {} pass(es) — each pass keystream \
+                 is keyed by a provable sequential-squaring chain state",
+                p.steps_per_pass, p.passes
+            );
+            Some(std::sync::Arc::new(p))
+        }
+        None => None,
+    };
+
     let mut jobs: Vec<DeviceJob> = Vec::with_capacity(args.target.len());
     for target in &args.target {
         let identity = InventoryScanner::probe_device_or_refuse(target)?;
@@ -239,7 +264,7 @@ pub fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result
             return Err(e);
         }
 
-        let plan = if let Some(ref plan_path) = args.plan {
+        let mut plan = if let Some(ref plan_path) = args.plan {
             let plan_content = std::fs::read_to_string(plan_path)?;
             serde_json::from_str(&plan_content).map_err(|e| DcError::JournalCorrupt {
                 record_index: 0,
@@ -258,6 +283,40 @@ pub fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result
             }
             p
         };
+
+        // v0.12.0 Miracle 1: rewrite logical passes into VDF-woven
+        // declarations (the executor materializes each state between
+        // passes; verification re-derives from the certificate).
+        if let Some(ref vp) = vdf_params {
+            let Mechanism::LogicalOverwrite { passes } = &mut plan.mechanism else {
+                return Err(DcError::Usage(
+                    "--vdf-lock requires a logical-overwrite plan (hardware purges have \
+                     no woven passes)"
+                        .to_string(),
+                ));
+            };
+            if passes.is_empty() {
+                return Err(DcError::Usage(
+                    "--vdf-lock requires at least one overwrite pass".to_string(),
+                ));
+            }
+            let n_bytes = hex::decode(vp.modulus_n.trim_start_matches("0x"))
+                .map_err(|e| DcError::Usage(format!("vdf modulus hex: {e}")))?;
+            let mut h = blake3::Hasher::new();
+            h.update(b"dc-vdf/weave-commitment/v1");
+            h.update(&n_bytes);
+            let seed_commitment: [u8; 32] = *h.finalize().as_bytes();
+            for pass in passes.iter_mut() {
+                pass.pattern = dc_core::Pattern::VdfWoven {
+                    scheme: dc_core::VdfWeaveScheme::WesolowskiRsaUfoV1,
+                    seed_commitment,
+                };
+            }
+            eprintln!(
+                "[vdf] plan woven: {} pass(es) keyed to the time-lock chain",
+                passes.len()
+            );
+        }
         let plan_hash = plan.compute_plan_hash()?;
 
         let expected_token = identity
@@ -506,6 +565,7 @@ pub fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result
         tpm_quote_required: args.tpm_quote_required,
         vault: args.vault,
         vault_encrypted_required: args.vault_encrypted_required,
+        vdf_params,
         checkpoint_mib: args.checkpoint_mib,
         checkpoint_ms: args.checkpoint_ms,
         no_progress: args.no_progress,
@@ -528,12 +588,20 @@ pub fn cmd_execute(args: ExecuteArgs, audit: &mut Option<AuditLogger>) -> Result
         },
     };
 
+    let puf_guard_ref = std::sync::Arc::new(args.puf_guard.clone());
     let outputs: Vec<DeviceRunOutput> = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(armed.len());
         for armed_job in armed {
             let shared = &shared;
+            let puf_guard_ref = std::sync::Arc::clone(&puf_guard_ref);
             handles.push(scope.spawn(move || {
-                run_device_pipeline(armed_job.job, armed_job.lock, shared, engine_name)
+                run_device_pipeline(
+                    armed_job.job,
+                    armed_job.lock,
+                    shared,
+                    engine_name,
+                    &puf_guard_ref,
+                )
             }));
         }
         handles
@@ -610,6 +678,7 @@ fn run_device_pipeline(
     lock: dc_probe::GuardianLockHandle,
     shared: &ExecuteShared,
     engine_name: &str,
+    puf_guard: &Option<Option<PathBuf>>,
 ) -> DeviceRunOutput {
     let started = Instant::now();
     let dev_short = job
@@ -620,7 +689,7 @@ fn run_device_pipeline(
         .unwrap_or("device")
         .to_string();
 
-    let result = execute_device_inner(&job, lock, shared, engine_name, &dev_short);
+    let result = execute_device_inner(&job, lock, shared, engine_name, &dev_short, puf_guard);
     match result {
         Ok((cert_path, journal_path, bytes)) => DeviceRunOutput {
             target: job.identity.dev_path.clone(),
@@ -673,6 +742,7 @@ fn execute_device_inner(
     shared: &ExecuteShared,
     engine_name: &str,
     dev_short: &str,
+    puf_guard: &Option<Option<PathBuf>>,
 ) -> Result<(PathBuf, PathBuf, u64), DcError> {
     let plan = &job.plan;
     let identity = &job.identity;
@@ -750,6 +820,46 @@ fn execute_device_inner(
         at: chrono_now_iso(),
     })?;
 
+    // ---------------------------------------------------------------
+    // v0.12.0 Miracle 1: enter the VDF time-lock chain. The challenge x
+    // is bound to THIS journal run (uuid + fresh entropy), so every
+    // woven keystream is run-specific and the chain is unique.
+    // ---------------------------------------------------------------
+    let mut vdf_lock = match &shared.vdf_params {
+        Some(params) => {
+            let mut mat = journal_uuid.clone().into_bytes();
+            mat.extend_from_slice(&dc_vdf::fresh_nonce());
+            let lock = dc_vdf::VdfLock::new(params, &mat)
+                .map_err(|e| DcError::Internal(format!("vdf lock: {e}")))?;
+            eprintln!(
+                "[{}] [vdf] time-lock chain entered ({} steps/pass) — pass keystreams \
+                 will be keyed by provable sequential-squaring states",
+                dev_short, params.steps_per_pass
+            );
+            Some(lock)
+        }
+        None => None,
+    };
+
+    // ---------------------------------------------------------------
+    // v0.12.0 Miracle 2: acoustic PUF guard — establish the physical
+    // identity of the chassis BEFORE the first write (fail-closed).
+    // ---------------------------------------------------------------
+    let sonar_guard = match puf_guard {
+        Some(enrollment_path) => {
+            eprintln!(
+                "[{}] [sonar] PUF guard active — verifying physical chassis…",
+                dev_short
+            );
+            Some(crate::sonarcmd::guard_pre_wipe(
+                std::path::Path::new(&job.target),
+                enrollment_path.as_deref(),
+            )?)
+        }
+        None => None,
+    };
+    let mut sonar_verifications: Vec<dc_cert::SonarVerificationRecord> = Vec::new();
+
     // Engine
     let span = LbaSpan::new(
         identity.stable.size_bytes,
@@ -803,7 +913,38 @@ fn execute_device_inner(
 
     for (pass_idx, pass) in passes.iter().enumerate() {
         let permit = fsm.begin_pass(pass_idx as u8)?;
-        let pat_source = create_pattern_source(&pass.pattern);
+
+        // v0.12.0 Miracle 1: materialize the weave state BEFORE writing
+        // this pass (steps_per_pass sequential squarings since the
+        // previous state — the run cannot be rushed past them).
+        let pat_source: Box<dyn dc_core::PatternSource> = match (&mut vdf_lock, &pass.pattern) {
+            (
+                Some(lock),
+                dc_core::Pattern::VdfWoven {
+                    scheme,
+                    seed_commitment,
+                },
+            ) => {
+                if !shared.no_progress {
+                    eprintln!(
+                        "[{}] [vdf] pass {}: advancing time-lock ({} squarings)…",
+                        dev_short,
+                        pass_idx,
+                        lock.steps_per_pass()
+                    );
+                }
+                let _binding = lock
+                    .advance(|_| true)
+                    .map_err(|e| DcError::Internal(format!("vdf advance: {e}")))?;
+                dc_core::create_vdf_pattern_source(
+                    *scheme,
+                    *seed_commitment,
+                    pass_idx as u8,
+                    &lock.state_bytes(),
+                )
+            }
+            _ => create_pattern_source(&pass.pattern),
+        };
 
         journal.append(&dc_core::JournalRecord::BeginPass {
             pass: pass_idx as u8,
@@ -923,6 +1064,31 @@ fn execute_device_inner(
             bar.finish_with_message("Pass Completed");
         }
 
+        // v0.12.0 Miracle 2: mid-run chassis re-verification (the
+        // rogue-swap detector — a drive swapped mid-wipe changes the
+        // acoustic response; fail-closed).
+        if pass_idx == 0 && sonar_guard.is_some() {
+            let g = sonar_guard
+                .as_ref()
+                .unwrap_or_else(|| unreachable!("checked is_some above"));
+            let phase = format!("mid:{pass_idx}");
+            let verdict =
+                crate::sonarcmd::guard_verify(g, std::path::Path::new(&job.target), &phase)?;
+            let rec = dc_cert::SonarVerificationRecord {
+                phase: phase.clone(),
+                challenge_hex: hex::encode(verdict.challenge),
+                hamming_distance: verdict.outcome.hamming_distance,
+                bit_count: verdict.outcome.bit_count,
+                match_threshold: verdict.outcome.match_threshold,
+                similarity: verdict.outcome.similarity,
+                matches: verdict.outcome.matches,
+            };
+            sonar_verifications.push(rec);
+            if !verdict.outcome.matches {
+                return Err(crate::sonarcmd::puf_refusal(&phase, &verdict.outcome));
+            }
+        }
+
         journal.append(&dc_core::JournalRecord::RangeCommit {
             pass: pass_idx as u8,
             first_window: 0,
@@ -991,7 +1157,22 @@ fn execute_device_inner(
             }
 
             let last_pass = passes.last().expect("logical plan has passes");
-            let verify_pat_source = create_pattern_source(&last_pass.pattern);
+            let verify_pat_source: Box<dyn dc_core::PatternSource> =
+                match (&vdf_lock, &last_pass.pattern) {
+                    (
+                        Some(lock),
+                        dc_core::Pattern::VdfWoven {
+                            scheme,
+                            seed_commitment,
+                        },
+                    ) => dc_core::create_vdf_pattern_source(
+                        *scheme,
+                        *seed_commitment,
+                        (passes.len() - 1) as u8,
+                        &lock.state_bytes(),
+                    ),
+                    _ => create_pattern_source(&last_pass.pattern),
+                };
             let mut verifier = StreamVerifier::new(
                 verify_level,
                 plan.window_bytes,
@@ -1112,6 +1293,31 @@ fn execute_device_inner(
         ));
     }
 
+    // ---------------------------------------------------------------
+    // v0.12.0 Miracle 2: post-wipe chassis verification — the last
+    // physical-identity check before certification (fail-closed).
+    // ---------------------------------------------------------------
+    if let Some(g) = sonar_guard.as_ref() {
+        let phase = "post";
+        let verdict = crate::sonarcmd::guard_verify(g, std::path::Path::new(&job.target), phase)?;
+        sonar_verifications.push(dc_cert::SonarVerificationRecord {
+            phase: phase.to_string(),
+            challenge_hex: hex::encode(verdict.challenge),
+            hamming_distance: verdict.outcome.hamming_distance,
+            bit_count: verdict.outcome.bit_count,
+            match_threshold: verdict.outcome.match_threshold,
+            similarity: verdict.outcome.similarity,
+            matches: verdict.outcome.matches,
+        });
+        if !verdict.outcome.matches {
+            return Err(crate::sonarcmd::puf_refusal(phase, &verdict.outcome));
+        }
+        eprintln!(
+            "[{}] [sonar] post-wipe verification: MATCH ({} of {} bits)",
+            dev_short, verdict.outcome.hamming_distance, verdict.outcome.bit_count
+        );
+    }
+
     let mut cert = SanitizationCertificate::new(
         plan.clone(),
         job.plan_hash.clone(),
@@ -1180,6 +1386,55 @@ fn execute_device_inner(
             elapsed_us: report.elapsed_us,
         });
     }
+    // ------------------------------------------------------------------
+    // v0.12.0 evidence embedding: VDF time-lock timeline (Miracle 1)
+    // and the acoustic PUF binding (Miracle 2).
+    // ------------------------------------------------------------------
+    if let Some(lock) = vdf_lock.as_ref() {
+        // (Local squaring-rate measurement is not re-run here: the
+        // certificate's binding claim uses the documented adversary
+        // model; `dc vdf bench` measures the executor separately.)
+        let engine_ev = lock.evidence(None);
+        cert = cert.with_vdf_timeline(dc_cert::VdfTimelineEvidence {
+            scheme: engine_ev.scheme,
+            modulus_n: engine_ev.modulus_n,
+            challenge_x: engine_ev.challenge_x,
+            steps_per_pass: engine_ev.steps_per_pass,
+            beacon: engine_ev.beacon,
+            passes: engine_ev
+                .passes
+                .iter()
+                .map(|pb| dc_cert::VdfPassBinding {
+                    pass_index: pb.pass_index,
+                    state: pb.state.clone(),
+                    seed_fingerprint: pb.seed_fingerprint.clone(),
+                    challenge_prime: pb.challenge_prime.clone(),
+                    proof: pb.proof.clone(),
+                    materialized_after_ms: pb.materialized_after_ms,
+                })
+                .collect(),
+            measured_squarings_per_second: engine_ev.measured_squarings_per_second,
+            squarings_done: engine_ev.squarings_done,
+        });
+    }
+    if let Some(g) = sonar_guard.as_ref() {
+        let (enr, fresh) = match g {
+            crate::sonarcmd::GuardState::Loaded(e) => (e, false),
+            crate::sonarcmd::GuardState::Fresh(e) => (e, true),
+        };
+        cert = cert.with_sonar_puf(dc_cert::SonarPufEvidence {
+            scheme: enr.scheme.clone(),
+            enrolled_digest_blake3: enr.digest_blake3.clone(),
+            bit_count: enr.bit_count,
+            enrollment_challenge_hex: enr.enrollment_challenge_hex.clone(),
+            telemetry_sources: enr.telemetry_sources.clone(),
+            probe_backend: format!("file:{}", job.target.display()),
+            verifications: sonar_verifications,
+            all_matched: true,
+        });
+        let _ = fresh;
+    }
+
     crate::hybridsign::sign_certificate(&mut cert, &keypair, shared.key.as_deref())?;
 
     let cert_filename = format!("{}.cert.json", journal_filename.trim_end_matches(".dcj"));
@@ -1207,6 +1462,12 @@ fn execute_device_inner(
     }
     if let Some(vault) = cert.vault_report.as_ref() {
         visual_fields.extend(vault.field_lines());
+    }
+    if let Some(vdf) = cert.vdf.as_ref() {
+        visual_fields.extend(vdf.field_lines());
+    }
+    if let Some(sonar) = cert.sonar.as_ref() {
+        visual_fields.extend(sonar.field_lines());
     }
     let pdf_bytes = dc_report::render_sanitization_archive(
         if verifier_report.mismatch_count > 0 {

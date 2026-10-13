@@ -167,6 +167,14 @@ pub struct UnsignedCertificate {
     /// when a Groth16 compliance receipt accompanies this certificate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zk: Option<crate::zk::ZkAuditStatement>,
+    /// VDF time-lock timeline (v0.12.0, Miracle 1) — present for
+    /// woven runs (`dc execute --vdf-lock`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vdf: Option<crate::vdf::VdfTimelineEvidence>,
+    /// Acoustic PUF binding (v0.12.0, Miracle 2) — present for
+    /// guarded runs (`dc execute --puf-guard` / `--puf-bind`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sonar: Option<crate::sonar::SonarPufEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -227,6 +235,14 @@ pub struct SanitizationCertificate {
     /// when a Groth16 compliance receipt accompanies this certificate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zk: Option<crate::zk::ZkAuditStatement>,
+    /// VDF time-lock timeline (v0.12.0, Miracle 1) — present for
+    /// woven runs (`dc execute --vdf-lock`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vdf: Option<crate::vdf::VdfTimelineEvidence>,
+    /// Acoustic PUF binding (v0.12.0, Miracle 2) — present for
+    /// guarded runs (`dc execute --puf-guard` / `--puf-bind`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sonar: Option<crate::sonar::SonarPufEvidence>,
 }
 
 #[derive(Clone, Debug)]
@@ -287,6 +303,8 @@ impl SanitizationCertificate {
             fabric_session: None,
             cxl: None,
             zk: None,
+            vdf: None,
+            sonar: None,
         }
     }
 
@@ -367,6 +385,18 @@ impl SanitizationCertificate {
     }
 
     /// Attach the fabric session record (v0.8.0, Vector 4).
+    /// Attach the VDF time-lock timeline (v0.12.0, Miracle 1).
+    pub fn with_vdf_timeline(mut self, evidence: crate::vdf::VdfTimelineEvidence) -> Self {
+        self.vdf = Some(evidence);
+        self
+    }
+
+    /// Attach the acoustic PUF binding (v0.12.0, Miracle 2).
+    pub fn with_sonar_puf(mut self, evidence: crate::sonar::SonarPufEvidence) -> Self {
+        self.sonar = Some(evidence);
+        self
+    }
+
     pub fn with_fabric_session(mut self, session: crate::vault::FabricSessionEvidence) -> Self {
         let derived = session.defense_warnings();
         self.fabric_session = Some(session);
@@ -402,6 +432,8 @@ impl SanitizationCertificate {
             fabric_session: self.fabric_session.clone(),
             cxl: self.cxl.clone(),
             zk: self.zk.clone(),
+            vdf: self.vdf.clone(),
+            sonar: self.sonar.clone(),
         }
     }
 

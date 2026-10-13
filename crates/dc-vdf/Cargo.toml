@@ -1,0 +1,26 @@
+[package]
+name = "dc-vdf"
+version = "0.12.0"
+edition = "2024"
+description = "Cryptographic Proof-of-Erasure via Verifiable Delay Functions (v0.12.0, Miracle 1): Wesolowski proofs over an RSA unknown-order group, pure-Rust Montgomery arithmetic, and time-lock weave binding of overwrite passes — certificates that prove WHEN a wipe ran, independent of system clocks"
+
+[dependencies]
+dc-core = { workspace = true }
+# Keystream for woven passes (same geometry as ChaCha20WindowV1).
+chacha20 = { workspace = true }
+# Transcript hashing / Fiat-Shamir challenge derivation.
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+zeroize = { workspace = true }
+getrandom = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

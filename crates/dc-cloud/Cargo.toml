@@ -1,6 +1,6 @@
 [package]
 name = "dc-cloud"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "Cloud block-storage lifecycle orchestration: attach -> sanitize -> verify -> detach with signed audit receipts binding the cloud context (v0.10.0)"
 
