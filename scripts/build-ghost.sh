@@ -17,7 +17,7 @@ if ! rustup target list --installed 2>/dev/null | grep -q "^${TARGET}$"; then
 fi
 
 echo "[ghost] building dc-ghost-efi (release, opt-level=z, LTO)…"
-cargo build -p dc-baremetal --target "${TARGET}" --release --features efi "$@"
+cargo build -p dc-baremetal --target "${TARGET}" --profile ghost --features efi "$@"
 
 OUT="target/${TARGET}/release/dc-ghost-efi.efi"
 if [ ! -f "${OUT}" ]; then

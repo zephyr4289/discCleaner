@@ -1,6 +1,6 @@
 [package]
 name = "dc-pq"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 description = "Post-quantum cryptographic primitives for audit longevity: FIPS 202 SHA-3/SHAKE and FIPS 204 ML-DSA-44 (v0.10.0)"
 

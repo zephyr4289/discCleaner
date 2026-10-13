@@ -100,6 +100,94 @@ jobs:
       - name: Groth16 full-circuit tests (release mode)
         run: cargo test -p dc-zk -p dc-cli --release -- --ignored
 
+  byzantine-swarm-suite:
+    name: Byzantine Swarm Drills (v0.13.0, Frontier 1)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Full dc-mesh BFT suite (liar, silent, equivocator, replay)
+        run: cargo test -p dc-mesh -- --nocapture
+      - name: CLI drill — liar is caught, isolated and named
+        run: |
+          cargo build -p dc-cli
+          ./target/debug/dc mesh simulate --nodes 7 --byzantine 3=liar --out /tmp/liar-cert.json
+          grep -q '"failed_spot_proof"' /tmp/liar-cert.json || { echo "FAIL: liar not in the rogue ledger"; exit 1; }
+      - name: CLI drill — equivocator is exposed in the decided block
+        run: |
+          ./target/debug/dc mesh simulate --nodes 7 --byzantine 5=equivocator --out /tmp/eq-cert.json
+          grep -q '"equivocation"' /tmp/eq-cert.json || { echo "FAIL: equivocator not named"; exit 1; }
+      - name: CLI drill — silent node is timed out; certificate verifies offline
+        run: |
+          ./target/debug/dc mesh simulate --nodes 7 --byzantine 1=silent --out /tmp/silent-cert.json
+          grep -q '"timeout"' /tmp/silent-cert.json || { echo "FAIL: silent node not timed out"; exit 1; }
+          ./target/debug/dc mesh verify --cert /tmp/silent-cert.json
+
+  silicon-wear-suite:
+    name: Silicon Wear Physics Suite (v0.13.0, Frontier 2)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Full dc-wear statistics suite (F-N ledger, Vth, RBER, coverage)
+        run: cargo test -p dc-wear -- --nocapture
+      - name: CLI campaign — 100% channel coverage certifies
+        run: |
+          cargo build -p dc-cli
+          ./target/debug/dc wear simulate --device-id CI-WEAR-1 --cycles 3000 --out /tmp/wear-cert.json
+          grep -q '"verified": true' /tmp/wear-cert.json || { echo "FAIL: honest campaign must certify"; exit 1; }
+          ./target/debug/dc wear verify --cert /tmp/wear-cert.json
+      - name: Tamper detection — flipped field breaks the digest
+        run: |
+          python3 - <<'EOF'
+          import json
+          c = json.load(open('/tmp/wear-cert.json'))
+          c['device_id'] = 'COUNTERFEIT'
+          json.dump(c, open('/tmp/wear-tampered.json', 'w'))
+          EOF
+          if ./target/debug/dc wear verify --cert /tmp/wear-tampered.json >/dev/null 2>&1; then
+            echo "FAIL: tampered certificate must not verify"; exit 1
+          fi
+          echo "PASS: tamper detection holds"
+
+  ghost-silicon-suite:
+    name: Ghost Silicon Interceptor Suite (v0.13.0, Frontier 3)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Full dc-fpga state machine suite (gate, eFuse, latch, faults)
+        run: cargo test -p dc-fpga -- --nocapture
+      - name: CLI drill — completion burns exactly the documented fuses
+        run: |
+          cargo build -p dc-cli
+          ./target/debug/dc fpga simulate --lanes 2 | tee /tmp/fpga-drill.log
+          grep -q 'ROOT OF DESTRUCTION COMPLETE' /tmp/fpga-drill.log
+          grep -q '0x60000003' /tmp/fpga-drill.log || { echo "FAIL: fuse word mismatch (want 0x60000003 for 2 lanes)"; exit 1; }
+
+  ghost-silicon-build:
+    name: Ghost Silicon RISC-V payload (v0.13.0, Frontier 3)
+    runs-on: ubuntu-latest
+    needs: ghost-silicon-suite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Add the RISC-V bare-metal target
+        run: rustup target add riscv32imc-unknown-none-elf
+      - name: Build the open-silicon payload (ghost profile)
+        run: |
+          cargo build -p dc-fpga --target riscv32imc-unknown-none-elf \
+                      --profile ghost --features silicon
+          SIZE=$(stat -c%s target/riscv32imc-unknown-none-elf/ghost/dc-ghost-silicon)
+          echo "Ghost Silicon payload size: ${SIZE} bytes"
+          if [ "${SIZE}" -gt 65536 ]; then
+            echo "FAIL: payload exceeds the 64 KB softcore budget"; exit 1
+          fi
+          echo "PASS: within the 64 KB budget"
+
   ghost-boot-build:
     name: Ghost Boot EFI payload (v0.12.0, Miracle 3)
     runs-on: ubuntu-latest
@@ -110,10 +198,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Add the UEFI target
         run: rustup target add x86_64-unknown-uefi
-      - name: Build the pure-Rust bare-metal payload
+      - name: Build the pure-Rust bare-metal payload (ghost profile)
         run: |
-          cargo build -p dc-baremetal --target x86_64-unknown-uefi --release --features efi
-          SIZE=$(stat -c%s target/x86_64-unknown-uefi/release/dc-ghost-efi.efi)
+          cargo build -p dc-baremetal --target x86_64-unknown-uefi --profile ghost --features efi
+          SIZE=$(stat -c%s target/x86_64-unknown-uefi/ghost/dc-ghost-efi.efi)
           echo "Ghost Boot payload size: ${SIZE} bytes"
           if [ "${SIZE}" -gt 307200 ]; then
             echo "FAIL: payload exceeds the 300 KB budget"; exit 1

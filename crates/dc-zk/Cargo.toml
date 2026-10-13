@@ -1,6 +1,6 @@
 [package]
 name = "dc-zk"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 description = "Zero-knowledge audit receipts (v0.11.0, Frontier 1): Groth16 ZK-SNARKs over a pure-Rust BLS12-381 implementation — prove NIST SP 800-88 purge compliance without revealing drive serials, host topology or operator identity"
 

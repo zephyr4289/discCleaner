@@ -10,10 +10,12 @@ pub mod execute;
 pub mod fabrics;
 pub mod fleet;
 pub mod formalcmd;
+pub mod fpgacmd;
 pub mod hybridsign;
 pub mod init;
 pub mod iscsi;
 pub mod key;
+pub mod meshcmd;
 pub mod photon;
 pub mod profiles;
 pub mod purge;
@@ -22,6 +24,7 @@ pub mod serve;
 pub mod sonarcmd;
 pub mod stick_install;
 pub mod vdfcmd;
+pub mod wearcmd;
 pub mod zkcmd;
 
 pub use profiles::ProfileOption;
@@ -118,7 +121,7 @@ fn cli_signal_injection(_event: &str) {}
 #[command(
     name = "diskcleaner",
     author = "Forensic Systems Engineering Team",
-    version = "0.12.0",
+    version = "0.13.0",
     about = "Military-grade storage sanitization and forensic verification suite",
     long_about = "Implements NIST SP 800-88 Rev 1, IEEE 2883-2022, and DoD media sanitization standards with deterministic cryptographic verification and tamper-evident audit logs."
 )]
@@ -237,6 +240,23 @@ pub enum Commands {
     /// Ghost Boot: build and deploy the pure-Rust bare-metal UEFI
     /// wipe payload — no kernel, no drivers, no OS (v0.12.0, Miracle 3)
     Baremetal(BaremetalArgs),
+
+    /// Autonomous multi-node consensus & Byzantine sanitization
+    /// swarm: wipe a whole cluster with no central orchestrator,
+    /// threshold co-signed decommission certificates
+    /// (v0.13.0, Frontier 1)
+    Mesh(MeshArgs),
+
+    /// Silicon-level analog flash degradation analysis: P/E stress
+    /// profiles, Vth shift estimation, Fowler-Nordheim charge
+    /// accounting, and the Silicon Wear Certificate
+    /// (v0.13.0, Frontier 2)
+    Wear(WearArgs),
+
+    /// Ghost Silicon: the RISC-V open-silicon root of destruction —
+    /// storage-lane interceptor state machine with physical eFuse
+    /// completion proof (v0.13.0, Frontier 3)
+    Fpga(FpgaArgs),
 }
 
 #[derive(Args, Debug)]
@@ -490,6 +510,118 @@ pub enum BaremetalSubcommands {
         #[arg(long, default_value_t = true)]
         release: bool,
     },
+}
+
+#[derive(Args, Debug)]
+pub struct MeshArgs {
+    #[command(subcommand)]
+    pub sub: MeshSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MeshSubcommands {
+    /// Deterministic swarm drill over the virtual LAN (CI / drills)
+    Simulate {
+        /// Cluster size n (>= 4 = 3f+1)
+        #[arg(long, default_value_t = 7)]
+        nodes: usize,
+        /// Byzantine actors: "index=behavior" comma list
+        /// (liar|silent|equivocator), e.g. "3=liar,5=equivocator"
+        #[arg(long, default_value = "")]
+        byzantine: String,
+        /// Drives per node
+        #[arg(long, default_value_t = 2)]
+        drives: u32,
+        /// Windows per drive
+        #[arg(long, default_value_t = 3)]
+        windows: u64,
+        /// Deterministic seed (byte-identical replay)
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Write the Swarm Certificate of Decommission here
+        #[arg(short, long)]
+        out: Option<String>,
+    },
+    /// Offline-verify a swarm certificate (roots, quorums, seals)
+    Verify {
+        /// Certificate JSON path
+        #[arg(short, long)]
+        cert: String,
+        /// Expected FROST group public key (hex anchor)
+        #[arg(long)]
+        group_pub: Option<String>,
+        /// Expected membership hash (hex anchor)
+        #[arg(long)]
+        membership_hash: Option<String>,
+    },
+    /// Explain the swarm protocol and its threat model
+    Explain,
+}
+
+#[derive(Args, Debug)]
+pub struct WearArgs {
+    #[command(subcommand)]
+    pub sub: WearSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WearSubcommands {
+    /// Run the deterministic silicon-wear stress campaign
+    Simulate {
+        /// Device identity recorded in the certificate
+        #[arg(long, default_value = "SIM-WEAR-000")]
+        device_id: String,
+        /// P/E cycles per die
+        #[arg(long, default_value_t = 3000)]
+        cycles: u32,
+        /// Physical flash channels
+        #[arg(long, default_value_t = 8)]
+        channels: u32,
+        /// Chip-enables per channel
+        #[arg(long, default_value_t = 2)]
+        ces: u32,
+        /// LUNs per chip-enable
+        #[arg(long, default_value_t = 2)]
+        luns: u32,
+        /// Deterministic seed
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Write the Silicon Wear Certificate here
+        #[arg(short, long)]
+        out: Option<String>,
+    },
+    /// Offline-verify a silicon wear certificate
+    Verify {
+        /// Certificate JSON path
+        #[arg(short, long)]
+        cert: String,
+    },
+    /// Explain the physics models and the threat model
+    Explain,
+}
+
+#[derive(Args, Debug)]
+pub struct FpgaArgs {
+    #[command(subcommand)]
+    pub sub: FpgaSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FpgaSubcommands {
+    /// Run the interceptor state machine on the virtual softcore
+    Simulate {
+        /// Storage lanes holding targets (1..=4)
+        #[arg(long, default_value_t = 2)]
+        lanes: usize,
+        /// Final pattern word (omit for pure-zero erase surface)
+        #[arg(long)]
+        pattern: Option<u32>,
+        /// Windows per lane
+        #[arg(long, default_value_t = 256)]
+        windows: u32,
+    },
+    /// Explain the payload, board map and build recipe
+    Info,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -1452,6 +1584,9 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Vdf(_) => "vdf",
         Commands::Sonar(_) => "sonar",
         Commands::Baremetal(_) => "baremetal",
+        Commands::Mesh(_) => "mesh",
+        Commands::Wear(_) => "wear",
+        Commands::Fpga(_) => "fpga",
     }
 }
 
@@ -1575,6 +1710,18 @@ fn run_with_fleet_slot(
         }
         Commands::Baremetal(args) => {
             baremetalcmd::cmd_baremetal(args)?;
+            Ok(())
+        }
+        Commands::Mesh(args) => {
+            meshcmd::cmd_mesh(args)?;
+            Ok(())
+        }
+        Commands::Wear(args) => {
+            wearcmd::cmd_wear(args)?;
+            Ok(())
+        }
+        Commands::Fpga(args) => {
+            fpgacmd::cmd_fpga(args)?;
             Ok(())
         }
     }
