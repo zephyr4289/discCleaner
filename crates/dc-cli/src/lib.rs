@@ -8,6 +8,7 @@ pub mod cxlcmd;
 pub mod evidence;
 pub mod execute;
 pub mod fabrics;
+pub mod fhecmd;
 pub mod fleet;
 pub mod formalcmd;
 pub mod fpgacmd;
@@ -16,10 +17,12 @@ pub mod init;
 pub mod iscsi;
 pub mod key;
 pub mod meshcmd;
+pub mod optixcmd;
 pub mod photon;
 pub mod profiles;
 pub mod purge;
 pub mod quote;
+pub mod remanencecmd;
 pub mod serve;
 pub mod sonarcmd;
 pub mod stick_install;
@@ -257,6 +260,24 @@ pub enum Commands {
     /// storage-lane interceptor state machine with physical eFuse
     /// completion proof (v0.13.0, Frontier 3)
     Fpga(FpgaArgs),
+
+    /// MFM anti-forensics & remanence annihilation: off-track head
+    /// micro-stepping, Curie-dither domain randomization, and the
+    /// statistical proof that guard-band magnetization sits below
+    /// the Johnson-Nyquist floor (v0.14.0, Breakthrough 1)
+    Remanence(RemanenceArgs),
+
+    /// Homomorphic verifiable erasure of encrypted drives: blind
+    /// zeroization without the key, zero-knowledge proof of
+    /// encryption-of-zero, batched millisecond verification
+    /// (v0.14.0, Breakthrough 2)
+    Fhe(FheArgs),
+
+    /// Optical WORM media destruction: in-drive laser weaponization
+    /// — photobleaching, phase-change melting, glassy-carbon
+    /// ablation with RF eye / push-pull collapse verification
+    /// (v0.14.0, Breakthrough 3)
+    Optix(OptixArgs),
 }
 
 #[derive(Args, Debug)]
@@ -562,6 +583,137 @@ pub enum MeshSubcommands {
 pub struct WearArgs {
     #[command(subcommand)]
     pub sub: WearSubcommands,
+}
+
+#[derive(Args, Debug)]
+pub struct RemanenceArgs {
+    #[command(subcommand)]
+    pub sub: RemanenceSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RemanenceSubcommands {
+    /// Run the guard-band annihilation campaign
+    Simulate {
+        /// Device identity recorded in the certificate
+        #[arg(long, default_value = "SIM-REMANENCE-000")]
+        device_id: String,
+        /// Tracks to simulate
+        #[arg(long, default_value_t = 4)]
+        tracks: u32,
+        /// Bit cells per track (4096+ makes the −20 dB claim
+        /// statistically meaningful)
+        #[arg(long, default_value_t = 8192)]
+        cells: u32,
+        /// Lateral simulation resolution (nm)
+        #[arg(long, default_value_t = 4.0)]
+        resolution_nm: f64,
+        /// Curie-dither passes per ladder step
+        #[arg(long, default_value_t = 24)]
+        dither_passes: u32,
+        /// Deterministic seed
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Write the Remanence Annihilation Certificate here
+        #[arg(short, long)]
+        out: Option<String>,
+    },
+    /// Offline-verify a remanence annihilation certificate
+    Verify {
+        /// Certificate JSON path
+        #[arg(short, long)]
+        cert: String,
+    },
+    /// Explain the physics models and the threat model
+    Explain,
+}
+
+#[derive(Args, Debug)]
+pub struct FheArgs {
+    #[command(subcommand)]
+    pub sub: FheSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FheSubcommands {
+    /// Run the full customer↔provider homomorphic erasure protocol
+    Simulate {
+        /// Volume identity (e.g. the LUKS/dm-crypt UUID)
+        #[arg(long, default_value = "vol-demo-000")]
+        volume_id: String,
+        /// Sector ciphertexts in the demo volume
+        #[arg(long, default_value_t = 8)]
+        sectors: u32,
+        /// Deterministic seed
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Write the FHE Erasure Certificate here
+        #[arg(short, long)]
+        out: Option<String>,
+    },
+    /// Offline-verify an FHE erasure certificate
+    Verify {
+        /// Certificate JSON path
+        #[arg(short, long)]
+        cert: String,
+    },
+    /// Explain the protocol and the threat model
+    Explain,
+}
+
+#[derive(Args, Debug)]
+pub struct OptixArgs {
+    #[command(subcommand)]
+    pub sub: OptixSubcommands,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum OptixMedia {
+    /// Organic dye (CD-R, DVD-R)
+    OrganicDye,
+    /// Inorganic phase-change alloy (BD-R, DVD±RW)
+    PhaseChange,
+    /// Glassy-carbon "stone" layer (M-DISC)
+    GlassyCarbon,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum OptixSubcommands {
+    /// Run the full-spiral laser annihilation campaign
+    Simulate {
+        /// Disc identity recorded in the certificate
+        #[arg(long, default_value = "SIM-OPTIX-000")]
+        disc_id: String,
+        /// Recording medium family
+        #[arg(long, default_value = "phase_change")]
+        media: OptixMedia,
+        /// Write-long passes over the spiral
+        #[arg(long, default_value_t = 3)]
+        passes: u32,
+        /// Spiral zones
+        #[arg(long, default_value_t = 12)]
+        zones: u32,
+        /// Sectors per zone
+        #[arg(long, default_value_t = 6)]
+        sectors: u32,
+        /// Cells per sector
+        #[arg(long, default_value_t = 16)]
+        cells: u32,
+        /// Deterministic seed
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Write the Photobleach Destruction Certificate here
+        #[arg(short, long)]
+        out: Option<String>,
+    },
+    /// Offline-verify a photobleach destruction certificate
+    Verify {
+        /// Certificate JSON path
+        #[arg(short, long)]
+        cert: String,
+    },
+    /// Explain the media physics and the threat model
+    Explain,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1587,6 +1739,9 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Mesh(_) => "mesh",
         Commands::Wear(_) => "wear",
         Commands::Fpga(_) => "fpga",
+        Commands::Remanence(_) => "remanence",
+        Commands::Fhe(_) => "fhe",
+        Commands::Optix(_) => "optix",
     }
 }
 
@@ -1722,6 +1877,18 @@ fn run_with_fleet_slot(
         }
         Commands::Fpga(args) => {
             fpgacmd::cmd_fpga(args)?;
+            Ok(())
+        }
+        Commands::Remanence(args) => {
+            remanencecmd::cmd_remanence(args)?;
+            Ok(())
+        }
+        Commands::Fhe(args) => {
+            fhecmd::cmd_fhe(args)?;
+            Ok(())
+        }
+        Commands::Optix(args) => {
+            optixcmd::cmd_optix(args)?;
             Ok(())
         }
     }

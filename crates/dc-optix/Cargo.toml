@@ -1,0 +1,19 @@
+[package]
+name = "dc-optix"
+version = "0.14.0"
+edition = "2024"
+description = "Sub-Surface Optical Disk Laser Photobleaching & Phase-Change Destruction (v0.14.0, Breakthrough 3): in-drive firmware laser weaponization for physical WORM media — vendor-diagnostic MMC passthrough to overdrive the pickup laser diode PWM and park the CLV servo at minimum linear velocity, cooking dye, phase-change alloy and glassy-carbon recording layers into a uniform non-reflective state, with RF eye-pattern and push-pull reflectivity-collapse verification across 100% of the spiral."
+
+[dependencies]
+dc-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

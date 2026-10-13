@@ -11,10 +11,10 @@
 `dc` is a self-contained, statically linked, zero-dependency storage sanitization suite engineered for NVMe, SATA, SAS/SCSI, USB-bridged (SAT), eMMC/UFS, TCG Opal self-encrypting (SED), and Host-Managed SMR/ZNS storage. It executes **NIST SP 800-88 Rev 1** Clear and Purge operations, issuing cryptographically signed, third-party-verifiable evidence packages that survive crashes, power loss, and adversarial cross-examination.
 
 ```
-Version       : v0.12.0 (VDF proof-of-erasure · acoustic PUF fingerprinting · Ghost Boot)
+Version       : v0.14.0 (MFM remanence annihilation · homomorphic verifiable erasure · optical laser destruction)
 Target Triples: x86_64-unknown-linux-musl · aarch64-unknown-linux-musl
 Runtime Deps  : Zero external binaries, zero dynamic libraries
-Crates        : 22 modular workspace crates
+Crates        : 33 modular workspace crates
 Tests         : 150+ unit tests + 60 integration suites + pinned regression guards + cargo-fuzz harnesses + proptest property matrices
 Test Driver   : python3 tests/run_tests.py (lit-style discovery, parallel, PASS/FAIL/UNSUPPORTED)
 Verification  : Ed25519+ML-DSA-44 hybrid + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3 Archival Embedding + TPM 2.0 quotes
@@ -44,6 +44,9 @@ Verification  : Ed25519+ML-DSA-44 hybrid + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3
 - [Byzantine Sanitization Swarm (v0.13.0)](#byzantine-sanitization-swarm-v0130)
 - [Silicon Wear Analysis (v0.13.0)](#silicon-wear-analysis-v0130)
 - [Ghost Silicon — RISC-V Open-Silicon Root of Destruction (v0.13.0)](#ghost-silicon--risc-v-open-silicon-root-of-destruction-v0130)
+- [MFM Anti-Forensics & Remanence Annihilation (v0.14.0)](#mfm-anti-forensics--remanence-annihilation-v0140)
+- [Homomorphic Verifiable Erasure of Encrypted Drives (v0.14.0)](#homomorphic-verifiable-erasure-of-encrypted-drives-v0140)
+- [Optical WORM Media Destruction (v0.14.0)](#optical-worm-media-destruction-v0140)
 - [Standalone Boot Environment](#standalone-boot-environment)
 - [Engineering Discipline & Testkit](#engineering-discipline--testkit)
 - [Standards & Compliance](#standards--compliance)
@@ -629,6 +632,77 @@ cargo build -p dc-fpga --target riscv32imc-unknown-none-elf \
 ```
 
 See [docs/FPGA.md](docs/FPGA.md).
+
+## MFM Anti-Forensics & Remanence Annihilation (v0.14.0)
+
+*"Overwrite with zeros and the data is gone" is a myth: write-head fringing
+fields leave sub-track magnetization remnants in the guard bands — exactly
+what a state-grade **Magnetic Force Microscope** reads after a NIST-grade
+wipe of the track core.* **dc-remanence** annihilates that residual layer:
+vendor-diagnostic **off-track head micro-stepping** (+15/−15/+30/−30% of
+track pitch at up to +55% write-current overdrive) sweeps both guard bands
+with hard-switch fields; a **Curie-dither** alternating-flux pattern
+thermally re-randomizes the soft edges and scrambles the transition
+boundaries; and the **statistical proof** bounds the known-plaintext
+multi-column MFM adversary's per-bit aggregate SNR (χ² omnibus, 99%
+confidence) **below the Johnson-Nyquist thermal floor** — the same
+recording that pools at +4 dB and falls to the adversary in 2 bits under a
+naive zero-overwrite certifies at −23 dB with a detection horizon 2–5×
+beyond the bits the track physically contains.
+
+```bash
+dc remanence simulate --device-id SN-XYZ --out remanence-cert.json
+dc remanence verify --cert remanence-cert.json
+```
+
+See [docs/REMANENCE.md](docs/REMANENCE.md).
+
+## Homomorphic Verifiable Erasure of Encrypted Drives (v0.14.0)
+
+Customer A wants the cloud provider to wipe their encrypted volume — but
+refuses to hand over the key, and the provider refuses to run A's code.
+**dc-fhe** closes the custody paradox with Ring-LWE homomorphic
+cryptography: the provider transforms every stored ciphertext **in place**
+— `C' = (C ⊖ C) ⊕ Enc_pk(0)` — without ever decrypting (`Dec_sk(C') = 0^N`
+holds by the circuit algebra), then produces a Lyubashevsky-style
+Fiat-Shamir **zero-knowledge proof** that every stored ciphertext is a
+well-formed encryption of zero (a lazy provider holding un-wiped data
+ciphertexts has no witness and cannot prove). The customer verifies the
+**batched** proof — two polynomial products, constant time in the sector
+count — and spot-decrypts one Fiat-Shamir-challenged sector with their own
+key. The provider never learned a single bit; the customer never showed
+the key.
+
+```bash
+dc fhe simulate --volume-id vol-uuid --sectors 8 --out fhe-cert.json
+dc fhe verify --cert fhe-cert.json
+```
+
+See [docs/FHE.md](docs/FHE.md).
+
+## Optical WORM Media Destruction (v0.14.0)
+
+Archival Blu-Ray, M-DISC, CD-R, DVD-R hold petabytes of cold audit logs in
+government bunkers and banks — physically "Write Once, Read Many", destroyed
+only by shredders or incinerators. **dc-optix** turns the commodity optical
+drive itself into the incinerator: MMC vendor-diagnostic commands **disable
+run-time power calibration, overdrive the laser diode to continuous wave at
+the absolute-maximum shelf, and park the CLV servo at minimum linear
+velocity** — an 11.5× energy gain per unit track length, the exact inverse
+of the write strategy. The full spiral (lead-in → lead-out) is cooked zone
+by zone with along-track thermal spreading: organic dye photobleaches,
+phase-change alloy melts and quenches to amorphous, and M-DISC glassy
+carbon — the "stone" layer that survives shredders — ablates at dose 6.
+The **RF eye pattern closes to the photodiode noise floor**, the
+push-pull tracking signal collapses with the slumped groove walls, and
+forensics read-recovery lands at chance.
+
+```bash
+dc optix simulate --disc-id MD-0001 --media glassy-carbon --out optix-cert.json
+dc optix verify --cert optix-cert.json
+```
+
+See [docs/OPTIX.md](docs/OPTIX.md).
 
 ## Standalone Boot Environment
 
