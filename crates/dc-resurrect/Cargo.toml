@@ -1,0 +1,22 @@
+[package]
+name = "dc-resurrect"
+version = "0.15.0"
+edition = "2024"
+description = "Forensic Autonomous Self-Assembling Kernel for Dead / Damaged Silicon (v0.15.0): resurrect bricked drives over raw JTAG / SWD / UART Boot-ROM protocols (Marvell, Silicon Motion, Phison, Samsung BROM straps), inject a RAM-resident pure-Rust micro-firmware nucleus straight into controller SRAM bypassing corrupted SPI flash, take over the raw NAND controller from inside the chip, execute die-level erase with per-block attestation, and prove it offline via Merkle .drz erasure proofs — no $100k industrial shredder."
+
+# Zero external dependencies by design: the bench rig must build on an
+# air-gapped machine with no crates.io access. JTAG (IEEE 1149.1), SWD
+# (ADIv5), vendor BROM UART protocols, SHA-256, HMAC, CRC16-XMODEM, CRC32
+# and the TOML-lite profile parser are implemented in-tree, std-only.
+[dependencies]
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "dc-resurrect"
+path = "src/main.rs"
+
+[lib]
+name = "dc_resurrect"
+path = "src/lib.rs"

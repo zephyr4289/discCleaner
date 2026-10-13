@@ -1,0 +1,20 @@
+# Marvell 88SS1077 — Cortex-R4 SATA controller (reference model).
+# Field-verified constants replace these in place; see README "Rig hardware".
+name = "marvell-88ss1077"
+family = "marvell"
+core = "ARM Cortex-R4"
+sram_base = 0x10000000
+sram_size = 0x00020000
+jtag_idcode = 0x4BA00477
+jtag_irlen = 4
+nand_mmio = 0xD1000000
+dbg_mmio = 0xE0001000
+uart_mmio = 0xD1002000
+bsr_len = 24
+
+[brom]
+baud = 115200
+sync = 0x55
+ack = 0x5A
+magic = "MRVL-BROM-88SS"
+auth_required = false

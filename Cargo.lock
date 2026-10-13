@@ -750,6 +750,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-resurrect"
+version = "0.15.0"
+
+[[package]]
 name = "dc-scsi"
 version = "0.13.0"
 dependencies = [

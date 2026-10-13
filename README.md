@@ -11,10 +11,10 @@
 `dc` is a self-contained, statically linked, zero-dependency storage sanitization suite engineered for NVMe, SATA, SAS/SCSI, USB-bridged (SAT), eMMC/UFS, TCG Opal self-encrypting (SED), and Host-Managed SMR/ZNS storage. It executes **NIST SP 800-88 Rev 1** Clear and Purge operations, issuing cryptographically signed, third-party-verifiable evidence packages that survive crashes, power loss, and adversarial cross-examination.
 
 ```
-Version       : v0.14.0 (MFM remanence annihilation · homomorphic verifiable erasure · optical laser destruction)
+Version       : v0.15.0 (dead-drive resurrection · JTAG/SWD/BROM self-assembling kernel · Merkle die-level erasure proofs)
 Target Triples: x86_64-unknown-linux-musl · aarch64-unknown-linux-musl
 Runtime Deps  : Zero external binaries, zero dynamic libraries
-Crates        : 33 modular workspace crates
+Crates        : 34 modular workspace crates
 Tests         : 150+ unit tests + 60 integration suites + pinned regression guards + cargo-fuzz harnesses + proptest property matrices
 Test Driver   : python3 tests/run_tests.py (lit-style discovery, parallel, PASS/FAIL/UNSUPPORTED)
 Verification  : Ed25519+ML-DSA-44 hybrid + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3 Archival Embedding + TPM 2.0 quotes
@@ -47,6 +47,7 @@ Verification  : Ed25519+ML-DSA-44 hybrid + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3
 - [MFM Anti-Forensics & Remanence Annihilation (v0.14.0)](#mfm-anti-forensics--remanence-annihilation-v0140)
 - [Homomorphic Verifiable Erasure of Encrypted Drives (v0.14.0)](#homomorphic-verifiable-erasure-of-encrypted-drives-v0140)
 - [Optical WORM Media Destruction (v0.14.0)](#optical-worm-media-destruction-v0140)
+- [Dead-Drive Resurrection — Self-Assembling Kernel (v0.15.0)](#dead-drive-resurrection--self-assembling-kernel-v0150)
 - [Standalone Boot Environment](#standalone-boot-environment)
 - [Engineering Discipline & Testkit](#engineering-discipline--testkit)
 - [Standards & Compliance](#standards--compliance)
@@ -703,6 +704,36 @@ dc optix verify --cert optix-cert.json
 ```
 
 See [docs/OPTIX.md](docs/OPTIX.md).
+
+## Dead-Drive Resurrection — Self-Assembling Kernel (v0.15.0)
+
+Every sanitization tool in existence — including everything else in `dc` —
+assumes the drive's firmware and main controller are alive and answering
+PCIe/SATA handshakes. Half the decommissioned drives in data centers and
+military bases are **bricked**: SPI flash corrupted in a brownout, the
+controller's ARM Cortex-R4 dead in a HardFault loop, a blown TVS diode on the
+PCB, or vendor debug bridges locked. The only sanctioned option has been
+the industrial shredder. **dc-resurrect** is the alternative: it speaks raw
+**JTAG, SWD and UART Boot-ROM** protocols (Marvell, Silicon Motion, Phison,
+Samsung BROM straps) over the pins that survive, injects a microscopic
+**self-assembled, RAM-resident pure-Rust nucleus** into controller SRAM —
+bypassing the corrupted SPI flash entirely — takes over the raw NAND
+controller from inside the chip, executes physical die-level erase with
+per-block CRC-32 attestation, and emits a Merkle `.drz` proof with no
+block gaps. Nothing static ships: the host assembles 16-bit Thumb fragments
+against the ONFI geometry the stage-1 probe discovers *on the drive*, and a
+reference-core simulator executes the real machine code — 54.7 million
+instructions on a full-scale Class A mission — before it ever touches a
+brick. When even the debug ports fault (Class D lockdown), IEEE 1149.1
+EXTEST drives the NAND pins directly through the boundary-scan register,
+no CPU required.
+
+```bash
+dc-resurrect demo --scenario firmware|hardfault|tvn|lockdown --out proof.drz
+dc-resurrect verify proof.drz
+```
+
+See [docs/RESURRECT.md](docs/RESURRECT.md).
 
 ## Standalone Boot Environment
 
