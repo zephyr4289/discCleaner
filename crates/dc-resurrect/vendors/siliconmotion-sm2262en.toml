@@ -1,0 +1,20 @@
+# Silicon Motion SM2262EN — dual Cortex-R5, SWD bonded for factory bring-up.
+name = "siliconmotion-sm2262en"
+family = "siliconmotion"
+core = "ARM Cortex-R5 (dual)"
+sram_base = 0x10000000
+sram_size = 0x00040000
+jtag_idcode = 0x4BA00477
+jtag_irlen = 4
+swd_dpidr = 0x2BA01477
+nand_mmio = 0xD0000000
+dbg_mmio = 0xE0001000
+uart_mmio = 0xD0002000
+bsr_len = 24
+
+[brom]
+baud = 115200
+sync = 0x55
+ack = 0x5A
+magic = "SM2262-BROM"
+auth_required = false

@@ -284,6 +284,51 @@ jobs:
           fi
           echo "PASS: digest tamper detection holds"
 
+  resurrection-suite:
+    name: Dead-Drive Resurrection Suite (v0.15.0)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Full dc-resurrect mission suite (transports, assembler, kernel, proofs)
+        run: cargo test -p dc-resurrect -- --nocapture
+      - name: CLI drill — a bricked drive resurrects and proves every block
+        run: |
+          cargo build -p dc-resurrect
+          ./target/debug/dc-resurrect demo --scenario firmware --out /tmp/res-proof.drz | tee /tmp/res-drill.log
+          grep -q '1020 erased / 4 skipped-bad / 0 failed' /tmp/res-drill.log || { echo "FAIL: full-scale mission must erase"; exit 1; }
+          grep -q 'complete block coverage' /tmp/res-drill.log
+          ./target/debug/dc-resurrect verify /tmp/res-proof.drz
+      - name: CLI drill — vendor lockdown falls back to boundary-scan pin takeover
+        run: |
+          ./target/debug/dc-resurrect demo --scenario lockdown --out /tmp/res-lockdown.drz | tee /tmp/res-lockdown.log
+          grep -q 'boundary-scan pin takeover required' /tmp/res-lockdown.log || { echo "FAIL: Class D must route to EXTEST"; exit 1; }
+          ./target/debug/dc-resurrect verify /tmp/res-lockdown.drz
+      - name: Tamper detection — a forged leaf breaks the Merkle root
+        run: |
+          python3 - <<'EOF'
+          # Flip one status field in the first block record without
+          # re-hashing: the leaf preimage no longer matches the recorded
+          # leaf hash. (The re-hashed case — caught by root recomputation —
+          # is covered by the dc-resurrect unit suite:
+          # tampered_proof_is_rejected.)
+          lines = open('/tmp/res-proof.drz').read().splitlines()
+          out = []
+          for ln in lines:
+              # records look like: "00 00000101 0 00000000 <crc> <leaf-hex>"
+              parts = ln.split()
+              if len(parts) == 6 and parts[0] == '00' and len(parts[1]) == 8:
+                  parts[2] = '1'  # forge skipped-bad
+                  ln = ' '.join(parts)
+              out.append(ln)
+          open('/tmp/res-forged.drz', 'w').write('\n'.join(out) + '\n')
+          EOF
+          if ./target/debug/dc-resurrect verify /tmp/res-forged.drz >/dev/null 2>&1; then
+            echo "FAIL: forged proof must not verify"; exit 1
+          fi
+          echo "PASS: Merkle tamper detection holds"
+
   ghost-boot-build:
     name: Ghost Boot EFI payload (v0.12.0, Miracle 3)
     runs-on: ubuntu-latest

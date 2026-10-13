@@ -35,6 +35,7 @@ members = [
     "crates/dc-remanence",
     "crates/dc-fhe",
     "crates/dc-optix",
+    "crates/dc-resurrect",
 ]
 
 [workspace.dependencies]
@@ -70,6 +71,7 @@ dc-fpga = { path = "crates/dc-fpga" }
 dc-remanence = { path = "crates/dc-remanence" }
 dc-fhe = { path = "crates/dc-fhe" }
 dc-optix = { path = "crates/dc-optix" }
+dc-resurrect = { path = "crates/dc-resurrect" }
 dc-testkit = { path = "crates/dc-testkit" }
 
 # System & I/O

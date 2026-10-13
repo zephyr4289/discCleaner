@@ -1,0 +1,19 @@
+# Samsung Pascal (MUON lineage) — tri-core R4, JTAG + BROM, no SWD.
+name = "samsung-pascal"
+family = "samsung"
+core = "ARM Cortex-R4 (tri-core)"
+sram_base = 0x0F000000
+sram_size = 0x00018000
+jtag_idcode = 0x4BA00477
+jtag_irlen = 5
+nand_mmio = 0xB0000000
+dbg_mmio = 0xE0001000
+uart_mmio = 0xB0002000
+bsr_len = 24
+
+[brom]
+baud = 115200
+sync = 0x55
+ack = 0x5A
+magic = "SAMSUNG-BROM"
+auth_required = false
