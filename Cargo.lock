@@ -444,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "dc-cli"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "assert_cmd",
  "blake3",
@@ -454,6 +454,7 @@ dependencies = [
  "dc-cloud",
  "dc-core",
  "dc-cxl",
+ "dc-fhe",
  "dc-fpga",
  "dc-hw",
  "dc-io",
@@ -462,9 +463,11 @@ dependencies = [
  "dc-mmc",
  "dc-nvme",
  "dc-opal",
+ "dc-optix",
  "dc-photon",
  "dc-pq",
  "dc-probe",
+ "dc-remanence",
  "dc-report",
  "dc-scsi",
  "dc-sonar",
@@ -547,6 +550,19 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+]
+
+[[package]]
+name = "dc-fhe"
+version = "0.14.0"
+dependencies = [
+ "blake3",
+ "dc-core",
+ "hex",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -657,6 +673,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-optix"
+version = "0.14.0"
+dependencies = [
+ "blake3",
+ "dc-core",
+ "hex",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "dc-photon"
 version = "0.13.0"
 dependencies = [
@@ -693,6 +722,19 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+]
+
+[[package]]
+name = "dc-remanence"
+version = "0.14.0"
+dependencies = [
+ "blake3",
+ "dc-core",
+ "hex",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

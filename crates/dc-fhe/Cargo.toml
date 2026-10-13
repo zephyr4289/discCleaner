@@ -1,0 +1,19 @@
+[package]
+name = "dc-fhe"
+version = "0.14.0"
+edition = "2024"
+description = "Homomorphic Verifiable Computation over Encrypted Drives (v0.14.0, Breakthrough 2): pure-Rust Ring-LWE homomorphic encryption, blind in-place zeroization of ciphertexts without the private key, and a Lyubashevsky-style Fiat-Shamir zero-knowledge proof that every stored ciphertext is a well-formed encryption of zero — the customer verifies the wipe of an encrypted volume in milliseconds without downloading or decrypting it, and the provider never learns a single bit."
+
+[dependencies]
+dc-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

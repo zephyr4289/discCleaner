@@ -1,0 +1,19 @@
+[package]
+name = "dc-remanence"
+version = "0.14.0"
+edition = "2024"
+description = "MFM Anti-Forensics & Remanence Annihilation (v0.14.0, Breakthrough 1): off-track head micro-stepping over guard bands, write-current bias bubble widening, Curie-dither domain-wall randomization, and a PRML soft-decision LLR statistical proof that residual sub-surface magnetization sits below the Johnson-Nyquist thermal noise floor (SNR < -20 dB) — rendering Magnetic Force Microscopy recovery physically uninformative."
+
+[dependencies]
+dc-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

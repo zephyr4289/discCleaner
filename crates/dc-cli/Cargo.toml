@@ -1,6 +1,6 @@
 [package]
 name = "dc-cli"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 
 [features]
@@ -40,6 +40,9 @@ dc-photon = { workspace = true }
 dc-iscsi = { workspace = true }
 dc-mesh = { workspace = true }
 dc-wear = { workspace = true }
+dc-remanence = { workspace = true }
+dc-fhe = { workspace = true }
+dc-optix = { workspace = true }
 dc-fpga = { workspace = true }
 dc-pq = { workspace = true }
 dc-web = { workspace = true }

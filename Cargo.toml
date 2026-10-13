@@ -32,6 +32,9 @@ members = [
     "crates/dc-mesh",
     "crates/dc-wear",
     "crates/dc-fpga",
+    "crates/dc-remanence",
+    "crates/dc-fhe",
+    "crates/dc-optix",
 ]
 
 [workspace.dependencies]
@@ -64,6 +67,9 @@ dc-baremetal = { path = "crates/dc-baremetal" }
 dc-mesh = { path = "crates/dc-mesh" }
 dc-wear = { path = "crates/dc-wear" }
 dc-fpga = { path = "crates/dc-fpga" }
+dc-remanence = { path = "crates/dc-remanence" }
+dc-fhe = { path = "crates/dc-fhe" }
+dc-optix = { path = "crates/dc-optix" }
 dc-testkit = { path = "crates/dc-testkit" }
 
 # System & I/O
