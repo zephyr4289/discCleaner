@@ -1,6 +1,6 @@
 [package]
 name = "dc-sonar"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 description = "Acoustic & ultrasonic hardware fingerprinting via drive actuator resonance (v0.12.0, Miracle 2): challenge-response physical unclonable functions binding wipe certificates to the physical silicon body of a drive — counterfeit SSDs and reflashed serials cannot fake the resonance of the chassis"
 

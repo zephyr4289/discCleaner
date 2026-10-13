@@ -1,0 +1,24 @@
+[package]
+name = "dc-fpga"
+version = "0.13.0"
+edition = "2024"
+description = "Autonomous Self-Verifying RISC-V Open-Silicon Firmware Payload (v0.13.0, Frontier 3): a pure-Rust no_std sanitization state machine for open softcores (NEORV32/VexRiscv) and BMC service processors, executing a hardware-enforced root of destruction over intercepted storage lanes and burning a physical eFuse on completion."
+publish = false
+
+[features]
+default = []
+# The RISC-V payload entry point. Build with:
+#   cargo build -p dc-fpga --target riscv32imc-unknown-none-elf --profile ghost --features silicon
+silicon = []
+
+[dependencies]
+# DELIBERATELY NONE — the payload is core + compiler_builtins only,
+# exactly like dc-baremetal's Ghost Boot (v0.12.0, Miracle 3).
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "dc-ghost-silicon"
+path = "src/bin/ghost_silicon.rs"
+required-features = ["silicon"]

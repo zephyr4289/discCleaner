@@ -41,6 +41,9 @@ Verification  : Ed25519+ML-DSA-44 hybrid + RFC 8785 JCS + RFC 3161 TSA + PDF/A-3
 - [VDF Proof-of-Erasure (v0.12.0)](#vdf-proof-of-erasure-v0120)
 - [Sonar Acoustic Fingerprinting (v0.12.0)](#sonar-acoustic-fingerprinting-v0120)
 - [Ghost Boot — Bare-Metal Wipe Payload (v0.12.0)](#ghost-boot--bare-metal-wipe-payload-v0120)
+- [Byzantine Sanitization Swarm (v0.13.0)](#byzantine-sanitization-swarm-v0130)
+- [Silicon Wear Analysis (v0.13.0)](#silicon-wear-analysis-v0130)
+- [Ghost Silicon — RISC-V Open-Silicon Root of Destruction (v0.13.0)](#ghost-silicon--risc-v-open-silicon-root-of-destruction-v0130)
 - [Standalone Boot Environment](#standalone-boot-environment)
 - [Engineering Discipline & Testkit](#engineering-discipline--testkit)
 - [Standards & Compliance](#standards--compliance)
@@ -565,6 +568,67 @@ dc baremetal deploy --device /dev/sdX  # EFI/BOOT/BOOTX64.EFI on FAT32
 ```
 
 See [docs/baremetal-ghost-boot.md](docs/baremetal-ghost-boot.md).
+
+## Byzantine Sanitization Swarm (v0.13.0)
+
+Decommissioning a 500-node cluster with Ansible/PXE means every certificate
+inherits the trust of one jump box. **dc-mesh** removes the orchestrator: a
+leaderless P2P Byzantine swarm of `dc` instances over **raw L2 Ethernet**
+(EtherType `0x88B5`, no IP stack). Nodes discover each other by broadcast,
+gossip per-drive zero-entropy attestations, challenge each other with fresh
+nonce/LBA **witness spot-proofs**, run a PBFT-family consensus tolerating
+`f < n/3` liars, isolate rogues (equivocators, serial spoofers, failed
+proofs, silence) into a signed collective audit trail, and **threshold
+co-sign** the final Swarm Certificate of Decommission: FROST2 t-of-n
+Ed25519 (the group key exists nowhere after the ceremony) plus an
+ML-DSA-44 post-quantum seal. Drills replay byte-identically from the seed.
+
+```bash
+dc mesh simulate --nodes 7 --byzantine 3=liar --out swarm-cert.json
+dc mesh verify --cert swarm-cert.json
+```
+
+See [docs/MESH.md](docs/MESH.md).
+
+## Silicon Wear Analysis (v0.13.0)
+
+After a NIST 800-88 Clear, did the controller *actually* erase the cells —
+or silently remap bad blocks and lie? **dc-wear** measures the physics, not
+the firmware: **Fowler-Nordheim charge ledgers** for every erase pulse
+(the oxide stress and the erasure are the same tunneling current — a
+bookkeeping shortcut books zero charge), threshold-voltage shift estimated
+from the controller's own read-retry compensation, sub-microsecond
+program-latency variance (worn cells need more ISPP steps), and RBER
+power-law evidence. The **Silicon Wear Certificate** demands 100% channel
+coverage with charge-bleed consistency — a single silently-retired die
+fails the whole document.
+
+```bash
+dc wear simulate --device-id SN-XYZ --cycles 3000 --out wear-cert.json
+dc wear verify --cert wear-cert.json
+```
+
+See [docs/WEAR.md](docs/WEAR.md).
+
+## Ghost Silicon — RISC-V Open-Silicon Root of Destruction (v0.13.0)
+
+Even Ghost Boot runs on x86 with Intel ME/AMD PSP and unverified Ring
+-2/-3 microcode. **dc-fpga** is the open-silicon answer: a ~5 KB pure-Rust
+`no_std` payload for **RISC-V softcores** (NEORV32/VexRiscv) and open BMC
+processors, deployed as a **Hardware Security Interceptor** sitting directly
+on the target's PCIe/SATA lanes. It gates every transaction, runs the
+autonomous sanitize-verify-seal state machine with no host CPU in the loop,
+and terminates in a **physical eFuse burn** — a one-way, microscopically
+auditable completion proof no software can forge. The lane gate latches
+closed forever after: auditable, never quietly reusable.
+
+```bash
+dc fpga simulate --lanes 3
+cargo build -p dc-fpga --target riscv32imc-unknown-none-elf \
+            --profile ghost --features silicon
+```
+
+See [docs/FPGA.md](docs/FPGA.md).
 
 ## Standalone Boot Environment
 

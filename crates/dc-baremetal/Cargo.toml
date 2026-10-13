@@ -1,6 +1,6 @@
 [package]
 name = "dc-baremetal"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 description = "Ghost Boot (v0.12.0, Miracle 3): a 100% pure-Rust bare-metal Ring 0 UEFI payload — no kernel, no drivers, no OS. Enumerates the PCIe root complex directly, discovers AHCI/NVMe BARs, enables bus-mastering DMA, sanitizes at raw bus line-rate, renders a framebuffer UI, and powers the machine down. Every hardware state machine is unit-tested in CI against a simulated bus."
 publish = false
@@ -8,7 +8,7 @@ publish = false
 [features]
 default = []
 # The EFI application entry point. Build with:
-#   cargo build -p dc-baremetal --target x86_64-unknown-uefi --release --features efi
+#   cargo build -p dc-baremetal --target x86_64-unknown-uefi --profile ghost --features efi
 efi = []
 
 [dependencies]
@@ -25,11 +25,3 @@ workspace = true
 name = "dc-ghost-efi"
 path = "src/bin/ghost.rs"
 required-features = ["efi"]
-
-[profile.release]
-# < 300 KB budget (typical size: tens of KB).
-opt-level = "z"
-lto = true
-panic = "abort"
-codegen-units = 1
-strip = true

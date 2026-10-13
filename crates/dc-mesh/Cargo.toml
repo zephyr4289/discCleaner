@@ -1,0 +1,27 @@
+[package]
+name = "dc-mesh"
+version = "0.13.0"
+edition = "2024"
+description = "Autonomous Multi-Node Consensus & Byzantine Sanitization Swarm (v0.13.0, Frontier 1): a leaderless peer-to-peer mesh running directly over raw L2 Ethernet frames (no IP stack, no orchestrator). Peers discover each other by broadcast, gossip per-drive zero-entropy attestations, run a PBFT-family consensus that tolerates f < n/3 Byzantine liars, isolate rogue nodes into a signed collective audit trail, and threshold co-sign the final data-center decommission certificate with FROST2 Ed25519 (t-of-n) plus an ML-DSA-44 post-quantum t-of-n signature set. No single machine — including the one you are typing on — can forge a cluster wipe certificate."
+
+[dependencies]
+dc-core = { workspace = true }
+dc-pq = { workspace = true }
+ed25519-dalek = { workspace = true }
+curve25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+zeroize = { workspace = true }
+rand_core = { workspace = true }
+getrandom = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "dc-wear"
+version = "0.13.0"
+edition = "2024"
+description = "Silicon-Level Analog Flash Degradation Analysis & Charge Bleed (v0.13.0, Frontier 2): P/E cycle stress profiles with sub-microsecond write-latency variance, BER distributions, and threshold-voltage (Vth) shift estimation proving physical floating-gate dielectric stress — evidence the flash controller cannot fake with silent remaps."
+
+[dependencies]
+dc-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

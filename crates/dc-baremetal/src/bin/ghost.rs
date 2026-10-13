@@ -3,7 +3,7 @@
 //! Build (see scripts/build-ghost.sh):
 //! ```text
 //! cargo build -p dc-baremetal --target x86_64-unknown-uefi \
-//!            --release --features efi
+//!            --profile ghost --features efi
 //! cp target/x86_64-unknown-uefi/release/dc-ghost-efi.efi /media/USB/EFI/BOOT/BOOTX64.EFI
 //! ```
 //!
